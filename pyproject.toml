@@ -1,0 +1,73 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cold-frame"
+version = "0.1.0"
+description = "A local-first, ownable memory layer for LLM agents — combine-the-best of mem0/Letta/Zep/A-MEM, engineered as one SQLite file."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+authors = [{ name = "coby" }]
+dependencies = [
+    "pydantic>=2.6",
+    "numpy>=1.26",
+]
+
+# Heavy / optional layers are DECOUPLED from the simple local install.
+[project.optional-dependencies]
+openai = ["openai>=1.40"]
+local-llm = ["sentence-transformers>=3.0"]   # fully offline embeddings/LLM
+vec = ["sqlite-vec>=0.1.6"]                   # optional ANN acceleration (default is pure-numpy KNN)
+server = ["fastapi>=0.110", "uvicorn>=0.29", "psycopg[binary]>=3.1", "pgvector>=0.3"]  # the separate product layer
+dev = ["pytest>=8.0", "pytest-cov>=5", "ruff>=0.6", "mypy>=1.11", "pyyaml>=6", "hypothesis>=6", "pre-commit>=3.7"]
+
+[project.scripts]
+cold-frame = "cold_frame.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["cold_frame"]
+
+# ── Code style & type checking (PEP8 + full type hints) ──
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["cold_frame", "tests"]
+
+[tool.ruff.lint]
+# E/W=pycodestyle(PEP8) · F=pyflakes · I=isort · UP=pyupgrade · B=bugbear
+# SIM=simplify · C4=comprehensions · PTH=pathlib · ANN=type-annotations · RUF
+select = ["E", "W", "F", "I", "UP", "B", "SIM", "C4", "PTH", "ANN", "RUF"]
+ignore = []  # ANN101/ANN102 removed in current ruff (self/cls auto-ok)
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["ANN", "S101"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true                    # enforce type hints everywhere
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
+show_error_codes = true
+files = ["cold_frame"]
+
+[[tool.mypy.overrides]]
+module = ["tests.*", "cold_frame.eval.*"]
+disallow_untyped_defs = false
+
+[[tool.mypy.overrides]]
+module = ["yaml"]                # pyyaml is a dev/eval dep; stubs not vendored in core
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "cold_frame/eval"]
+addopts = "-ra"
+markers = [
+  "slow: perf/large tests (nightly, not the merge gate)",
+  "live: needs real API keys/network (never in the CI core gate)",
+]

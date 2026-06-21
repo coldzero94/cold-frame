@@ -1,0 +1,979 @@
+[
+  {
+    "system": "mem0 OSS (Python SDK) — the `Memory` / `AsyncMemory` core in mem0/mem0/memory/main.py. Personal/agent memory layer: LLM fact extraction over chat turns, embedding into a vector store, a parallel vector-based \"entity store\" for graph-like boosting, hybrid (semantic + BM25 + entity-boost) retrieval, and a SQLite changelog. Default vector store is Qdrant.",
+    "architecture_overview": "Single fat module `mem0/memory/main.py` (~3540 lines) holding both sync `Memory` and async `AsyncMemory` as near-duplicate classes (the async half re-implements every method with `asyncio.to_thread` wrappers — ~2x code, drift risk). `Memory.__init__` (main.py:408) wires four pluggable components via factories (mem0/utils/factory.py): embedder, vector_store, llm, optional reranker, plus a `SQLiteManager` (storage.py) for an append-only history/messages log. A second vector collection (\"<collection>_entities\") is created lazily as `self.entity_store` (main.py:478-500) and acts as the \"graph\" — there is NO external graph DB in this code path.\n\nThe public surface (add/get/get_all/search/update/delete/delete_all/history/reset) is defined abstractly in memory/base.py (a thin ABC). Retrieval/scoring math lives in utils/scoring.py; entity NLP in utils/entity_extraction.py (spaCy); BM25 lemmatization in utils/lemmatization.py. Prompts are in configs/prompts.py. The data flow for add(): parse messages -> fetch last-10 raw messages + top-10 existing memories from the same session -> ONE LLM extraction call -> batch embed -> md5 dedup -> batch insert to vector store -> batch entity-link -> save raw messages + history. search(): lemmatize+entity-extract query -> semantic search (over-fetch 4x) + BM25 keyword_search + entity-store boost -> additive `score_and_rank` -> optional reranker.",
+    "key_files": [
+      {
+        "path": "mem0/mem0/memory/main.py",
+        "role": "Core Memory/AsyncMemory classes: add/search/update/delete pipelines, hybrid search assembly, entity linking. ~3540 lines."
+      },
+      {
+        "path": "mem0/mem0/configs/prompts.py",
+        "role": "All prompts. ADDITIVE_EXTRACTION_PROMPT (the LIVE ADD-only extractor, lines 468-944) + generate_additive_extraction_prompt builder (1016-1062). DEFAULT_UPDATE_MEMORY_PROMPT (176-324) and get_update_memory_messages (406-460) are DEAD CODE — the legacy 2-phase prompt, no longer wired into add()."
+      },
+      {
+        "path": "mem0/mem0/utils/scoring.py",
+        "role": "Hybrid scoring: BM25 sigmoid normalization, query-length-adaptive params, additive score_and_rank with adaptive divisor. ENTITY_BOOST_WEIGHT=0.5."
+      },
+      {
+        "path": "mem0/mem0/utils/entity_extraction.py",
+        "role": "spaCy-based entity extraction (PROPER/QUOTED/COMPOUND/NOUN) — rule-heavy, ~360 lines of heuristics. Feeds the entity store and query-time boosting."
+      },
+      {
+        "path": "mem0/mem0/utils/lemmatization.py",
+        "role": "spaCy lemmatizer producing text_lemmatized for BM25 indexing and query lemmatization."
+      },
+      {
+        "path": "mem0/mem0/memory/storage.py",
+        "role": "SQLiteManager: append-only `history` changelog table + `messages` rolling buffer (last 10/session). Thread-locked, single shared connection."
+      },
+      {
+        "path": "mem0/mem0/vector_stores/base.py",
+        "role": "VectorStoreBase ABC. keyword_search() returns None by default (opt-in BM25); search_batch() default = sequential search()."
+      },
+      {
+        "path": "mem0/mem0/vector_stores/qdrant.py",
+        "role": "Default store. Real BM25 via fastembed Qdrant/bm25 sparse vectors (keyword_search, line 418); dense+sparse named vectors. Guards _has_bm25_slot for pre-v3 collections."
+      },
+      {
+        "path": "mem0/mem0/reranker/llm_reranker.py",
+        "role": "Optional 3rd-stage reranker. Per-doc LLM 0-1 relevance score (N sequential LLM calls). Other rerankers: cohere, huggingface, sentence_transformer, zero_entropy."
+      }
+    ],
+    "data_model": "Memory record = one Qdrant point. id = uuid4 string. vector = dense embedding of the extracted fact text. payload (built in _add_to_vector_store, main.py:907-916): {`data`: fact text, `text_lemmatized`: BM25 text, `hash`: md5(text) hex, `created_at`/`updated_at`: ISO8601 UTC, optional `attributed_to` (\"user\"/\"assistant\"), plus session scope keys `user_id`/`agent_id`/`run_id` and optional `actor_id`/`role` merged from metadata}. MemoryItem pydantic model (configs/base.py) is the API-facing shape: {id, memory, hash, created_at, updated_at, score}; extra payload keys are promoted or nested under `metadata` on read (get/get_all/_search_vector_store, e.g. main.py:1547-1580).\n\nEntity record = one point in the parallel `<collection>_entities` store (main.py:1047-1052): {`data`: entity text, `entity_type`: PROPER/QUOTED/COMPOUND/NOUN, `linked_memory_ids`: list[str] of memory uuids, + session scope keys}. This list IS the graph adjacency — entity->memories. There are no edges between memories except the LLM-emitted `linked_memory_ids` returned during extraction, which (notably) are NOT persisted anywhere in the OSS write path (see write_path landmine).\n\nSQLite `history` table (storage.py:108-119): (id TEXT PK, memory_id, old_memory, new_memory, event[ADD/UPDATE/DELETE], created_at, updated_at, is_deleted INT, actor_id, role). `messages` table (storage.py:132-141): (id, session_scope, role, content, name, created_at) — rolling last-10 per session_scope, where session_scope = sorted \"user_id=..&agent_id=..\" string (main.py:358-365).",
+    "write_path": "add() (main.py:653) -> _add_to_vector_store() (main.py:761). THIS IS A SINGLE-PASS, ADD-ONLY V3 PIPELINE — not the 2-phase ADD/UPDATE/DELETE/NOOP described in the mem0 paper/README. The classic update reconciliation (DEFAULT_UPDATE_MEMORY_PROMPT, get_update_memory_messages in prompts.py) is fully DEAD CODE — grep confirms it is imported/called nowhere.\n\ninfer=False branch (main.py:762-796): each message stored verbatim as its own memory via _create_memory(), event=ADD. No extraction, no dedup beyond md5 inside _create_memory.\n\ninfer=True phased pipeline:\n- Phase 0 (main.py:801-803): build session_scope, pull last 10 raw messages from SQLite (`get_last_messages`), parse new messages.\n- Phase 1 (806-820): embed the concatenated new messages, semantic-search the vector store top_k=10 within session filters to get \"existing memories.\" UUIDs are remapped to integer string ids (\"0\",\"1\",..) with a uuid_mapping — an explicit anti-hallucination measure so the LLM never sees/echoes raw UUIDs.\n- Phase 2 (822-862): ONE LLM call. system = ADDITIVE_EXTRACTION_PROMPT (+ AGENT_CONTEXT_SUFFIX if agent-scoped). user prompt built by generate_additive_extraction_prompt with sections: Summary, Last k Messages, Recently Extracted, Existing Memories (the integer-id list), New Messages, Observation Date, Current Date, optional Custom Instructions. Response forced to json_object; parsed with remove_code_blocks + json.loads(strict=False) + extract_json fallback. Extracts `{\"memory\":[{id,text,attributed_to,linked_memory_ids}]}`.\n- Phase 3 (869-881): batch-embed all extracted texts (embed_batch), fallback to per-text embed.\n- Phase 4/5 DEDUP (883-921): build `existing_hashes` from md5 of retrieved existing memories; per extracted fact compute `mem_hash = hashlib.md5(text.encode()).hexdigest()` (main.py:898) and skip if in existing_hashes OR seen in this batch (seen_hashes). DEDUP IS EXACT-STRING md5 ONLY — no semantic/near-dup merge at write time. The LLM is asked to skip semantic dups via the prompt, but there is no code enforcement.\n- Phase 6 (923-962): batch vector_store.insert (fallback one-by-one), then batch SQLite history inserts (all event=ADD).\n- Phase 7 ENTITY LINKING (964-1065): extract_entities_batch(spaCy) over all new texts; global-dedup entities by lower(text); batch-embed unique entities; entity_store.search_batch top_k=1; if best match score >= 0.95 -> merge memory_ids into that entity's linked_memory_ids (update), else collect for a single batch insert of new entity points.\n- Phase 8 (1067-1081): save raw messages to SQLite, return [{id,memory,event:\"ADD\"}].\n\nSo every extracted fact is ALWAYS an ADD. Contradiction/supersession is handled only by (a) the extractor being told to skip dups and (b) retrieval-time entity links — never by deleting/updating prior memories. The LLM-returned `linked_memory_ids` are accepted in the schema but never written to storage in this OSS path (the entity store builds its own links independently from spaCy).",
+    "read_path": "search() (main.py:1243) -> _search_vector_store() (main.py:1488). Real 3-signal hybrid, then optional rerank:\n- Step1-2 (1494-1498): lemmatize query (lemmatize_for_bm25), extract query entities (spaCy), embed query.\n- Step3 (1500-1504): semantic search with over-fetch `internal_limit = max(limit*4, 60)` to build a scoring pool.\n- Step4-5 (1506-1519): vector_store.keyword_search(lemmatized_query) — returns None on stores without BM25 (base.py:68). For Qdrant it is a real fastembed Qdrant/bm25 sparse-vector query (qdrant.py:418). Raw BM25 scores normalized to [0,1] via logistic sigmoid `normalize_bm25` with query-length-adaptive (midpoint,steepness) from get_bm25_params (scoring.py:16-54): <=3 terms -> (5.0,0.7) scaling up to (12.0,0.5) for >15 terms.\n- Step6 (1521-1524): _compute_entity_boosts (main.py:1588) — embed query entities (max 8), ThreadPoolExecutor(4) parallel search of entity store top_k=500, keep matches with sim>=0.5, boost = sim * 0.5 * memory_count_weight where memory_count_weight = 1/(1+0.001*(num_linked-1)^2) (down-weights promiscuous entities). Each linked memory gets max boost.\n- Step8 (1536-1544): score_and_rank (scoring.py:60). Threshold (default 0.1) GATES the semantic score BEFORE combining (scoring.py:111) — a memory below threshold semantically can never be rescued by BM25/entity. combined = (semantic + bm25 + entity_boost) / max_possible, where max_possible adapts: 1.0 semantic-only, +1.0 if any BM25 present, +0.5 if any entity boost present (so the divisor is global across the batch, not per-row — rows lacking BM25 are penalized when others have it). Sort desc, take top_k.\n- Rerank (main.py:1360-1365): only if rerank=True AND a reranker is configured. LLMReranker does N sequential LLM calls (one per doc) scoring 0-1 (llm_reranker.py:104) — O(N) latency, no batching.\n\nexplain=True surfaces per-signal score_details. The reciprocal-rank-fusion / weighted-RRF often described for mem0 is NOT here; fusion is this simple normalized additive sum.",
+    "conflict_resolution_impl": "Write-time conflict resolution is effectively ABSENT in the live OSS path. The only write dedup is exact md5 string match (main.py:898-902) against the top-10 semantically-retrieved existing memories and within-batch. There is no UPDATE or DELETE of prior memories during add() — the V3 pipeline only ever emits ADD events (main.py:1070). Contradictions (\"I love hiking\" then \"I hate hiking now\") produce TWO coexisting memories; resolution is deferred to (a) the extraction LLM voluntarily not re-extracting per prompt instructions, and (b) retrieval surfacing both and letting the consumer sort it out.\n\nThe classic mem0 conflict engine — DEFAULT_UPDATE_MEMORY_PROMPT (prompts.py:176-324) with ADD/UPDATE/DELETE/NONE and old_memory tracking — still exists in source but is dead (no caller). Standalone update(memory_id, data) (main.py:1670) and delete() exist for manual/explicit edits and DO maintain history + entity-store cleanup (_update_memory main.py:1839: re-embeds, bumps updated_at, keeps created_at, treats actor_id as immutable, strips+re-links entities), but nothing calls them automatically from add(). Net: this is an accretive memory model, not a self-reconciling one.",
+    "forgetting_impl": "No automatic forgetting/decay/TTL/consolidation in the OSS code. There are decay/temporal \"usage notices\" (memory/notices.py) that detect when a user attempts decay/temporal features and raise errors stating these are platform-only / unsupported in OSS (e.g. get_decay_feature_error_message, _OSSProject.update rejects decay=True at main.py:388). The `messages` table self-prunes to the last 10 per session (storage.py:282-291) — that is a context-window cap, not memory forgetting. The `history` table is append-only and never garbage-collected (is_deleted is a tombstone flag set on delete, rows retained). Memories persist until an explicit delete()/delete_all()/reset(). Entity records are GC'd only as a side effect: when a memory is deleted/updated, its id is stripped from entities' linked_memory_ids and the entity row is deleted when its list becomes empty (_remove_memory_from_entity_store, main.py:545-598).",
+    "borrowable": [
+      {
+        "pattern": "UUID->integer remapping before showing existing memories to the extraction LLM (anti-hallucination)",
+        "file_ref": "mem0/mem0/memory/main.py:815-820",
+        "why_good": "LLMs fabricate/garble long UUIDs. Mapping retrieved memories to '0','1',.. and translating back in code removes a whole class of hallucinated-id bugs while keeping linking possible."
+      },
+      {
+        "pattern": "Single-call phased ADD pipeline with batched embed/insert/history + per-stage fallbacks",
+        "file_ref": "mem0/mem0/memory/main.py:798-1081",
+        "why_good": "One LLM call per add (not one-per-fact), batch embeddings, batch vector insert, batch SQLite history — each wrapped in try/except with one-by-one fallback. Good latency/robustness template even if you adopt 2-phase reconciliation."
+      },
+      {
+        "pattern": "Adaptive additive hybrid scoring with semantic threshold gate",
+        "file_ref": "mem0/mem0/utils/scoring.py:60-139",
+        "why_good": "Clean, debuggable alternative to RRF: normalize each signal to [0,1], sum, divide by an adaptive max_possible so scores stay in [0,1] regardless of which signals fired. explain=True emits per-signal breakdown — excellent for tuning/observability."
+      },
+      {
+        "pattern": "Query-length-adaptive BM25 sigmoid normalization",
+        "file_ref": "mem0/mem0/utils/scoring.py:16-54",
+        "why_good": "Raw BM25 is unbounded and grows with query length; mapping to [0,1] with length-tuned (midpoint,steepness) makes it directly combinable with cosine similarity. Cheap and effective."
+      },
+      {
+        "pattern": "Vector-store-as-graph entity index with promiscuity down-weighting",
+        "file_ref": "mem0/mem0/memory/main.py:1588-1668",
+        "why_good": "Avoids a separate graph DB: entities are points whose payload holds linked_memory_ids. Boost = sim*0.5*1/(1+0.001*(n-1)^2) prevents hub entities (e.g. 'User') from boosting everything. Parallelized with a 4-thread pool."
+      },
+      {
+        "pattern": "Session-scoped rolling raw-message buffer in SQLite to give the extractor recent context",
+        "file_ref": "mem0/mem0/memory/storage.py:257-324",
+        "why_good": "Keeping last-10 raw turns per session_scope and feeding them as 'Last k Messages' lets the extractor resolve pronouns/temporal refs without re-sending full history. Self-evicting query is a tidy pattern."
+      },
+      {
+        "pattern": "Capability-probe for hybrid search at init with graceful degradation",
+        "file_ref": "mem0/mem0/memory/main.py:463-470 + vector_stores/base.py:68-83",
+        "why_good": "keyword_search() defaults to None in the base class; init checks whether the subclass overrode it and warns once. Hybrid silently degrades to semantic-only on unsupported stores instead of crashing."
+      }
+    ],
+    "landmines": [
+      {
+        "issue": "add() is ADD-ONLY. No automatic UPDATE/DELETE/contradiction resolution. Marketing/paper describe a 2-phase ADD/UPDATE/DELETE/NOOP memory manager; that code (DEFAULT_UPDATE_MEMORY_PROMPT, get_update_memory_messages) is present but DEAD. Contradictory facts accumulate as separate rows. If you need self-reconciling memory you must build it.",
+        "file_ref": "mem0/mem0/memory/main.py:1070 (only ADD emitted); prompts.py:176-460 (dead 2-phase code)"
+      },
+      {
+        "issue": "Write-time dedup is exact md5 string match only. 'User likes pizza' vs 'User loves pizza' are NOT deduped at write. The extractor is merely *told* to skip semantic dups in the prompt; nothing enforces it.",
+        "file_ref": "mem0/mem0/memory/main.py:898-902"
+      },
+      {
+        "issue": "LLM-emitted linked_memory_ids are accepted in the extraction schema but never persisted in the OSS write path. Memory-to-memory links advertised by the prompt/examples don't actually exist as stored edges; the only links are spaCy-entity links built independently.",
+        "file_ref": "mem0/mem0/configs/prompts.py:924-936 vs main.py:893-1065 (no write of linked_memory_ids)"
+      },
+      {
+        "issue": "Existing-memory retrieval for extraction is hardcoded top_k=10 and dedup hashes only come from those 10. A duplicate fact outside the top-10 semantic neighbors will be re-added.",
+        "file_ref": "mem0/mem0/memory/main.py:808-813, 884-889"
+      },
+      {
+        "issue": "Hybrid divisor (max_possible) is computed globally per query, not per row. If ANY candidate has a BM25 score, every candidate's combined score is divided by a larger number, penalizing rows that legitimately had no keyword overlap.",
+        "file_ref": "mem0/mem0/utils/scoring.py:94-119"
+      },
+      {
+        "issue": "Threshold gates the raw semantic score before fusion, so a memory with a perfect keyword/entity match but mediocre cosine sim is dropped entirely. Tuning threshold interacts non-obviously with hybrid recall.",
+        "file_ref": "mem0/mem0/utils/scoring.py:111"
+      },
+      {
+        "issue": "Sync and Async classes are full copies (~1500 lines each). Any fix must be applied twice; they can and likely will drift.",
+        "file_ref": "mem0/mem0/memory/main.py:407 (Memory) vs 1972 (AsyncMemory)"
+      },
+      {
+        "issue": "Hybrid/BM25 requires the right store (Qdrant with fastembed) AND a v3-era collection with the 'bm25' sparse slot. Pre-v3 Qdrant collections silently disable BM25 (_has_bm25_slot=False); FAISS/Chroma have no keyword_search so hybrid is silently semantic-only.",
+        "file_ref": "mem0/mem0/vector_stores/qdrant.py:86-145; base.py:68"
+      },
+      {
+        "issue": "SQLiteManager uses one shared connection guarded by a single threading.Lock with check_same_thread=False. Fine for a library, but serializes all history writes and is not a concurrency story for a multi-worker production service.",
+        "file_ref": "mem0/mem0/memory/storage.py:14-15"
+      },
+      {
+        "issue": "Entity extraction is ~360 lines of hand-tuned spaCy POS/dependency heuristics (stopword lists, generic-head sets, compound splitting). Brittle, English-biased, and the silent backbone of both linking and query boosting; failures degrade silently to no-boost.",
+        "file_ref": "mem0/mem0/utils/entity_extraction.py:177-363"
+      },
+      {
+        "issue": "On LLM extraction failure add() returns [] and silently drops the turn (only logs error); raw messages are saved but no memory is created.",
+        "file_ref": "mem0/mem0/memory/main.py:845-847"
+      }
+    ],
+    "production_readiness": "Mixed: production-deployed open-source library, but the memory CORE shown here is mid-migration and uneven. Strengths: extensive input validation (entity-id trimming, threshold/top_k checks, top-level-param rejection), telemetry/secret redaction, capability probing with graceful degradation, batched IO with per-stage fallbacks, transactional SQLite with BEGIN/COMMIT/ROLLBACK and a schema-migration path, broad vector-store/embedder/llm provider matrix, and a dedicated test tree (tests/memory, tests/utils/test_scoring.py, test_entity_extraction.py). Weaknesses for building a REAL product on it: (1) the headline 2-phase memory-management algorithm is dead code — you get an accretive ADD-only store, so you must build conflict resolution, semantic dedup, decay/forgetting, and consolidation yourself (none exist in OSS; decay/temporal are explicitly platform-only and raise errors). (2) Massive sync/async duplication invites drift. (3) Memory-to-memory links are advertised but not persisted. (4) Retrieval correctness has real but subtle scoring footguns (global divisor, pre-fusion threshold gate). (5) Entity layer is brittle English-centric spaCy heuristics doing load-bearing work silently. (6) SQLite single-connection+lock is not a multi-worker concurrency story. Overall: a solid, well-instrumented RETRIEVAL and storage substrate (hybrid search, entity boosting, history log) that is genuinely borrowable — but the 'intelligent memory management' is research-grade/aspirational in OSS and would need to be implemented for a true production personal-memory product. Treat main.py as reference for the read path and pipeline ergonomics, not as a turnkey memory brain.",
+    "notable_prompts": [
+      "ADDITIVE_EXTRACTION_PROMPT (configs/prompts.py:468-944): the LIVE system prompt. A very long, example-heavy 'Memory Extractor' whose ONLY operation is ADD. Extracts contextually-rich self-contained facts (15-80 words) from both user and assistant turns, grounds relative time against an Observation Date (not Current Date), preserves proper nouns/numbers, forbids fabrication/echo/meta-extraction, and emits {memory:[{id,text,attributed_to,linked_memory_ids}]}. Deduplication and 'linking' are *instructed* here, not code-enforced.",
+      "generate_additive_extraction_prompt (configs/prompts.py:1016-1062): the user-message builder. Assembles Summary, Last k Messages (truncated to 300 chars each), Recently Extracted Memories, Existing Memories (as integer-id JSON), New Messages, Observation Date, Current Date, optional Custom Instructions, optional multilingual clause.",
+      "AGENT_CONTEXT_SUFFIX (configs/prompts.py:947-957): appended when the session is agent-scoped (agent_id set, no user_id) to reframe facts from the agent's perspective ('Agent was informed that...').",
+      "DEFAULT_UPDATE_MEMORY_PROMPT + get_update_memory_messages (configs/prompts.py:176-460): the CLASSIC 2-phase ADD/UPDATE/DELETE/NONE reconciliation prompt with old_memory tracking. DEAD CODE in this build — imported/called nowhere; documents what the live pipeline intentionally dropped.",
+      "PROCEDURAL_MEMORY_SYSTEM_PROMPT (configs/prompts.py:326-403): used only by _create_procedural_memory for agent-trajectory summarization (memory_type='procedural_memory'); verbatim action/result step log.",
+      "LLMReranker._SYSTEM_PROMPT (reranker/llm_reranker.py:75-86): 0.0-1.0 relevance scoring rubric, one LLM call per candidate doc, used only when rerank=True and an LLM reranker is configured."
+    ],
+    "storage_impl": "Two stores. (1) Vector store (default Qdrant, configs/vector_stores/configs.py:9; pluggable via VectorStoreFactory). Memories are points: dense embedding + payload (data/text_lemmatized/hash/timestamps/scope ids). Qdrant collections also carry a named 'bm25' SPARSE vector (qdrant.py:154-160) encoded by fastembed 'Qdrant/bm25' over text_lemmatized at insert time (qdrant.py:201-206) — this is what makes hybrid real. A SECOND vector collection '<collection>_entities' holds entity points {data, entity_type, linked_memory_ids[], scope ids} and serves as the graph index (main.py:478-500, 1047-1052). (2) SQLite via SQLiteManager (storage.py): append-only `history` changelog (every ADD/UPDATE/DELETE with old/new text, timestamps, is_deleted tombstone, actor_id, role) and a rolling `messages` buffer (last 10 raw turns per session_scope) used to feed recent context into extraction. Single sqlite3 connection, check_same_thread=False, all mutations under one threading.Lock with explicit BEGIN/COMMIT/ROLLBACK; includes an in-place schema migration that renames the old table, recreates, copies intersecting columns (storage.py:20-100)."
+  },
+  {
+    "system": "Graphiti (Zep) — temporally-aware knowledge graph memory. LLM-driven entity/edge extraction from \"episodes\" into a bi-temporal property graph (Neo4j/FalkorDB/Kuzu/Neptune), with hybrid retrieval (BM25 + cosine + graph BFS) fused by RRF/MMR/cross-encoder. Apache-2.0, `graphiti_core/` package.",
+    "architecture_overview": "Episode-centric ingestion pipeline orchestrated in `graphiti.py::add_episode` (graphiti_core/graphiti.py:980-1228). Three node tiers: EpisodicNode (raw input, immutable event), EntityNode (deduped semantic entity), CommunityNode (clustered summary). Relationships are EntityEdge (RELATES_TO, carries the \"fact\" + bi-temporal stamps), EpisodicEdge (MENTIONS, episode->entity provenance), plus Saga/HAS_EPISODE/NEXT_EPISODE for grouping. Each add_episode runs a fixed multi-stage LLM pipeline: (1) extract entities, (2) resolve/dedupe entities against graph via embedding search + deterministic MinHash + LLM, (3) extract edges, (4) resolve/dedupe + invalidate edges via hybrid search + LLM, (5) extract per-node attributes & summaries, (6) bulk-persist. Retrieval is a separate subsystem (search/search.py) that runs edge/node/episode/community searches in parallel, each with pluggable search methods and a reranker, assembled from \"recipes\" in search_config_recipes.py. DB access is abstracted behind a GraphDriver with an optional `graph_operations_interface`/`search_interface` IoC layer (Zep cloud override hook) — almost every method has a `try interface; except NotImplementedError: fall back to Cypher` pattern.",
+    "data_model": "EntityEdge (graphiti_core/edges.py:263-285) is the memory unit. Bi-temporal model uses FOUR timestamps, all persisted via edge_db_queries.py:91-99: `created_at` (system/transaction time the edge row was written), `expired_at` (system time the edge was marked no-longer-current), `valid_at` (event/valid time the fact became true), `invalid_at` (event time the fact stopped being true). A fifth field `reference_time` (edges.py:280-282) stores the source episode's valid_at. So created_at/expired_at = transaction-time axis; valid_at/invalid_at = valid-time axis — a genuine bitemporal design. Edge also carries `name` (SCREAMING_SNAKE relation), `fact` (NL sentence, the embedded text), `fact_embedding`, `episodes` (provenance UUID list), `attributes` (free dict, schema-driven). NOTABLE: EntityNode (nodes.py:499-504) has NO temporal fields at all — only name, name_embedding, summary, attributes, created_at (inherited). All temporality lives on edges; nodes are mutated in place (summary/attributes overwritten), so node history is NOT versioned. EpisodicNode (nodes.py:318-332) stores raw content + valid_at and is immutable. Storage: relationship properties in Neo4j/FalkorDB/Neptune; on Kuzu edges are reified into a `RelatesToNode_` node because Kuzu can't put rich props/vectors on rels (edges.py:318-322,388-391) and attributes are JSON-stringified.",
+    "key_files": [
+      {
+        "path": "graphiti_core/graphiti.py",
+        "role": "Top-level orchestrator; add_episode (980-1228) and add_episode_bulk (1230-1487) define the write pipeline; search/search_ (1526-1629) the read entry"
+      },
+      {
+        "path": "graphiti_core/utils/maintenance/edge_operations.py",
+        "role": "Edge extraction (extract_edges 117-322), dedup+invalidation (resolve_extracted_edge 623-847), temporal contradiction logic (resolve_edge_contradictions 538-573)"
+      },
+      {
+        "path": "graphiti_core/utils/maintenance/node_operations.py",
+        "role": "Entity extraction (extract_nodes 70-149), three-stage dedup (resolve_extracted_nodes 627-708), attribute+summary hydration (extract_attributes_from_nodes 726-780)"
+      },
+      {
+        "path": "graphiti_core/utils/maintenance/dedup_helpers.py",
+        "role": "Deterministic dedup: exact-normalize, Shannon-entropy gate, MinHash+LSH+Jaccard fuzzy matching (whole file)"
+      },
+      {
+        "path": "graphiti_core/search/search.py",
+        "role": "Parallel edge/node/episode/community search + reranker dispatch (rrf/mmr/cross_encoder/node_distance/episode_mentions)"
+      },
+      {
+        "path": "graphiti_core/search/search_utils.py",
+        "role": "Concrete BM25/cosine/BFS Cypher queries + rrf (1780), node_distance_reranker (1798), maximal_marginal_relevance (1901)"
+      },
+      {
+        "path": "graphiti_core/prompts/extract_edges.py",
+        "role": "Edge extraction + standalone timestamp extraction + attribute extraction prompts"
+      },
+      {
+        "path": "graphiti_core/prompts/dedupe_edges.py",
+        "role": "resolve_edge prompt: returns duplicate_facts + contradicted_facts index lists"
+      },
+      {
+        "path": "graphiti_core/prompts/dedupe_nodes.py",
+        "role": "Batch node dedup prompt (nodes 117-179) returning duplicate_candidate_id per entity"
+      },
+      {
+        "path": "graphiti_core/models/edges/edge_db_queries.py",
+        "role": "Cypher SET clauses that persist the 4 timestamps + reference_time"
+      },
+      {
+        "path": "graphiti_core/cross_encoder/openai_reranker_client.py",
+        "role": "LLM-as-reranker via boolean True/False classification + logprobs"
+      },
+      {
+        "path": "graphiti_core/search/search_filters.py",
+        "role": "Opt-in temporal/date filters (valid_at/invalid_at/expired_at) — NOT applied by default"
+      }
+    ],
+    "write_path": "add_episode (graphiti.py:1067-1179) per single episode. Step 0: retrieve previous_episodes for context — last RELEVANT_SCHEMA_LIMIT=10 episodes (graphiti.py:1087-1096). Step 1 EXTRACT NODES: extract_nodes (node_operations.py:70-149) -> one LLM call, prompt chosen by episode source type message/text/json (_call_extraction_llm 255-280). Returns ExtractedEntity list with entity_type_id + episode_indices. Then `_collapse_exact_duplicate_extracted_nodes` (336-384) merges same-normalized-name dupes in-batch (keeps more specific label). Step 2 RESOLVE NODES: resolve_extracted_nodes (627-708). Per extracted node it runs a direct cosine `node_similarity_search` (NODE_DEDUP_CANDIDATE_LIMIT=15, NODE_DEDUP_COSINE_MIN_SCORE=0.6, node_operations.py:64-65,418-450) — NOT reranked. Then a deterministic pass `_resolve_with_similarity` (dedup_helpers.py:220-279): exact normalized-name hit -> auto-merge; ambiguous (>1) -> escalate; else entropy gate (_has_high_entropy, threshold 1.5, min len 6) then MinHash(32 perms, band size 4)/LSH/Jaccard with `_FUZZY_JACCARD_THRESHOLD=0.9` -> auto-merge. Only nodes still unresolved go to ONE batched LLM call `_resolve_with_llm` (467-624) using dedupe_nodes.nodes prompt. Step 3 EXTRACT EDGES: extract_edges (edge_operations.py:117-322) -> one LLM call (max_tokens 16384) producing triples constrained to extracted entity NAMES; invalid names dropped (218-230), self-edges dropped (232-240). valid_at/invalid_at can come straight from this prompt. Step 4 RESOLVE EDGES: resolve_extracted_edges (325-535): in-batch exact dedup on (src,tgt,normalized_fact) (345-358); embed all facts; for each edge fetch get_between_nodes + run TWO hybrid searches (EDGE_HYBRID_SEARCH_RRF) — one scoped to same-endpoint edges (duplicate candidates), one global (invalidation candidates) (392-418); then per-edge resolve_extracted_edge (623-847): fast verbatim-fact-match short circuit (684-695), else ONE LLM call dedupe_edges.resolve_edge returning duplicate_facts + contradicted_facts indices. If no timestamps yet, a SEPARATE small-model LLM call `_extract_edge_timestamps` (576-621). If a custom edge type matches, ANOTHER small-model LLM attribute call (788-794). Step 5 HYDRATE NODES: extract_attributes_from_nodes (726-780) — per-node parallel attribute LLM calls + batched summary LLM calls (MAX_NODES=30 per flight, 893-910). Step 6 PERSIST: add_nodes_and_edges_bulk. LLM CALL COUNT per episode is therefore variable and high: ~1 (extract nodes) + (0-1 batched node dedup) + 1 (extract edges) + N_edges*(1 resolve + up to 1 timestamp + up to 1 attribute) + N_nodes*(1 attribute) + ceil(N_summarize/30) summary calls — i.e. dozens of serial-ish LLM calls per episode for a busy episode.",
+    "read_path": "search() (search.py:98-250) embeds the query once (only if any cosine/MMR method is configured, else zero-vector, 145-152) then runs edge_search/node_search/episode_search/community_search concurrently via semaphore_gather. Each scope: run the configured search methods, each returning 2*limit candidates (e.g. edge_search.py:284-311). Edge methods: bm25 (edge_fulltext_search, lucene-sanitized fulltext, search_utils.py:185), cosine (edge_similarity_search:300, min_score DEFAULT 0.6), bfs (edge_bfs_search:448, graph expansion from origin nodes up to bfs_max_depth, MAX_SEARCH_DEPTH=3). Candidates from all methods are unioned into a uuid->obj map, then a reranker fuses: RRF (search_utils.py:1780-1795, score = sum 1/(rank+rank_const), rank_const=1); MMR (1901-1939, builds full NxN cosine sim matrix in numpy, mmr = lambda*sim(q,d) + (lambda-1)*max_sim_to_selected, DEFAULT_MMR_LAMBDA=0.5, loads embeddings via get_embeddings_for_edges); cross_encoder (only top `limit` candidates by map order are reranked, 396-410); node_distance (seeds with RRF then re-sorts by shortest-hop distance to center_node_uuid via a Cypher 1-hop match, 1798-1857 — note it only counts DIRECT neighbors, non-neighbors get inf); episode_mentions (sorts by count of MENTIONS edges / len(edge.episodes)). Final slice reranked[:limit]. The convenience `graphiti.search()` returns only edges, using EDGE_HYBRID_SEARCH_RRF (or NODE_DISTANCE if center node given). `search_()` default recipe is COMBINED_HYBRID_SEARCH_CROSS_ENCODER. Token budget: there is NO token-budget/`max_tokens` packing of results — retrieval returns objects, caller is responsible for formatting/truncation. No reranking score normalization across rerankers.",
+    "conflict_resolution_impl": "Two-layer, both on edges only. LAYER 1 (LLM semantic) — resolve_extracted_edge (edge_operations.py:623-847): the dedupe_edges.resolve_edge prompt (prompts/dedupe_edges.py:43-100) is given the new fact, a list of same-endpoint EXISTING FACTS (duplicate candidates) and a list of global INVALIDATION CANDIDATES, with CONTINUOUS indices across both lists, and returns `duplicate_facts` (must be from existing-facts range only) and `contradicted_facts` (from either list). Duplicates: resolved_edge becomes the existing edge, new episode UUID appended (744-752). Contradictions: matched existing edges become invalidation_candidates (770-776). LAYER 2 (deterministic temporal) — two pieces: (a) lines 826-839, if invalidation candidate has a later valid_at than the new edge, the NEW edge is itself expired (invalid_at=candidate.valid_at, expired_at=now) — i.e. incoming older info doesn't override newer; (b) resolve_edge_contradictions (538-573): for each contradicted existing edge, if existing.valid_at < new.valid_at, set existing.invalid_at = new.valid_at and existing.expired_at = now. There are interval-overlap guards (553-562) to skip edges whose validity windows don't actually conflict. CRITICAL DETAIL: invalidation is a soft, append-only \"expire\" — the contradicted edge is NOT deleted; it gets expired_at/invalid_at set and is re-saved (entity_edges = resolved + invalidated, graphiti.py:1156). So the graph keeps a full audit trail of superseded facts. The standalone add_triplet path reuses the same resolve_extracted_edge (graphiti.py:1740-1757).",
+    "forgetting_impl": "No decay, no TTL, no consolidation/forgetting of facts. Invalidation is the only mechanism and it is non-destructive: contradicted edges are stamped expired_at/invalid_at and retained (edge_operations.py:564-571, 822-839). IMPORTANT and easily-missed: invalidated/expired edges are NOT filtered out at read time by default — search_filters.py shows valid_at/invalid_at/expired_at are all OPTIONAL filters (search_filters.py:62-65, applied only if the caller populates them, 149-271). So a default `graphiti.search()` returns stale/contradicted facts alongside current ones unless the caller explicitly passes a SearchFilters with an expired_at/invalid_at constraint. The only true deletions are explicit: remove_episode (graphiti.py:1765-1793) deletes edges whose first-provenance episode is the removed one and entities mentioned ONLY by that episode; build_communities/remove_communities rebuild community layer. Node summaries/attributes are overwritten (lossy) on each episode that touches them, but that's mutation not forgetting. Saga summaries are incremental with watermarks (graphiti.py:438-568) — a consolidation mechanism but for the Saga layer, not entity forgetting.",
+    "borrowable": [
+      {
+        "pattern": "Bitemporal edge with 4 timestamps + reference_time, invalidation as non-destructive expire",
+        "file_ref": "graphiti_core/edges.py:271-282, edge_operations.py:538-573",
+        "why_good": "Clean separation of transaction-time (created_at/expired_at) and valid-time (valid_at/invalid_at) lets you answer both 'what did we believe then' and 'what was true then'. Keeping superseded facts gives a free audit trail."
+      },
+      {
+        "pattern": "Tiered dedup: cheap deterministic before expensive LLM",
+        "file_ref": "dedup_helpers.py:220-279, node_operations.py:627-708",
+        "why_good": "Exact-normalized-name + entropy-gated MinHash/LSH/Jaccard (threshold 0.9) resolves the easy majority for free; only genuinely ambiguous entities hit a single BATCHED LLM call. Big cost/latency saver and deterministic."
+      },
+      {
+        "pattern": "Entropy gate before fuzzy matching",
+        "file_ref": "dedup_helpers.py:52-85",
+        "why_good": "Shannon-entropy + length/token thresholds prevent unreliable fuzzy merges on short/low-information names (e.g. 'it', 'the app'), routing them to the LLM instead — a simple guard against false-positive merges."
+      },
+      {
+        "pattern": "Pluggable hybrid search assembled from named recipes + RRF fusion",
+        "file_ref": "search/search.py:253-460, search_config_recipes.py",
+        "why_good": "Per-scope (edge/node/episode/community) independent search-method sets and rerankers, fused by parameter-free RRF, make it trivial to tune retrieval without touching query code. RRF needs no score calibration across heterogeneous signals."
+      },
+      {
+        "pattern": "LLM-as-cross-encoder via boolean classification + logprobs",
+        "file_ref": "cross_encoder/openai_reranker_client.py:61-118",
+        "why_good": "Reranks without a dedicated cross-encoder model: asks a cheap model True/False for relevance, uses exp(logprob) as score, with logit_bias pinning the two tokens. Pragmatic when you only have an LLM endpoint."
+      },
+      {
+        "pattern": "Dual-candidate-set conflict prompt with continuous indices",
+        "file_ref": "prompts/dedupe_edges.py:43-100, edge_operations.py:699-776",
+        "why_good": "Sending duplicate candidates and invalidation candidates in one prompt with a shared index space lets one LLM call decide both 'is this the same fact' and 'does this contradict' — and the few-shot teaches the subtle 'same relationship, updated value = contradiction not duplicate' distinction."
+      },
+      {
+        "pattern": "Provenance via episodes[] on edges + MENTIONS edges",
+        "file_ref": "edges.py:267-270, edge_operations.py:52-96",
+        "why_good": "Every fact links back to the episode(s) that asserted it, enabling source attribution and safe deletion (remove_episode only deletes facts/entities uniquely owned by an episode)."
+      }
+    ],
+    "landmines": [
+      {
+        "issue": "Expired/invalidated edges are returned by default search. invalidation only sets expired_at/invalid_at; search_filters apply temporal constraints ONLY if the caller explicitly passes them, so a naive `graphiti.search(query)` surfaces stale and contradicted facts mixed with current ones.",
+        "file_ref": "search/search_filters.py:62-65,149-271; graphiti.py:1526-1586"
+      },
+      {
+        "issue": "High and unbounded LLM-call count per episode (extract nodes + batched node dedup + extract edges + per-edge resolve/timestamp/attribute + per-node attribute + summary flights). A content-rich episode can trigger dozens of serial LLM calls -> latency and cost scale with extracted entity/edge count.",
+        "file_ref": "graphiti.py:1121-1167, edge_operations.py:489-509,576-621,788-794"
+      },
+      {
+        "issue": "Entity nodes are mutated in place — summary and attributes are overwritten each episode (lossy). No versioning of node state; only edges are temporal. You cannot reconstruct a past entity summary.",
+        "file_ref": "node_operations.py:763-764, nodes.py:546-560"
+      },
+      {
+        "issue": "node_distance_reranker only matches DIRECT (1-hop) neighbors of the center node; everything else gets score inf and is ordered arbitrarily after neighbors. It is not a real shortest-path/multi-hop distance despite the name/docstring.",
+        "file_ref": "search/search_utils.py:1816-1857"
+      },
+      {
+        "issue": "MMR builds a full O(n^2) dense similarity matrix in Python/numpy over all candidates and loads every candidate embedding from the DB first; fine for ~20 candidates, will not scale to large candidate pools.",
+        "file_ref": "search/search_utils.py:1901-1939"
+      },
+      {
+        "issue": "Cross-encoder reranker fires one LLM request PER passage concurrently (semaphore_gather over all passages) and the OpenAI variant hardcodes token ids in logit_bias {'6432','7983'} that are model/tokenizer-specific — brittle across models.",
+        "file_ref": "cross_encoder/openai_reranker_client.py:84-97,91"
+      },
+      {
+        "issue": "Edge extraction rejects any triple whose source/target name isn't an exact string match to an extracted entity name (no fuzzy match), silently dropping facts when the edge LLM paraphrases an entity name.",
+        "file_ref": "edge_operations.py:216-240"
+      },
+      {
+        "issue": "group_id is overloaded as the physical database name: passing a group_id clones the driver to a DB of that name (self.driver.clone(database=group_id)). Multi-tenant partitioning is conflated with DB selection and mutates shared self.driver state mid-call.",
+        "file_ref": "graphiti.py:1078-1082,1306-1310"
+      },
+      {
+        "issue": "Dedup candidate retrieval for nodes uses raw cosine top-15 at min_score 0.6 with NO reranking; recall of the dedup candidate set is entirely dependent on name-embedding quality, and a missed candidate becomes a duplicate entity in the graph.",
+        "file_ref": "node_operations.py:418-450"
+      }
+    ],
+    "production_readiness": "Mid-to-high maturity for a research-derived OSS project, but not turnkey-prod for a memory product. POSITIVES: it is the production core of a commercial product (Zep), multi-backend (Neo4j/FalkorDB/Kuzu/Neptune) behind a clean GraphDriver + IoC interface; OpenTelemetry tracing is woven through ingestion and search (graphiti.py:1084, search.py:_trace_phase); telemetry, token tracking, rate-limit/retry error types, and per-provider LLM/embedder/reranker clients exist; defensive guardrails around LLM output are pervasive (index-range validation, missing/extra-id handling, malformed-response tolerance in _resolve_with_llm node_operations.py:560-624 and resolve_extracted_edge 736-767). Code quality is good: typed, documented, Pydantic models throughout. TEST COVERAGE: ~40 test files but the heavy ones (test_graphiti_int.py, test_edge_int.py, eval_e2e_graph_building.py) are integration/eval tests requiring a live DB + real LLM keys; unit coverage of the genuinely tricky logic (resolve_edge_contradictions interval math, MinHash dedup, rrf/mmr) is thin relative to its importance — much correctness rides on LLM behavior and is validated by evals, not deterministic unit tests. SCALABILITY CONCERNS for a real product: (1) write amplification — dozens of LLM calls per episode make high-throughput ingestion expensive/slow and put correctness at the mercy of model quality; (2) default retrieval returns invalidated facts, so you MUST build a temporal filter layer yourself; (3) MMR/cross-encoder rerankers are O(n^2)/O(n) LLM-calls and only viable at small candidate counts; (4) node state is non-versioned/lossy. RESEARCH-vs-PROD verdict: the bitemporal edge model, tiered dedup, and hybrid-search-with-RRF are prod-grade patterns worth borrowing wholesale. The forgetting/staleness story, the per-episode LLM cost, and the in-place node mutation are the areas you would have to redesign for a real personal-memory product. Treat the algorithms as a strong reference architecture, not a drop-in runtime.",
+    "notable_prompts": [
+      "graphiti_core/prompts/extract_edges.py:94-176 `edge` — extracts fact triples constrained to a provided ENTITIES name list; the bulk of the prompt is anti-generalization rules (preserve brand names, counts, colors; 'Gamecube' must not become 'gaming console') and DATETIME rules for setting valid_at/invalid_at from REFERENCE_TIME. Drives extraction quality + first-pass temporal stamping.",
+      "graphiti_core/prompts/dedupe_edges.py:43-100 `resolve_edge` — the conflict-resolution brain: returns duplicate_facts (existing-range only) and contradicted_facts (either list) over a continuous index space; few-shot explicitly teaches 'same relationship but updated title = contradiction, NOT duplicate' (lines 90-92). This single prompt is what powers fact invalidation.",
+      "graphiti_core/prompts/dedupe_nodes.py:117-179 `nodes` — batched entity resolution; forces EXACTLY N resolutions for N inputs (lines 152-153) and uses semantic-equivalence few-shots (NYC=New York City; Java-lang != Java-island; Marco's car=Marco's vehicle). Only invoked for entities the deterministic pass couldn't resolve.",
+      "graphiti_core/prompts/extract_edges.py:181-239 `extract_attributes` — heavy 'HARD RULES' prompt to stop the model writing reasoning/justification/null-descriptions into attribute fields; reflects real-world LLM failure modes when filling typed schemas.",
+      "graphiti_core/prompts/extract_edges.py:242-271 `extract_timestamps` — small-model standalone valid_at/invalid_at extractor used when the main edge prompt didn't resolve dates; 'NEVER hallucinate dates' + relative-expression resolution from REFERENCE TIME.",
+      "graphiti_core/cross_encoder/openai_reranker_client.py:61-80 reranker prompt — minimal 'Respond True if PASSAGE relevant to QUERY else False', scored by token logprobs; turns a generic LLM into a relevance reranker."
+    ],
+    "storage_impl": "Property graph. Default Neo4jDriver (graphiti.py:212); also FalkorDB, Kuzu, Neptune behind GraphDriver. Entities are :Entity nodes, episodes :Episodic, communities :Community, sagas :Saga. Facts are :RELATES_TO relationships carrying name/fact/fact_embedding/episodes/created_at/expired_at/valid_at/invalid_at/reference_time/attributes (edge_db_queries.py:91-99). Provenance via (:Episodic)-[:MENTIONS]->(:Entity). Embeddings stored inline on nodes (name_embedding) and edges (fact_embedding); vector + fulltext indexes built via build_indices_and_constraints (graphiti.py:570-602). Kuzu is special-cased: edges are reified to :RelatesToNode_ nodes (n)-[:RELATES_TO]->(RelatesToNode_)-[:RELATES_TO]->(m) and attributes JSON-stringified, because Kuzu lacks rich relationship properties (edges.py:318-322,358-363). On non-Kuzu backends, free-form edge `attributes` are spread as top-level relationship properties (edges.py:365-371) and stripped back out on read (get_entity_edge_from_record edges.py:974-986). group_id doubles as the database name (driver.clone(database=group_id), graphiti.py:1079-1082)."
+  },
+  {
+    "system": "Letta (MemGPT) memory core",
+    "architecture_overview": "The memory core is split across pydantic schemas, ORM models, and \"manager\" services. A `Memory` object (letta/schemas/memory.py:68) holds a list of `Block` objects; `Memory.compile()` (memory.py:688) renders those blocks into an XML-ish `<memory_blocks>` string concatenated into the system prompt at request-build time. Blocks are persisted independently as DB rows (orm/block.py) and linked to agents via a `blocks_agents` pivot, so one block can be shared across many agents; editing a block triggers `_rebuild_system_prompts_for_connected_agents` (block_manager.py:61). Agent memory-edit tools are defined as plain Python function stubs in letta/functions/function_sets/base.py (most raise NotImplementedError — they are schema/docstring carriers), and the REAL behavior lives in letta/services/tool_executor/core_tool_executor.py, which mutates the in-memory `Memory` object then calls `update_memory_if_changed_async`. Archival memory is a separate subsystem: `Archive` rows own `Passage` rows (with embeddings), via ArchiveManager/PassageManager, optionally dual-written to Turbopuffer. Overflow handling (eviction/summarization) lives in letta/services/summarizer/ and is driven by the agent loop (letta/agents/letta_agent_v3.py) on a token threshold. A sleep-time agent (a second full LettaAgent) is invoked every N turns by letta/groups/sleeptime_multi_agent_v4.py to reorganize core blocks.",
+    "data_model": "CORE MEMORY (in-context): `Block` (letta/schemas/block.py:67, ORM orm/block.py) — id, label (str, e.g. \"human\"/\"persona\"; path-like \"system/persona\" for git agents), value (content str), limit (int char limit, default CORE_MEMORY_BLOCK_CHAR_LIMIT=100000), description (what the block is FOR), read_only (bool), metadata (dict), tags (List[str] via blocks_tags), hidden, plus template fields. Optimistic concurrency via current_history_entry_id pointer into a `BlockHistory` table (block_manager.py:842-911) giving per-block linear undo/redo (sequence_number). Blocks↔agents many-to-many via `blocks_agents`. FileBlock (block.py:107) is a Block subclass representing an open file in context.\\n\\nARCHIVAL MEMORY (out-of-context): `Archive` (one per agent today; code rejects >1, archive_manager.py:251) owns `ArchivalPassage` rows. Passage fields: id, archive_id, organization_id, text, embedding (pgvector or sqlite blob), embedding_config, tags (List[str]), metadata, created_at. `archives_agents` pivot links archives to agents (is_owner). Archive.vector_db_provider = NATIVE (pgvector/SQLite) or TPUF (Turbopuffer) + optional _vector_db_namespace.\\n\\nRECALL MEMORY: just the full `Message` table for the agent, searched via message_manager (hybrid text+semantic). No separate structure.",
+    "key_files": [
+      {
+        "path": "letta/letta/schemas/memory.py",
+        "role": "Memory + Block container; compile() renders core memory into the system prompt (standard / line-numbered / git-tree variants); archival search result schemas"
+      },
+      {
+        "path": "letta/letta/schemas/block.py",
+        "role": "Block pydantic schema: value/limit/label/description/read_only/tags; no hard limit-enforcement validator"
+      },
+      {
+        "path": "letta/letta/functions/function_sets/base.py",
+        "role": "Tool DEFINITIONS (docstrings = LLM-facing prompts) for core_memory_append/replace, memory_replace/insert/rethink/apply_patch/finish_edits, archival_memory_insert/search, conversation_search. Most are NotImplementedError stubs"
+      },
+      {
+        "path": "letta/letta/services/tool_executor/core_tool_executor.py",
+        "role": "ACTUAL implementations of memory tools (278-700+): core_memory_*, memory_replace/insert/apply_patch, archival_memory_search/insert"
+      },
+      {
+        "path": "letta/letta/services/block_manager.py",
+        "role": "Block CRUD, tag pivots, system-prompt rebuild on change, BlockHistory checkpoint/undo/redo"
+      },
+      {
+        "path": "letta/letta/services/archive_manager.py",
+        "role": "Archive lifecycle, passage create/delete, default-archive-per-agent, Turbopuffer dual-write"
+      },
+      {
+        "path": "letta/letta/services/passage_manager.py",
+        "role": "insert_passage(): embeds text and writes passage rows (no chunking — whole content = 1 passage)"
+      },
+      {
+        "path": "letta/letta/services/agent_manager.py",
+        "role": "search_agent_archival_memory_async (2534) + query_agent_passages_async (2416): archival read path / ranking"
+      },
+      {
+        "path": "letta/letta/services/helpers/agent_manager_helper.py",
+        "role": "build_agent_passage_query: native pgvector cosine_distance ranking SQL (~988)"
+      },
+      {
+        "path": "letta/letta/services/summarizer/compact.py",
+        "role": "compact_messages(): LLM summarization of in-context messages, mode dispatch + fallbacks"
+      },
+      {
+        "path": "letta/letta/services/summarizer/summarizer.py",
+        "role": "legacy Summarizer: FIFO static-buffer + partial-evict; simple_summary() with 3-tier truncation fallback"
+      },
+      {
+        "path": "letta/letta/services/summarizer/thresholds.py",
+        "role": "get_compaction_trigger_threshold = context_window * 0.9"
+      },
+      {
+        "path": "letta/letta/agents/letta_agent_v3.py",
+        "role": "Main loop; triggers compaction when context_token_estimate > 0.9*context_window (1439-1474) and on ContextWindowExceededError (1218-1247)"
+      },
+      {
+        "path": "letta/letta/groups/sleeptime_multi_agent_v4.py",
+        "role": "Fires sleep-time agent every N turns (turns_counter % frequency); builds transcript + system-reminder prompt"
+      },
+      {
+        "path": "letta/letta/prompts/system_prompts/sleeptime_v2.py",
+        "role": "Sleep-time agent system prompt (memory-manager persona)"
+      },
+      {
+        "path": "letta/letta/prompts/summarizer_prompt.py",
+        "role": "ALL_PROMPT / SLIDING_PROMPT / SELF_* summarization prompts"
+      }
+    ],
+    "write_path": "CORE MEMORY WRITE (synchronous, LLM-driven). LLM emits a tool call; core_tool_executor.py runs it against the live `Memory` object then persists. NO extraction/dedup pipeline — the LLM decides what/how to write.\\n- `core_memory_append` (core_tool_executor.py:319): read_only check, `new_value = current_value + \"\\\\n\" + content`, update_block_value, then update_memory_if_changed_async. Pure string append.\\n- `core_memory_replace` (328): read_only check; raises if old_content not present; `value.replace(old,new)`.\\n- `memory_replace` (346): precise editor for line-numbered (Anthropic) agents. Rejects line-number prefixes + warning banner via regex (357-374), expandtabs(), requires old_string UNIQUE (count==0 -> error; count>1 -> error listing line numbers, 380-391). This uniqueness rule is the only conflict guard.\\n- `memory_insert` (683) inserts at a line index; `memory_apply_patch` applies a codex-style multi-block unified diff (create/update/delete/rename); `memory_rethink`/`rethink_memory` overwrite a whole block.\\nAfter mutation, update_memory_if_changed_async (agent_manager.py:1747) diffs+persists changed blocks and rebuilds the system prompt. Edits also create BlockHistory checkpoints (block_manager.py:842).\\n\\nARCHIVAL WRITE (core_tool_executor.archival_memory_insert:307 -> passage_manager.insert_passage:543): get-or-create the agent's single default archive; `text_chunks = [text]` (NO chunking — whole content = one passage, passage_manager.py:567); embed; write one passage row to SQL; if TPUF, dual-write reusing same id+embedding (606-628, failures swallowed unless strict_mode). Then rebuild_system_prompt_async(force=True) to update the archival-size counter. No dedup, no cross-passage conflict detection — archival is append-only.\\n\\nSLEEP-TIME (async rewrite): sleeptime_multi_agent_v4.run_sleeptime_agents (132) bumps a turns_counter; when turns_counter % sleeptime_agent_frequency == 0 it spawns _participant_agent_step (202) as a safe_create_task. That builds a transcript of messages since last_processed_message_id, wraps it in a <system-reminder> framing the agent as a background memory manager (233-243), and runs a full LettaAgentV3 step whose tools are the precise memory editors. The rewrite is itself just another LLM calling core_memory_replace/memory_rethink.",
+    "read_path": "CORE MEMORY READ: zero-cost — blocks are always in the system prompt. Memory.compile() (memory.py:688) picks a renderer by agent type + provider: `_render_memory_blocks_standard` (143) emits per block `<label><description>..</description><metadata>read_only / chars_current / chars_limit</metadata><value>..</value></label>`; for Anthropic + memgpt_v2/sleeptime/letta_v1 it uses `_render_memory_blocks_line_numbered` (175) prefixing each line with `N→ ` plus CORE_MEMORY_LINE_NUMBER_WARNING (view-only; edit tools reject them); git agents use `_render_memory_blocks_git` (205) rendering a nested file-tree. compile_async offloads to a thread (735).\\n\\nARCHIVAL READ (semantic search). archival_memory_search -> agent_manager.search_agent_archival_memory_async (2534): parses ISO start/end datetimes (date-only -> start/end-of-day + agent timezone, 2574-2610), maps tag_match_mode, limit = top_k or RETRIEVAL_QUERY_DEFAULT_PAGE_SIZE (=5, constants.py:458), then query_agent_passages_async (2416). Ranking:\\n- TPUF archive: tpuf_client.query_passages(search_mode='hybrid', top_k, tags, date filters) — hybrid vector+full-text, returns (passage, score, metadata) (2457-2476).\\n- NATIVE archive: build_agent_passage_query (agent_manager_helper.py) embeds the query and orders by pgvector embedding.cosine_distance(embedded_text).asc() on Postgres (992) or a custom cosine_distance func on SQLite (998). Tags are POST-filtered in Python AFTER the SQL fetch (agent_manager.py:2510-2527, flagged TODO), and SQL-path scores are returned as 0.0.\\nNO reranking, NO token-budget packing of results, NO RRF/score fusion in the native path (hybrid fusion exists only inside the Turbopuffer client). Results formatted with agent-timezone timestamps + tags into ArchivalMemorySearchResult.\\n\\nRECALL READ: conversation_search (base.py:87) / list_messages_for_agent — hybrid text+semantic over the Message table, default limit 5.\\n\\nCONTEXT BUDGET: agent tracks context_token_estimate from last LLM usage; when > 0.9*context_window it compacts (see forgetting_impl).",
+    "conflict_resolution_impl": "No semantic conflict detection. Resolution is delegated to the LLM via prompt instructions plus a few mechanical guards:\\n1. core_memory_replace / memory_replace require an exact substring match of old_content/old_string; memory_replace additionally requires the match be UNIQUE, erroring with offending line numbers if multiple (core_tool_executor.py:380-391). The only ambiguity rejection.\\n2. memory_rethink / rethink_memory (base.py:283,488) instruct the model to produce a block integrating new info and dropping 'outdated or inconsistent' content — resolution is the model's job, prompted by sleeptime_v2.py ('not redundant and outdate information', absolute dates not 'today/recently').\\n3. The sleep-time agent is the dedicated reconciler: re-reads the conversation and rewrites blocks (sleeptime_multi_agent_v4.py:233-243).\\n4. DB-level: optimistic locking (version_id_col) + BlockHistory checkpoints (block_manager.py:842) prevent silent clobber, but this is row-versioning, not content reconciliation.\\n5. Archival has NO conflict handling — append-only; contradictory passages can coexist and both be returned by search.",
+    "forgetting_impl": "Two mechanisms, both for the CONVERSATION buffer (not the memory stores):\\n\\n1. LLM SUMMARIZATION / COMPACTION (primary, current). letta_agent_v3.py post-step check (1439): if context_token_estimate > get_compaction_trigger_threshold = context_window * SUMMARIZATION_TRIGGER_MULTIPLIER (=0.9, thresholds.py:41 / constants.py:83), or on ContextWindowExceededError mid-request (1218-1247), call compact() -> compact_messages (compact.py:134). Modes: 'all', 'sliding_window', 'self_compact_all', 'self_compact_sliding_window' — each summarizes evicted messages via an LLM (summarizer model often routed to a cheaper model e.g. Haiku 4.5 for auto agents, compact.py:67) and rebuilds context as [system] + [summary role=summary] + remaining (462-465). compact_messages verifies post-compaction tokens < threshold and cascades fallbacks (sliding_window -> all; raises SystemPromptTokenExceededError if even system prompt overflows, 398-407). simple_summary (summarizer.py:488) has a 3-tier ContextWindowExceeded fallback: full transcript -> clamp tool returns -> middle-truncate to a byte budget (~0.6*context_window*4).\\n\\n2. FIFO / PARTIAL-EVICT BUFFER (legacy Summarizer). STATIC_MESSAGE_BUFFER: keep message_buffer_min recent, evict the rest, fire-and-forget a background summary (summarizer.py:244-343). PARTIAL_EVICT: evict ~30% (partial_evict_summarizer_percentage) from index 1 to first assistant message, replace with a recursive summary at index 1 (136-242).\\n\\nNeither core blocks NOR archival passages have decay/TTL/consolidation. Core blocks shrink only if the LLM/sleep-time agent deletes/replaces; archival is permanent/append-only (docstring: 'persists indefinitely', base.py:176). The `limit` field is advisory only.",
+    "storage_impl": "Polyglot persistence behind async SQLAlchemy (Postgres prod, SQLite local). Core memory = `block` table (+ `blocks_agents`, `blocks_tags`, `block_history` for versioning). Archival = `archives` + `archival_passages` (+ `archives_agents`); passage embeddings in pgvector columns on Postgres or a custom blob/cosine_distance UDF on SQLite (agent_manager_helper.py:990-1002). Optional Turbopuffer external ANN index, dual-written with matching ids (passage_manager.py:606). Recall = the `messages` table. Managers use db_registry.async_session() context managers owning commits; access org-scoped via apply_access_predicate. Cursor-based pagination (created_at,id) throughout, with SQLite timestamp-rounding workarounds (block_manager.py:35-50,426-446).",
+    "notable_prompts": [
+      "letta/prompts/system_prompts/sleeptime_v2.py — sleep-time/memory-manager system prompt: read-only vs read-write blocks, precise vs broad (rethink) edits, demands absolute dates not 'today/recently', rule that line numbers are view-only and must never appear in edit tool args",
+      "letta/groups/sleeptime_multi_agent_v4.py:233-243 — per-invocation <system-reminder> framing the sleep-time agent as a background reviewer ('You are NOT the primary agent'; assistant msgs are the primary agent, user msgs are its user) and telling it to update memory blocks with info worth preserving",
+      "letta/prompts/summarizer_prompt.py — ALL_PROMPT/SLIDING_PROMPT/SELF_* : structured 6-7 section summary (High level goals / What happened / Important details, preserve identifiers verbatim / Errors and fixes / Current state / Next step / Lookup hints), word-limited (500/300); SELF_* variants forbid tool use and conversation continuation",
+      "letta/functions/function_sets/base.py:164-243 — archival_memory_insert/search docstrings ARE the model-facing instructions: 'store self-contained facts not conversational fragments', 'add descriptive tags', 'query by concept/meaning not exact phrases', tag_match_mode any/all",
+      "letta/prompts/system_prompts/memgpt_v2_chat.py — core MemGPT persona/control-flow prompt explaining core vs recall vs archival memory and 'check context before searching'",
+      "letta/functions/function_sets/base.py:311-338 — memory_replace docstring with good/bad examples teaching the model NOT to include '1→' line prefixes or the warning banner in edit args"
+    ],
+    "borrowable": [
+      {
+        "pattern": "Memory-as-prompt-fragment with self-describing blocks: each block carries a `description` ('what this block is for') and live chars_current/chars_limit metadata rendered inline so the model self-governs size",
+        "file_ref": "letta/schemas/memory.py:143-203",
+        "why_good": "Decouples storage from rendering; the description doubles as an instruction about when/how to write, and the live char counts nudge the model to compact before hitting limits — no separate enforcement code needed"
+      },
+      {
+        "pattern": "Line-numbered view + strict unique-substring replace editor that rejects line-number prefixes in tool args",
+        "file_ref": "letta/services/tool_executor/core_tool_executor.py:346-401; letta/functions/function_sets/base.py:311-389",
+        "why_good": "Gives the model precise, low-error edits (like a code editor's str_replace) while preventing the classic failure where it pastes back displayed line numbers; uniqueness turns ambiguous edits into recoverable errors"
+      },
+      {
+        "pattern": "Cascading summarization with explicit token-budget fallbacks (clamp tool returns -> middle-truncate to byte budget) and provider fallback (Anthropic->Bedrock)",
+        "file_ref": "letta/services/summarizer/summarizer.py:488-651; compact.py:359-412",
+        "why_good": "Production-grade robustness: never bricks the agent on ContextWindowExceeded; degrades gracefully and verifies the result is actually under threshold before returning"
+      },
+      {
+        "pattern": "Per-block version history with linear undo/redo via a BlockHistory table + current_history_entry_id pointer",
+        "file_ref": "letta/services/block_manager.py:842-1048",
+        "why_good": "Cheap audit trail and rollback for agent-written memory; truncates future checkpoints on new write to keep a clean undo stack — reusable for 'who/what changed this memory' and recovery"
+      },
+      {
+        "pattern": "Shared blocks across agents with automatic dependent system-prompt rebuild on block change (only when prompt-visible fields change)",
+        "file_ref": "letta/services/block_manager.py:61-69,266-268",
+        "why_good": "Lets multiple agents (foreground + sleep-time) share a single source-of-truth block; PROMPT_AFFECTING_BLOCK_FIELDS diffing avoids needless prompt rebuilds"
+      },
+      {
+        "pattern": "Asynchronous 'sleep-time' reconciler agent that runs every N turns on the conversation delta, told via system-reminder it is NOT the primary agent",
+        "file_ref": "letta/groups/sleeptime_multi_agent_v4.py:132-267",
+        "why_good": "Separates fast user turns from slower memory consolidation; reuses the same agent/tool machinery rather than a bespoke pipeline, and the framing stops the reconciler from replying to the user"
+      },
+      {
+        "pattern": "Dual-write to SQL + vector DB with the same primary key, SQL as source of truth and vector errors swallowed",
+        "file_ref": "letta/services/passage_manager.py:586-632",
+        "why_good": "Durable truth in Postgres plus fast ANN from Turbopuffer; shared id makes reconciliation straightforward and a vector outage doesn't lose data"
+      }
+    ],
+    "landmines": [
+      {
+        "issue": "Block `limit` (default 100000 chars) is rendered as chars_limit metadata but NOT enforced server-side on write. core_memory_append/replace and memory_replace just assign the new value; bulk_update_block_values_async docstring claims it raises if value exceeds limit but the implementation only does block.value = new_val with no check. A misbehaving model can blow up the context window.",
+        "file_ref": "letta/services/block_manager.py:811-827; letta/services/tool_executor/core_tool_executor.py:319-344"
+      },
+      {
+        "issue": "archival_memory_insert stores the entire content as a SINGLE passage with no chunking (text_chunks=[text]). Large inserts produce one giant passage that embeds poorly and can exceed the embedding model's token limit (there is even a 'TODO: check token count' comment).",
+        "file_ref": "letta/services/passage_manager.py:566-567"
+      },
+      {
+        "issue": "Native (non-TPUF) archival search returns relevance score 0.0 for every result and post-filters tags in Python AFTER applying the LIMIT — so tag-filtered native searches can silently return fewer than top_k (or zero) results even when matching passages exist beyond the limit window.",
+        "file_ref": "letta/services/agent_manager.py:2494-2530"
+      },
+      {
+        "issue": "Default RETRIEVAL_QUERY_DEFAULT_PAGE_SIZE is only 5 — archival/recall searches return very few results by default, which can starve recall on large stores unless the model passes an explicit top_k.",
+        "file_ref": "letta/constants.py:458"
+      },
+      {
+        "issue": "Hard one-archive-per-agent assumption: several paths raise ValueError('multiple archives, not yet supported'). Multi-archive needs rework.",
+        "file_ref": "letta/services/archive_manager.py:251-252; letta/services/agent_manager.py:2445-2446"
+      },
+      {
+        "issue": "Sleep-time consolidation runs fire-and-forget via safe_create_task with no durable retry/queue; if the process dies the memory update for that turn is lost (only last_processed_message_id advances on success).",
+        "file_ref": "letta/groups/sleeptime_multi_agent_v4.py:175-200"
+      },
+      {
+        "issue": "Turbopuffer dual-write failures are swallowed (logged, not raised) unless strict_mode=True, so SQL and the vector index can silently diverge.",
+        "file_ref": "letta/services/passage_manager.py:629-632; letta/services/archive_manager.py:366-369"
+      },
+      {
+        "issue": "Agent-facing tool definitions in function_sets/base.py are decoys (NotImplementedError); real logic is in core_tool_executor.py — easy to read the wrong file. Two near-identical copies of _move_block_to_sequence also exist in block_manager.py (760 and 914).",
+        "file_ref": "letta/functions/function_sets/base.py:191,243,485; letta/services/block_manager.py:760,914"
+      }
+    ],
+    "production_readiness": "More production-grade than typical research memory repos, but with real gaps. Strengths: async SQLAlchemy with org-scoped access control, optimistic locking + block version history, cursor pagination, Postgres+SQLite dialect handling, pgvector/Turbopuffer abstraction, extensive multi-tier summarization fallbacks with provider failover, OTEL tracing (@trace_method) + LLM-call telemetry, and large dedicated tests (test_block_manager.py ~1516 LOC, test_archive_manager.py ~1221 LOC, integration_test_summarizer.py ~2290 LOC). Weaknesses for a real product: (1) memory correctness is almost entirely delegated to the LLM — no dedup, no semantic conflict detection, append-only archival, advisory-only char limits not enforced on write; (2) native (non-Turbopuffer) archival search is weak — score 0.0, tag post-filtering after LIMIT, default top_k=5, no reranking/fusion; (3) one-archive-per-agent hard constraint; (4) sleep-time consolidation is fire-and-forget with no durable job queue/retry; (5) heavy iteration debt — letta_agent v1/v2/v3, summarizer legacy + compact + sliding_window + self_*, sleeptime_multi_agent v2/v3/v4, duplicated methods, and large commented-out blocks in the hot path (letta_agent_v3.py:360-420), plus decoy tool stubs. Net: borrow the architecture and the editing/summarization patterns, but build your own retrieval quality, conflict resolution, limit enforcement, and consolidation durability."
+  },
+  {
+    "system": "cognee — open-source \"memory layer for AI agents\" that turns raw data into a knowledge graph + vector index via an ECL (Extract-Cognify-Load) pipeline. Repo: /Users/coby/chanyoung/memsys-refsrc/cognee. The \"memory core\" is the cognify pipeline (chunk -> LLM graph extraction -> ontology validation -> node/edge dedup -> graph+vector persistence) plus the graph_completion retriever (vector-seeded brute-force triplet ranking).",
+    "architecture_overview": "cognee is organized as a task-DAG pipeline framework, not a bespoke memory service. The public API (cognee/api/v1/cognify/cognify.py) builds a list of Task objects and hands them to run_pipeline. Three storage backends are abstracted behind a \"unified engine\" (cognee/infrastructure/databases/unified): a graph DB (Neo4j/Kuzu/NetworkX), a vector DB (LanceDB/pgvector/Chroma/etc.), and a relational DB (SQLite/Postgres) for ownership/permissions/pipeline-status bookkeeping. Some backends (NeptuneAnalytics, Postgres-hybrid) implement a HYBRID_WRITE capability that writes nodes+vectors atomically.\n\nThe core abstraction is the DataPoint (cognee/infrastructure/engine/models/DataPoint.py): a Pydantic BaseModel that every domain object (DocumentChunk, Entity, EntityType, Event, Triplet) subclasses. A DataPoint instance IS simultaneously the relational record, the graph node, AND the vector-index source — the framework walks the Pydantic field graph to derive nodes/edges (get_graph_from_model.py) and uses metadata[\"index_fields\"] to decide which fields get embedded (index_data_points.py).\n\nThe default cognify DAG (cognify.py get_default_tasks, lines 316-342): [classify_documents] -> [extract_chunks_from_documents] -> [extract_graph_and_summarize (LLM entity/relationship extraction + chunk summarization)] -> [add_data_points (persist nodes/edges/embeddings)] -> [extract_dlt_fk_edges]. A separate temporal DAG (get_temporal_tasks, lines 347-392) swaps the extraction step for event/timestamp extraction. memify is a SECOND pipeline that operates on the ALREADY-BUILT graph (or a subgraph \"memory fragment\") to add derived structure: triplet embeddings, session/feedback enrichment, and a \"global context index\" of bucketed summaries.\n\nRetrieval (modules/retrieval/graph_completion_retriever.py) is RAG over the graph: embed the query, vector-search seed nodes across per-type collections, project a graph (or k-hop neighborhood), rank triplets by a blended distance/importance/feedback score, resolve top-k triplets to text, and feed to an LLM completion prompt.",
+    "data_model": "Core model: DataPoint (infrastructure/engine/models/DataPoint.py:27-63). Fields: id:UUID (default uuid4, but see identity logic), created_at/updated_at (int epoch-ms), version:int=1, ontology_valid:bool, topological_rank, metadata:MetaData(TypedDict with index_fields, identity_fields), type:str (auto-set to class name in __init__ line 68), belongs_to_set (nodeset membership), source_pipeline/source_task/source_user/source_content_hash (provenance), feedback_weight:float=0.5, importance_weight:float=0.5.\n\nID strategy is the load-bearing dedup mechanism: by default id=uuid4, BUT if a subclass declares metadata.identity_fields, __init__ (lines 65-76) calls _generate_identity_id (lines 104-131) which builds a deterministic uuid5(NAMESPACE_OID, \"ClassName:field1|field2\") after lowercasing/normalizing string values. Separately, graph entity nodes get IDs via generate_node_id (infrastructure/engine/utils/generate_node_id.py): uuid5(NAMESPACE_OID, name.lower().replace(' ','_').replace(chr(39),'')). So two mentions of \"Albert Einstein\" anywhere collapse to the same node ID — this is how entity coreference/merge actually works (deterministic name-hash, NOT semantic).\n\nDomain subclasses are tiny: Entity (modules/engine/models/Entity.py): name, is_a:Optional[EntityType], description, relations:List[tuple], metadata index_fields=[\"name\"]. EntityType: name, description, relations, index_fields=[\"name\"]. DocumentChunk (modules/chunking/models/DocumentChunk.py): text, chunk_size, chunk_index, cut_type, is_part_of:Document, contains:List[Entity|Event|tuple[Edge,Entity]], importance_weight, index_fields=[\"text\"]. Event/Timestamp/Interval in tasks/temporal_graph/models.py. Triplet (modules/engine/models/Triplet.py): from_node_id, to_node_id, text.\n\nThe LLM-facing extraction schema is separate (shared/data_models.py:49-77): a lightweight KnowledgeGraph{nodes:[Node{id,name,type,description}], edges:[Edge{source_node_id,target_node_id,relationship_name,description}]} — this is what the LLM returns, then expand_with_nodes_and_edges converts it into Entity/EntityType DataPoints.\n\nEdges are NOT objects in storage; they are 4-tuples (source_id, target_id, relationship_name, properties_dict) produced by get_graph_from_model and persisted via graph_engine.add_edges.",
+    "key_files": [
+      {
+        "path": "cognee/api/v1/cognify/cognify.py",
+        "role": "ECL pipeline orchestration; get_default_tasks (line 316) and get_temporal_tasks (line 347) define the actual task DAGs"
+      },
+      {
+        "path": "cognee/infrastructure/engine/models/DataPoint.py",
+        "role": "Core unified model; deterministic identity-ID generation (uuid5) is the dedup/merge primitive"
+      },
+      {
+        "path": "cognee/tasks/graph/extract_graph_from_data.py",
+        "role": "Default extraction: parallel LLM calls per chunk, edge-validity filtering, ontology integration, provenance stamping"
+      },
+      {
+        "path": "cognee/tasks/graph/extract_graph_from_data_v2.py",
+        "role": "Cascade extraction variant: n-round nodes->relnames->triplets multi-pass extraction"
+      },
+      {
+        "path": "cognee/modules/graph/utils/expand_with_nodes_and_edges.py",
+        "role": "Converts LLM KnowledgeGraph into Entity/EntityType DataPoints, ontology validation, builds contains edges"
+      },
+      {
+        "path": "cognee/modules/graph/utils/get_graph_from_model.py",
+        "role": "Walks Pydantic field graph of a DataPoint into (nodes, edges); LRU-cached model copying"
+      },
+      {
+        "path": "cognee/tasks/storage/add_data_points.py",
+        "role": "LOAD step: dedup, ensure edge props, write nodes+edges+vectors (hybrid or split), optional triplet embeddings"
+      },
+      {
+        "path": "cognee/tasks/storage/index_data_points.py",
+        "role": "Embeds index_fields per DataPoint type into per-(type,field) vector collections"
+      },
+      {
+        "path": "cognee/modules/retrieval/graph_completion_retriever.py",
+        "role": "Default search: triplet retrieval -> resolve to text -> LLM completion"
+      },
+      {
+        "path": "cognee/modules/retrieval/utils/brute_force_triplet_search.py",
+        "role": "Vector-seeded graph projection + triplet ranking core"
+      },
+      {
+        "path": "cognee/modules/graph/cognee_graph/CogneeGraph.py",
+        "role": "In-memory graph projection; _calculate_query_top_triplet_importances (line 469) is the ranking algorithm"
+      },
+      {
+        "path": "cognee/api/v1/forget/forget.py",
+        "role": "Deletion: dataset/data-item/memory-only/everything; no decay/TTL"
+      },
+      {
+        "path": "cognee/modules/memify/memify.py",
+        "role": "Second-pass enrichment pipeline over existing graph"
+      },
+      {
+        "path": "cognee/tasks/memify/apply_feedback_weights.py",
+        "role": "Streaming feedback-weight update (EMA) on graph nodes/edges"
+      },
+      {
+        "path": "cognee/infrastructure/llm/prompts/generate_graph_prompt.txt",
+        "role": "The actual entity/relationship extraction system prompt"
+      }
+    ],
+    "storage_impl": "Three stores behind a unified engine (infrastructure/databases/unified). Graph DB: Neo4j/Kuzu/NetworkX/NeptuneAnalytics adapters; nodes added via graph_engine.add_nodes(nodes) (DataPoint instances serialized), edges via add_edges(list of (src,tgt,rel,props) tuples). Vector DB: LanceDB (default)/pgvector/Chroma/etc.; one collection per (DataPoint type, index_field) e.g. Entity_name, DocumentChunk_text, Triplet_text, created lazily via create_vector_index (index_data_points.py:47). Relational DB: SQLite/Postgres holds Data/Dataset/DatasetData ownership, per-data pipeline_status JSON, users/tenants/permissions, and session/feedback cache (Redis or FS). Some adapters expose EngineCapability.HYBRID_WRITE so add_nodes_with_vectors/add_edges_with_vectors write graph+vector atomically (add_data_points.py:85-119); otherwise nodes and embeddings are written concurrently but non-atomically via asyncio.gather. Embeddings are produced by an embedding_engine with a batch_size; index_data_points batches per collection under an asyncio.Semaphore(4).",
+    "write_path": "Entry: cognify() -> get_default_tasks (cognify.py:316). The DAG runs per batch via run_pipeline.\n\n1) classify_documents + extract_chunks_from_documents: raw Data -> typed Document -> DocumentChunk DataPoints. Chunk size = chunk_size or get_max_chunk_tokens(); chunker default TextChunker (paragraph-based).\n\n2) extract_graph_and_summarize -> extract_graph_from_data (tasks/graph/extract_graph_from_data.py:128). For non-DLT chunks it fires one LLM call per chunk IN PARALLEL: asyncio.gather(*[extract_content_graph(chunk.text, graph_model, custom_prompt) ...]) (lines 166-173). extract_content_graph (infrastructure/llm/extraction/knowledge_graph/extract_content_graph.py:13) renders generate_graph_prompt.txt as the system prompt and calls LLMGateway.acreate_structured_output(content, system_prompt, KnowledgeGraph) — i.e. structured-output/function-calling to coerce a Pydantic KnowledgeGraph. There is NO retrieval of prior memory before extraction — each chunk is extracted in isolation, so cross-chunk consolidation happens ONLY via deterministic ID collision later.\n\n   Edge sanitization (lines 181-188): edges whose source/target node id is not in the chunk's own node set are dropped.\n\n3) integrate_chunk_graphs -> expand_with_nodes_and_edges (expand_with_nodes_and_edges.py:340). For each LLM node it creates an EntityType node (generate_node_id(node.type)) and an Entity node (generate_node_id(node.id)), runs ontology_resolver.get_subgraph for optional canonicalization (if a closest ontology class/individual matches, the node is RE-KEYED to the ontology term's id — this is the only \"semantic\" normalization, and it is off by default since default resolver matches nothing). It appends a (Edge(relationship_type='contains', edge_text='Document chunk mentions X: <desc>'), entity_node) tuple to chunk.contains (lines 263-278), and converts LLM edges into relationship tuples with edge_text=description (_process_graph_edges lines 281-311). retrieve_existing_edges (retrieve_existing_edges.py) pre-queries the graph DB via graph_engine.has_edges to skip edges that already exist (cross-run dedup at edge level).\n\n4) add_data_points (tasks/storage/add_data_points.py:30). get_graph_from_model walks every DataPoint's Pydantic fields (lines 230-248): a field whose value is a DataPoint / list[DataPoint] / (Edge,DataPoint) tuple becomes a relationship+recursion; everything else becomes a node property. Then deduplicate_nodes_and_edges (deduplicate_nodes_and_edges.py) — pure dict-keyed dedup: nodes by str(id), edges by str(src)+str(rel)+str(tgt). Persistence: if HYBRID_WRITE capability, graph_engine.add_nodes_with_vectors(nodes) then add_edges_with_vectors; else asyncio.gather(graph.add_nodes, index_data_points(...)) and separately edges. index_data_points (index_data_points.py:10) groups DataPoints by (type_name, field_name), creates a vector collection named f\"{TypeName}_{field}\" (e.g. Entity_name, DocumentChunk_text), and embeds. If embed_triplets, _create_triplets_from_graph (add_data_points.py:184) builds \"src -> rel -> tgt\" text Triplet DataPoints and indexes them.\n\nProvenance: _stamp_provenance_deep (extract_graph_from_data.py:30) recursively sets source_pipeline/source_task on reachable DataPoints (only if currently None).",
+    "read_path": "Entry: GraphCompletionRetriever.get_completion (graph_completion_retriever.py:349) -> get_retrieved_objects -> get_triplets -> brute_force_triplet_search.\n\n1) Collections: _get_vector_index_collections (graph_completion_retriever.py:87) enumerates all DataPoint subclasses and builds \"{Class}_{index_field}\" names; brute_force_triplet_search.py:281 defaults to [\"Entity_name\",\"TextSummary_text\",\"EntityType_name\",\"DocumentChunk_text\"] and always appends \"EdgeType_relationship_name\".\n\n2) NodeEdgeVectorSearch.embed_and_retrieve_distances (brute_force_triplet_search.py:301): embeds the query once and runs vector search against each collection with limit=wide_search_top_k (default 100). node_name filter is supported (exact-match prefilter). Results are ScoredResult with .id and .score (cosine distance).\n\n3) get_memory_fragment (brute_force_triplet_search.py:49) projects a CogneeGraph from the graph DB. Default properties_to_project = [\"id\",\"description\",\"name\",\"type\",\"text\",\"importance_weight\"]. THREE projection modes (CogneeGraph.project_graph_from_db:225): nodeset subgraph (if node_type+node_name), neighborhood (k-hop from seed ids if neighborhood_depth set), or _get_full_or_id_filtered_graph. With wide_search_top_k set, relevant_node_ids = vector_search.extract_relevant_node_ids() filters the projection to those nodes; otherwise (wide_search_limit None) it projects the FULL graph — a real scale landmine.\n\n4) map_vector_distances_to_graph_nodes/edges (CogneeGraph.py:404,439): attaches per-query vector_distance lists onto projected nodes/edges by id match; unmatched elements keep triplet_distance_penalty (default 6.5).\n\n5) Ranking — _calculate_query_top_triplet_importances (CogneeGraph.py:469-539): for each edge, score = sum over {node1, node2, edge} of effective_distance, where per-element distance = (2 - importance_weight) * vector_distance[query_index], then blended with feedback_weight: blended = (1-fi)*(d/2) + fi*(1-feedback_weight), *2 (only when distance is a real cosine value in [0,2]; penalties pass through). Returns heapq.nsmallest(k, edges, key=score) — i.e. lower combined distance wins. importance_weight>1 reduces distance (boosts), feedback_weight near 1 reduces distance.\n\n6) resolve_edges_to_text (modules/graph/utils/resolve_edges_to_text.py:61): builds a \"Nodes:\\n... Connections:\\n src --[rel]--> tgt (edge_text)\" block. Node names are synthesized via _create_title_from_text (first 7 words + top-3 frequent words) when a text field exists.\n\n7) Completion: graph_context_for_question.txt user prompt injects {{question}} and {{context}}; system prompt answer_simple_question.txt (\"Answer the question using the provided context. Be as brief as possible.\"). Optional session cache (Redis/FS) records used_graph_element_ids for later feedback. No explicit token-budget truncation in the retriever itself beyond top_k and an optional max_context_chars passed to the session manager.",
+    "conflict_resolution_impl": "There is NO semantic conflict resolution, contradiction detection, or LLM-based merge anywhere in the write path. \"Conflict resolution\" is entirely deterministic ID-collision dedup:\n\n1) Entity merge: generate_node_id (generate_node_id.py) = uuid5(NAMESPACE_OID, name.lower().replace(' ','_').replace(\"'\",\"\")). Any two entities with the same normalized name get the same UUID, so re-cognifying or a second chunk mentioning the same entity coincides on one node. No fuzzy matching — \"Einstein\" and \"Albert Einstein\" are DIFFERENT nodes.\n\n2) DataPoint identity: _generate_identity_id (DataPoint.py:104) = uuid5 over declared identity_fields, same idea for typed records.\n\n3) Within a batch: deduplicate_nodes_and_edges (deduplicate_nodes_and_edges.py) dedups nodes by str(id) and edges by src+rel+tgt string concat. Keeps FIRST occurrence for nodes.\n\n4) Cross-run edge dedup: retrieve_existing_edges queries the graph DB (graph_engine.has_edges) before insert and skips already-existing edges.\n\n5) Ontology canonicalization (expand_with_nodes_and_edges _create_type_node/_create_entity_node) can re-key a node to a matched ontology class/individual id — the closest thing to entity resolution, but it requires a configured RDF ontology + matching strategy (default resolver matches nothing, so it is inactive out of the box).\n\nUpdates: DataPoint.update_version (DataPoint.py:242) bumps version and updated_at, but nothing in the cognify path calls it — versioning is effectively dead code. There is no \"the user moved cities, retract the old fact\" logic; an old fact and a new contradicting fact both persist as separate edges unless they collide on (src,rel,tgt).",
+    "forgetting_impl": "No decay, no TTL, no consolidation, no automatic invalidation. \"Forgetting\" is explicit, user-driven deletion only.\n\nforget() (api/v1/forget/forget.py:16) is a unified delete with modes: data_item, dataset, dataset_memory_only, data_item_memory_only, everything. memory_only variants (_forget_dataset_memory line 231, _forget_data_memory line 304) call delete_dataset_nodes_and_edges / delete_data_nodes_and_edges (modules/graph/methods/delete_dataset_nodes_and_edges.py) which compute affected nodes/edges (scoped by dataset ownership records in the relational DB) and call delete_from_graph_and_vector to remove from BOTH graph and vector stores, then reset pipeline_status JSON so the dataset can be re-cognified. Raw files are preserved in memory_only mode. prune (api/v1/prune/prune.py) nukes everything (prune_data + prune_system).\n\nThere ARE weight signals that could drive forgetting but DON'T: feedback_weight (apply_feedback_weights.py — streaming EMA: new = prev + alpha*(normalized_rating - prev), alpha=0.1, rating 1..5 mapped to [0,1]) and frequency_weight / importance_weight only re-RANK retrieval (they multiply vector_distance in _calculate_query_top_triplet_importances). A 0-weight node is down-ranked, never deleted. So there is soft down-weighting but no true forgetting/garbage-collection.",
+    "borrowable": [
+      {
+        "pattern": "Single unified model (DataPoint) that simultaneously serves as relational record, graph node, and vector-embedding source via metadata.index_fields, with the framework deriving the graph by walking Pydantic fields.",
+        "file_ref": "cognee/infrastructure/engine/models/DataPoint.py:27, cognee/modules/graph/utils/get_graph_from_model.py:178",
+        "why_good": "Eliminates the usual triple-write boilerplate and keeps the three stores consistent from one source of truth. The Annotated[str, Embeddable()/Dedup()] field markers auto-deriving index/identity fields (DataPoint.py:133) is a clean ergonomic."
+      },
+      {
+        "pattern": "Deterministic uuid5(name) node IDs for entity merge across chunks/runs without an extra resolution step.",
+        "file_ref": "cognee/infrastructure/engine/utils/generate_node_id.py",
+        "why_good": "Zero-cost cross-document coreference for exact-name matches and idempotent re-ingestion. Cheap and predictable — a good FAST PATH before any expensive semantic merge."
+      },
+      {
+        "pattern": "Per-(type, field) vector collections plus a blended ranking score that fuses cosine distance with importance_weight and feedback_weight.",
+        "file_ref": "cognee/modules/graph/cognee_graph/CogneeGraph.py:469, cognee/tasks/storage/index_data_points.py:39",
+        "why_good": "Lets vector recall seed the graph, then graph structure + learned weights rerank. The feedback EMA update (apply_feedback_weights.py:53) is a simple, defensible online-learning signal to copy."
+      },
+      {
+        "pattern": "Vector-seeded k-hop neighborhood projection with re-scoring of expansion nodes (an extra ID-filtered vector search so newly discovered neighbors get real scores).",
+        "file_ref": "cognee/modules/retrieval/utils/brute_force_triplet_search.py:170-200",
+        "why_good": "A pragmatic hybrid retrieval: vector seeds + bounded graph expansion, avoiding full-graph scans while still using structure."
+      },
+      {
+        "pattern": "Explicit provenance stamping (source_pipeline/source_task/source_user/source_content_hash) recursively on every DataPoint.",
+        "file_ref": "cognee/tasks/graph/extract_graph_from_data.py:30",
+        "why_good": "Provenance is essential for a real memory product (auditing, scoped forget, trust). Their dataset-scoped delete (delete_dataset_nodes_and_edges.py) shows how ownership records enable safe targeted deletion."
+      },
+      {
+        "pattern": "Bounded LRU cache for dynamically minted Pydantic 'simple node' model classes to avoid pydantic global-cache memory leaks.",
+        "file_ref": "cognee/modules/graph/utils/get_graph_from_model.py:23-46",
+        "why_good": "A real production lesson: dynamically copy_model() per record leaks ~50MB/cycle in pydantic internals; the keyed LRU is a concrete fix worth knowing if you generate models at runtime."
+      }
+    ],
+    "landmines": [
+      {
+        "issue": "Default retrieval projects the ENTIRE graph into memory when wide_search_top_k is None (and CogneeGraph holds all nodes/edges in Python dicts). Even with the default 100, ranking is heapq.nsmallest over ALL projected edges in-process — O(edges) per query, does not scale to large graphs.",
+        "file_ref": "cognee/modules/retrieval/utils/brute_force_triplet_search.py:277, cognee/modules/graph/cognee_graph/CogneeGraph.py:469"
+      },
+      {
+        "issue": "Entity merge is exact-normalized-name only. 'Albert Einstein' vs 'Einstein' vs 'A. Einstein' become distinct nodes; misspellings fragment the graph. No fuzzy/semantic entity resolution out of the box (ontology canonicalization is off by default).",
+        "file_ref": "cognee/infrastructure/engine/utils/generate_node_id.py, cognee/modules/graph/utils/expand_with_nodes_and_edges.py:385-394"
+      },
+      {
+        "issue": "No contradiction handling or temporal supersession: a fact and its later contradiction both persist as edges. update_version exists but is never called in cognify — versioning is effectively dead.",
+        "file_ref": "cognee/infrastructure/engine/models/DataPoint.py:242"
+      },
+      {
+        "issue": "Extraction has no memory of prior graph: each chunk is LLM-extracted in isolation (asyncio.gather over chunks), so consolidation relies purely on downstream ID collision and a pre-insert has_edges check. Merge quality depends entirely on the LLM emitting identical names.",
+        "file_ref": "cognee/tasks/graph/extract_graph_from_data.py:166"
+      },
+      {
+        "issue": "Edge dedup key is string concat str(src)+str(rel)+str(tgt) with no separator (collision-prone), and edges are plain tuples not first-class objects, so edge-level metadata/versioning is awkward.",
+        "file_ref": "cognee/modules/graph/utils/deduplicate_nodes_and_edges.py:15"
+      },
+      {
+        "issue": "Broad exception swallowing in the read path: get_memory_fragment catches generic Exception and logs+returns an empty/partial CogneeGraph, so retrieval can silently degrade to no-context completions.",
+        "file_ref": "cognee/modules/retrieval/utils/brute_force_triplet_search.py:111-116"
+      },
+      {
+        "issue": "Importance/feedback weights influence ranking but never trigger deletion — unbounded graph growth is expected; operators must manually forget/prune. No GC story for a long-lived personal memory.",
+        "file_ref": "cognee/api/v1/forget/forget.py"
+      }
+    ],
+    "notable_prompts": [
+      "infrastructure/llm/prompts/generate_graph_prompt.txt — the entity/relationship extraction system prompt. Instructs the LLM to act as a knowledge-graph extractor, use ELEMENTARY node labels (Person not Mathematician, keep specifics as properties), human-readable node IDs (never integers), require a 'name' field, snake_case relationship names, dates as YYYY-MM-DD, and do coreference resolution to the most complete identifier. Every edge gets a concrete fact description using endpoint names ('Alice works at Acme...'), no outside knowledge. Ends with 'Non-compliance will result in termination'. This drives all default graph construction.",
+      "infrastructure/llm/prompts/graph_context_for_question.txt — retrieval user prompt: injects {{question}} and {{context}} where context is the resolved set of node1 -- relation -- node2 triplets.",
+      "infrastructure/llm/prompts/answer_simple_question.txt — retrieval system prompt: 'Answer the question using the provided context. Be as brief as possible.' (notably terse; RAG answer quality hinges on the triplet context).",
+      "infrastructure/llm/prompts/generate_event_graph_prompt.txt / generate_event_entity_prompt.txt — drive the temporal pipeline's event+timestamp extraction (into EventList) and entity attachment to events.",
+      "tasks/graph/cascade_extract — the v2 extractor uses a 3-stage prompt cascade (extract_nodes -> extract_content_nodes_and_relationship_names -> extract_edge_triplets) over n_rounds for higher-recall extraction."
+    ],
+    "production_readiness": "Mixed. This is a real, actively-engineered OSS product (multi-backend abstraction, hybrid atomic writes, OTel spans throughout, permission/ownership records, remote-serve client routing, telemetry, ~329 test files including integration tests for sessions/feedback/redis), well beyond a research prototype in plumbing. The pipeline framework, provenance, and unified-engine abstraction are genuinely production-shaped.\n\nHowever, the MEMORY-CORE algorithms are research/heuristic grade for a serious personal-memory product: (1) retrieval ranking is an in-Python brute-force heapq over a projected graph with hand-tuned magic constants (triplet_distance_penalty=6.5, importance/feedback default 0.5, alpha=0.1) — fine for demos, weak at scale and untuned; (2) entity resolution is exact-name uuid5 hashing with optional RDF ontology (off by default) — no embedding- or LLM-based entity merge, so graph fragmentation is likely on messy real input; (3) NO temporal invalidation, contradiction resolution, decay, or consolidation — facts only accumulate, and update_version is dead code; (4) extraction is per-chunk-isolated with no read-before-write consolidation, pushing all merge burden onto deterministic ID collision; (5) the read path's full-graph projection default and generic-exception-swallowing are scale and silent-failure risks.\n\nVerdict for building a REAL personal memory product: borrow the architecture (DataPoint-as-unified-model, deterministic-ID fast-path merge, per-type vector collections, provenance stamping, dataset-scoped forget, feedback-weight EMA, vector-seeded neighborhood projection) but DO NOT adopt the memory semantics as-is. You must add: semantic/fuzzy entity resolution, contradiction/temporal supersession (reuse the version + valid-time fields that already exist but are unused), a real forgetting/consolidation policy, and a scalable retrieval/ranking layer (push ranking into the DB or an ANN+graph index rather than Python heapq over a full projection)."
+  },
+  {
+    "system": "MemOS — a multi-type \"memory operating system\" for LLMs. Memory core = textual graph memory (Neo4j tree), activation memory (KV-cache), and parametric memory (LoRA). The headline 3-type design is real in structure, but only the textual graph memory is production-grade; KV-cache is real-but-narrow (HF/vLLM only); parametric/LoRA is an explicit placeholder stub.",
+    "architecture_overview": "Three concentric layers. (1) MemCube (src/memos/mem_cube/general.py:21-48) is a thin container holding four memory backends instantiated via MemoryFactory: text_mem, act_mem, para_mem, pref_mem — each can be \"uninitialized\". (2) Textual memory is the real core: TreeTextMemory (memories/textual/tree.py:39) wires together an extractor LLM, embedder, Neo4jGraphDB, a reranker, a MemoryManager (write/organize) and a Searcher (read). SimpleTreeTextMemory (simple_tree.py:25) is the same class but with pre-built dependencies injected rather than constructed from config. (3) Write path = MemReader (LLM extraction) -> MemoryManager.add -> Neo4j nodes + async GraphStructureReorganizer queue. Read path = Searcher: TaskGoalParser -> GraphMemoryRetriever (parallel graph+vector+bm25+fulltext recall) -> reranker -> optional MemoryReasoner -> dedup/trim. Lifecycle/conflict handling lives mostly OUTSIDE the \"organize\" module — in mem_feedback/feedback.py and graph_dbs update_node calls. The advertised graph \"reasoning\" (CAUSE/CONFLICT/aggregate) in relation_reason_detector.py is fully commented out.",
+    "data_model": "Core item = TextualMemoryItem (memories/textual/item.py:299): {id: uuid, memory: str, metadata}. Metadata is a 3-level Pydantic hierarchy: TextualMemoryMetadata (item.py:94) -> TreeNodeTextualMemoryMetadata (item.py:175) -> SearchedTreeNodeTextualMemoryMetadata (item.py:276, adds `relativity` similarity). PreferenceTextualMemoryMetadata (item.py:284) is a separate branch. Key fields: status Literal['activated','resolving','archived','deleted'] (item.py:109); memory_type Literal of 10 values incl WorkingMemory/LongTermMemory/UserMemory/ToolSchema/Skill/Preference (item.py:178-189); version:int + history:list[ArchivedTextualMemory] (item.py:121-128); embedding:list[float] stored INLINE in metadata (item.py:193); sources:list[SourceMessage] for provenance (item.py:190); evolve_to, working_binding, covered_history, confidence(0-100), tags, usage:list[str]. ArchivedTextualMemory (item.py:49) is the lightweight version-snapshot stored in history with update_type Literal['conflict','duplicate','extract','unrelated','feedback']. Storage = Neo4j label :Memory, embedding as a property (vector index), edges typed PARENT/MERGED_TO/FOLLOWING/PRECEDING/SUMMARY/MATERIAL/CAUSE/CONDITION/RELATE/CONFLICT. KV-cache item = KVCacheItem (memories/activation/item.py:32): memory is a transformers DynamicCache (arbitrary_types_allowed); VLLMKVCacheItem (item.py:46) stores a prompt string instead. ParametricMemoryItem (parametric/item.py) is trivial.",
+    "storage_impl": "Textual: Neo4j (graph_dbs/neo4j.py). add_node (neo4j.py:224) does `MERGE (n:Memory {id})` then SET memory/created_at/updated_at(as datetime())/`n += $metadata`. Metadata is flattened (`_flatten_info_fields`) and sanitized (`_sanitize_neo4j_metadata`) because Neo4j cannot store nested maps/lists-of-maps; `sources` list elements are individually json.dumps'd into strings (neo4j.py:259-261). Vector index created via create_index (neo4j.py:144) default dim 1536, index name 'memory_vector_index', plus basic property indexes. Multi-tenant isolation via either separate DB (use_multi_db) or a user_name property + WHERE filter on every query. KV-cache: pure in-memory dict[str, KVCacheItem] (activation/kv.py:30); persistence via pickle.dump/load of the whole dict (kv.py:183-198) with torch safe_globals — no DB, no eviction, all in RAM. Parametric: writes literal b\"Placeholder\" to disk (parametric/lora.py:41).",
+    "write_path": "Extraction: MemReader uses SIMPLE_STRUCT_MEM_READER_PROMPT (templates/mem_reader_prompts.py:1) which asks the LLM to output JSON {memory list:[{key, memory_type:\"LongTermMemory\"|\"UserMemory\", value, tags}], summary} from a third-person perspective with absolute-date resolution. Add: TreeTextMemory.add (tree.py:103) -> MemoryManager.add (organize/manager.py:89). Default path is _add_memories_batch (manager.py:138). For each item: if type in {Working,LongTerm,User,Outer} a WorkingMemory mirror node is prepared (but actually disabled — see manager.py:239-241 \"currently stop adding WorkingMemories here\"); if type in {LongTerm,User,ToolSchema,...} a graph node is built with working_binding + fast-mode background hint `[working_binding:<uuid>] direct built from raw inputs` (manager.py:201-204), then batched via graph_store.add_nodes_batch (5 per batch, up to 8 workers). If is_reorganize, a QueueMessage(op=\"add\") is pushed to the async reorganizer (manager.py:243-246). WorkingMemory is FIFO-capped via remove_oldest_memory keep_latest=memory_size['WorkingMemory'] (default 20) in _cleanup_working_memory (manager.py:250). DEDUP/CONFLICT ON WRITE IS EFFECTIVELY ABSENT in this path: the merge hook _get_maybe_merged_memory (mem_reader/multi_modal_struct.py:534) is a no-op stub marked \"# TODO: delete this function\" and is the one actually called at multi_modal_struct.py:699; the real _merge_memories_with_llm (multi_modal_struct.py:558, uses MEMORY_MERGE_PROMPT_EN) exists but is NOT wired into that call site.",
+    "read_path": "Searcher.search (retrieve/searcher.py:191). Flow: _parse_task (searcher.py:289) embeds the query and runs TaskGoalParser (in 'fine' mode an LLM CoT via COT_PROMPT extracts keys/tags/goal) -> retrieve() -> _retrieve_paths -> GraphMemoryRetriever.retrieve (retrieve/recall.py:35). Recall is a parallel fan-out (ContextThreadPoolExecutor) of FOUR recallers, all hard-filtered to status=\"activated\": _graph_recall (recall.py:196, by key/tag exact-match), _vector_recall (recall.py:324, graph_store.search_by_embedding two paths A/B), _bm25_recall (recall.py:442, EnhancedBM25 over key+query terms), and fulltext. Candidates are unioned (recall.py:135). Reranking: default CosineLocalReranker (reranker/cosine_local.py:52) computes cosine(query_emb, node.embedding) then multiplies by a per-level weight `level_weights.get(node.background, 1.0)` (cosine_local.py:88-92, level_field defaults to 'background', weights {topic,concept,fact:1.0} so effectively a no-op multiplier by default). Production reranker is HTTPBGEReranker (reranker/http_bge.py:133) calling a BGE rerank HTTP endpoint, then _apply_boost_generic (http_bge.py:287) multiplies score by (1+weight) per matching search_filter key, clamped to [0,1]. post_retrieve (searcher.py:157) does _deduplicate_results then _sort_and_trim to top_k then _update_usage_history. In 'fine' mode MemoryReasoner.reason (retrieve/reasoner.py:20) stuffs ALL ranked memories into one REASON_PROMPT and keeps only LLM-selected UUIDs. THERE IS NO TOKEN-BUDGET / context-window accounting anywhere in the read path — selection is purely top_k count + LLM id-filtering.",
+    "conflict_resolution_impl": "Real conflict/version handling lives in mem_feedback/feedback.py (feedback-driven UPDATE), NOT in the organize module. _single_update_operation (feedback.py:~290): for WorkingMemory it overwrites fields in place and sets covered_history=old.id (feedback.py:296-305); for other types it adds the NEW node, sets new.covered_history=old.id, and sets the OLD node status=\"archived\" via graph_store.update_node (feedback.py:307-316). A separate versioned path _single_update_operation_with_versions (feedback.py:339) uses a hook (MEMORY_VERSION_APPLY_FEEDBACK_UPDATE) to append ArchivedTextualMemory snapshots to metadata.history and create a full archived node, with a manual fallback that prepends new sources and bumps fields. soft_delete (tree.py:621) sets status=\"deleted\" (+optional evolve_to). The LLM-merge consolidation (MEMORY_MERGE_PROMPT_EN, mem_reader_prompts.py:944 — fact-unit decomposition, should_merge/merged_from JSON) is defined and _merge_memories_with_llm is implemented but dead in the main reader path. The graph relation/conflict detector RelationAndReasoningDetector.process_node (organize/relation_reason_detector.py:26) — the CAUSE/CONDITION/CONFLICT/aggregate/inferred-node engine — has its ENTIRE body commented out (relation_reason_detector.py:49-81) and returns empty lists, even though it is still invoked from the reorganizer (reorganizer.py:354).",
+    "forgetting_impl": "No time-based decay or TTL anywhere. Forgetting is purely CAPACITY-BASED FIFO by updated_at: remove_oldest_memory (neo4j.py:197) does `ORDER BY n.updated_at DESC SKIP keep_latest DETACH DELETE n`. Caps in MemoryManager (manager.py:74-80): WorkingMemory=20, LongTermMemory=1500, RawFileMemory=1500, UserMemory=480. _cleanup_memories_if_needed (manager.py:527) only triggers cleanup at 80% fullness. WorkingMemory is cleaned on every sync add. The scheduler (mem_scheduler/schemas/monitor_schemas.py:356-402) does a separate working-memory retention: it removes low-importance items but keeps the top-N by recording_count and resets their scores. Archival (status='archived'/'deleted') is a soft-delete via feedback; archived nodes are excluded from recall because all recall paths filter status='activated'. No consolidation/summarization runs on a timer; the reorganizer's clustering+summary (reorganizer.py:_summarize_cluster) is gated behind is_reorganize and triggered by queue messages, not decay.",
+    "borrowable": [
+      {
+        "pattern": "Provenance + versioning baked into the item schema: SourceMessage (origin/role/chat_time/doc_path, extra=allow) + ArchivedTextualMemory version snapshots in metadata.history + covered_history/evolve_to lineage fields",
+        "file_ref": "src/memos/memories/textual/item.py:16-92,117-167",
+        "why_good": "Clean separable model for audit/rollback/dedup; lightweight history snapshot alongside a full archived node is a pragmatic version pattern."
+      },
+      {
+        "pattern": "Status-as-filter lifecycle: every recall query hard-filters status='activated', so archival/soft-delete is just a property flip (no physical delete, no index churn)",
+        "file_ref": "src/memos/memories/textual/tree_text_memory/retrieve/recall.py:83,285-296 + src/memos/mem_feedback/feedback.py:314-316",
+        "why_good": "Cheap, reversible, audit-friendly soft-delete that needs zero special-casing in the read path."
+      },
+      {
+        "pattern": "Parallel multi-recall fan-out (graph exact-match + vector + BM25 + fulltext) unioned then reranked, via a context-propagating thread pool",
+        "file_ref": "src/memos/memories/textual/tree_text_memory/retrieve/recall.py:35-138",
+        "why_good": "Robust hybrid retrieval that degrades gracefully if one channel is empty; easy to add/remove channels."
+      },
+      {
+        "pattern": "Pluggable reranker behind a factory with a metadata-driven multiplicative boost (score *= 1+weight per matching filter key, clamped to [0,1])",
+        "file_ref": "src/memos/reranker/http_bge.py:287-324 + src/memos/reranker/factory.py",
+        "why_good": "Lets you bias results by user_id/session/recency without retraining; clean fallback to cosine_local with no network dependency."
+      },
+      {
+        "pattern": "Explicit, well-documented LLM consolidation prompt that decomposes a new memory into typed 'fact units' and emits should_merge/merged_from JSON",
+        "file_ref": "src/memos/templates/mem_reader_prompts.py:944-1023",
+        "why_good": "A strong, copyable spec for write-time dedup/merge even though MemOS itself left it unwired."
+      },
+      {
+        "pattern": "DynamicCache concat-merge per layer + CPU<->GPU move helper for activation memory injection",
+        "file_ref": "src/memos/memories/activation/kv.py:200-292 + src/memos/mem_chat/simple.py:93-110",
+        "why_good": "Concrete recipe for prefix-KV reuse: build cache once, persist, move-to-device, pass as past_key_values for cache-augmented generation."
+      }
+    ],
+    "landmines": [
+      {
+        "issue": "Marketing lifecycle 'Generated->Activated->Merged->Archived->Expired' does NOT exist in code. Real status enum is only {activated, resolving, archived, deleted}; there is no 'Generated','Merged','Expired' state and no state-machine class enforcing transitions — status is set ad hoc via update_node calls.",
+        "file_ref": "src/memos/memories/textual/item.py:109"
+      },
+      {
+        "issue": "Graph reasoning engine is dead code: RelationAndReasoningDetector.process_node body (pairwise CAUSE/CONDITION/CONFLICT, inferred nodes, sequence, aggregate) is entirely commented out and returns empty, yet still invoked by the reorganizer.",
+        "file_ref": "src/memos/memories/textual/tree_text_memory/organize/relation_reason_detector.py:49-81"
+      },
+      {
+        "issue": "Write-time merge/dedup is a no-op in the live reader path: _get_maybe_merged_memory returns its input unchanged ('# TODO: delete this function'); the working _merge_memories_with_llm is not called there. Expect unbounded duplicate growth without it.",
+        "file_ref": "src/memos/mem_reader/multi_modal_struct.py:534-556,699"
+      },
+      {
+        "issue": "Parametric/LoRA memory is a pure placeholder that writes b'Placeholder' to disk; do not treat the '3rd memory type' as functional.",
+        "file_ref": "src/memos/memories/parametric/lora.py:1-41"
+      },
+      {
+        "issue": "KV-cache memory is entirely in-RAM dict persisted by pickling whole DynamicCache tensors; no eviction, no size cap, no DB, GPU tensors must be manually moved; load() swallows all exceptions and silently resets to empty.",
+        "file_ref": "src/memos/memories/activation/kv.py:30,139-198"
+      },
+      {
+        "issue": "Scheduler 'ranking formula' is NOT contextual-similarity/access-frequency/temporal-decay as described. It is importance = 0.9*sorting_score + 0.05*keywords_score(capped 5) + 0.05*recording_count(capped 2); no temporal/recency term at all (the comment even says MemoryMonitorItem has no timestamp).",
+        "file_ref": "src/memos/mem_scheduler/schemas/monitor_schemas.py:241-262 + general_schemas.py:54"
+      },
+      {
+        "issue": "SQL/Cypher built via f-string interpolation of user_name and memory_type in remove_oldest_memory (and similar), an injection risk if those values are ever user-controlled.",
+        "file_ref": "src/memos/graph_dbs/neo4j.py:208-220"
+      },
+      {
+        "issue": "No token-budget management on the read path; 'fine' mode dumps all ranked memories into a single LLM REASON_PROMPT call and falls back to a regex UUID scrape to parse the selection.",
+        "file_ref": "src/memos/memories/textual/tree_text_memory/retrieve/reasoner.py:20-61"
+      },
+      {
+        "issue": "working_binding == item.id collision flagged in multiple TODOs ('working id is same with item.id, need to fix'); WorkingMemory mirror writes are disabled mid-refactor, so the documented Working/LongTerm dual-write contract is half-implemented.",
+        "file_ref": "src/memos/memories/textual/tree_text_memory/organize/manager.py:239-241,326-327"
+      }
+    ],
+    "production_readiness": "Mixed; the textual graph memory is the only prod-grade piece and even it is mid-refactor. Positives: ~98 test files exist incl tests/memories/activation/test_kv.py; clean Pydantic schemas; multi-tenant isolation (user_name or multi-db); pluggable factories for LLM/embedder/reranker/graph_db (Neo4j, Postgres, PolarDB backends present); async reorganizer with a real queue; thread-pool fan-out for recall and batch writes; HTTP BGE reranker for scale. Negatives / research-grade smells: large amounts of commented-out or stubbed core logic (relation/conflict detection dead, write-merge dead, LoRA stub); the headline 3-type/5-state lifecycle is largely aspirational vs the code; error handling is frequently 'except Exception: pass/reset' (kv.load, _call_llm); f-string Cypher injection risk; no token budgeting, no temporal decay, no real conflict resolution wired into the default add path; KV-cache doesn't scale beyond a single process's RAM and only works with HF/vLLM self-hosted models (not API LLMs). Many TODO/'Temporal fix'/'need to fix' comments in the hot path (manager.py). For a real product you can borrow the schema, the soft-delete-via-status pattern, the hybrid recall fan-out, the reranker abstraction, and the merge prompt — but you must build the dedup/conflict/forgetting layer yourself, because in this repo those are either stubs, dead code, or simple FIFO caps. Do not rely on parametric memory or on the documented state machine.",
+    "key_files": [
+      {
+        "path": "src/memos/memories/textual/item.py",
+        "role": "Core data model: TextualMemoryItem + 4-level metadata hierarchy, status/memory_type enums, ArchivedTextualMemory versioning"
+      },
+      {
+        "path": "src/memos/memories/textual/tree.py",
+        "role": "TreeTextMemory: top-level textual memory facade (add/search/get/delete/dump/soft_delete), wires manager+searcher+graph"
+      },
+      {
+        "path": "src/memos/memories/textual/tree_text_memory/organize/manager.py",
+        "role": "Write/organize path: batch & parallel node insert, WorkingMemory FIFO cap, working_binding, reorganizer queueing"
+      },
+      {
+        "path": "src/memos/memories/textual/tree_text_memory/organize/relation_reason_detector.py",
+        "role": "Graph reasoning (CAUSE/CONFLICT/aggregate) — IMPORTANT: body commented out / dead code"
+      },
+      {
+        "path": "src/memos/memories/textual/tree_text_memory/retrieve/searcher.py",
+        "role": "Read path orchestrator: parse->retrieve->rerank->reason->dedup/trim"
+      },
+      {
+        "path": "src/memos/memories/textual/tree_text_memory/retrieve/recall.py",
+        "role": "Hybrid parallel recall: graph + vector + bm25 + fulltext, all status='activated'"
+      },
+      {
+        "path": "src/memos/memories/textual/tree_text_memory/retrieve/reasoner.py",
+        "role": "LLM id-selection over all ranked memories; no token budgeting"
+      },
+      {
+        "path": "src/memos/reranker/cosine_local.py",
+        "role": "Default local reranker: cosine * per-level weight"
+      },
+      {
+        "path": "src/memos/reranker/http_bge.py",
+        "role": "Production reranker: BGE HTTP call + multiplicative metadata boost"
+      },
+      {
+        "path": "src/memos/mem_feedback/feedback.py",
+        "role": "Where real lifecycle/versioning lives: archive old node, covered_history, version history snapshots"
+      },
+      {
+        "path": "src/memos/memories/activation/kv.py",
+        "role": "KV-cache activation memory: in-RAM dict, DynamicCache concat-merge, pickle persistence, htod move"
+      },
+      {
+        "path": "src/memos/mem_chat/simple.py",
+        "role": "Concrete KV-cache injection into generation via past_key_values"
+      },
+      {
+        "path": "src/memos/memories/parametric/lora.py",
+        "role": "LoRA parametric memory — explicit placeholder stub"
+      },
+      {
+        "path": "src/memos/mem_scheduler/schemas/monitor_schemas.py",
+        "role": "Scheduler ranking: importance = weighted sorting/keywords/recording_count (no temporal decay)"
+      },
+      {
+        "path": "src/memos/templates/mem_reader_prompts.py",
+        "role": "Extraction prompt (SIMPLE_STRUCT_MEM_READER_PROMPT) + consolidation prompt (MEMORY_MERGE_PROMPT_EN)"
+      },
+      {
+        "path": "src/memos/graph_dbs/neo4j.py",
+        "role": "Neo4j storage: add_node MERGE, vector index, FIFO remove_oldest_memory, user_name tenancy"
+      },
+      {
+        "path": "src/memos/mem_cube/general.py",
+        "role": "MemCube container for the four memory backends"
+      }
+    ],
+    "notable_prompts": [
+      "src/memos/templates/mem_reader_prompts.py:1 SIMPLE_STRUCT_MEM_READER_PROMPT — extracts memories from user's perspective as JSON {memory list:[{key,memory_type,value,tags}],summary}; resolves relative dates to absolute, third-person rewriting, classifies LongTermMemory vs UserMemory.",
+      "src/memos/templates/mem_reader_prompts.py:944 MEMORY_MERGE_PROMPT_EN — consolidation: decompose new memory into typed fact-units (identity/preference/relationship/one-off), decide per-unit merge, output {value,merged_from,should_merge}; explicitly forbids merging temporary plans with long-term preferences. (Defined but not wired into default add path.)",
+      "src/memos/templates/mem_search_prompts.py:23 COT_PROMPT / SIMPLE_COT_PROMPT — TaskGoalParser query analysis into a dict (keys/tags/goal) driving graph+bm25 recall.",
+      "src/memos/memories/textual/tree_text_memory/retrieve/utils.py REASON_PROMPT — used by MemoryReasoner to select relevant memory IDs from the full ranked list in 'fine' mode.",
+      "src/memos/templates/tree_reorganize_prompts.py PAIRWISE_RELATION_PROMPT / INFER_FACT_PROMPT / AGGREGATE_PROMPT — drive CAUSE/CONDITION/CONFLICT/RELATE classification, inferred-fact nodes and cluster summaries; invoked by relation_reason_detector which is currently disabled."
+    ]
+  },
+  {
+    "system": "langmem (LangChain's long-term memory library) — memory core: semantic memory extraction/enrichment (knowledge/extraction.py), the manage/search memory tools, the background ReflectionExecutor, and the unique differentiator: PROCEDURAL memory via prompt self-optimization (prompts/{optimization,gradient,metaprompt,stateless}.py). Built entirely on top of LangGraph's BaseStore and the third-party `trustcall` library.",
+    "architecture_overview": "langmem is a thin orchestration layer over two external engines: LangGraph's `BaseStore` (the actual persistence + vector index) and the `trustcall` library (the actual extract/insert/update/delete-via-tool-calls engine). langmem itself contributes prompts, control loops, namespace templating, a background execution queue, and the prompt-optimization (\"procedural memory\") strategies.\n\nThree memory layers map to three subsystems:\n1. SEMANTIC memory — `knowledge/extraction.py`. `MemoryManager` (stateless, returns extracted memories) and `MemoryStoreManager` (stateful, reads/writes a `BaseStore`). Both delegate the real CRUD reasoning to `trustcall.create_extractor(..., enable_inserts/updates/deletes)`.\n2. Memory as TOOLS — `knowledge/tools.py`. `create_manage_memory_tool` / `create_search_memory_tool` give an agent explicit create/update/delete/search affordances over a `BaseStore` namespace. No reasoning of its own; it's CRUD plumbing.\n3. PROCEDURAL memory (the differentiator) — `prompts/`. Rather than storing facts, it rewrites the agent's *system prompt* from (trajectory, feedback) pairs. Three strategies: `prompt_memory` (1 LLM call), `metaprompt` (reflect-loop, 1 call/step), `gradient` (separate \"find-the-gradient\" reflection then \"apply-the-update\" steps). `MultiPromptOptimizer` adds a credit-assignment classifier to decide which of several prompts to update.\n\nA `ReflectionExecutor` (reflection.py) runs any of these managers in the background — either in-process on a `threading`+`PriorityQueue` worker (debounce/cancel by thread_id) or by firing a remote LangGraph run.\n\nThere is no graph/triple store, no episodic timeline, no decay engine. \"episodic/procedural/semantic\" is mostly framing in the prompt text (extraction.py:185); the storage is one flat key→{kind,content} dict per namespace.",
+    "key_files": [
+      {
+        "path": "/Users/coby/chanyoung/memsys-refsrc/langmem/src/langmem/knowledge/extraction.py",
+        "role": "Semantic memory core. MemoryManager (lines 217-533, stateless extract/consolidate loop) and MemoryStoreManager (832-1280, search->enrich->diff->put/delete against a BaseStore). The _MEMORY_INSTRUCTIONS prompt (185-206) drives all extraction."
+      },
+      {
+        "path": "/Users/coby/chanyoung/memsys-refsrc/langmem/src/langmem/knowledge/tools.py",
+        "role": "create_manage_memory_tool (25-356) and create_search_memory_tool (362-486): agent-facing CRUD/search tools over BaseStore. No dedup/conflict logic — blind put/delete by id."
+      },
+      {
+        "path": "/Users/coby/chanyoung/memsys-refsrc/langmem/src/langmem/prompts/optimization.py",
+        "role": "Procedural-memory entry point. create_prompt_optimizer dispatches to the 3 strategies; MultiPromptOptimizer (272-468) does LLM credit-assignment across multiple named prompts."
+      },
+      {
+        "path": "/Users/coby/chanyoung/memsys-refsrc/langmem/src/langmem/prompts/gradient.py",
+        "role": "Gradient optimizer: a think/critique/recommend ReAct reflection loop (DEFAULT_GRADIENT_PROMPT 16-65) followed by a separate constrained prompt-rewrite (DEFAULT_GRADIENT_METAPROMPT 67-85)."
+      },
+      {
+        "path": "/Users/coby/chanyoung/memsys-refsrc/langmem/src/langmem/prompts/metaprompt.py",
+        "role": "Metaprompt optimizer: single reflect-then-rewrite loop (DEFAULT_METAPROMPT 27-56)."
+      },
+      {
+        "path": "/Users/coby/chanyoung/memsys-refsrc/langmem/src/langmem/prompts/stateless.py",
+        "role": "prompt_memory strategy: one-shot prompt rewrite (PromptMemory / PromptMemoryMultiple)."
+      },
+      {
+        "path": "/Users/coby/chanyoung/memsys-refsrc/langmem/src/langmem/utils.py",
+        "role": "Critical helpers: NamespaceTemplate (15-92), get_var_healer (165-209, f-string variable preservation), get_prompt_extraction_schema (212-248), get_dialated_windows (103-119), format_sessions (125-162)."
+      },
+      {
+        "path": "/Users/coby/chanyoung/memsys-refsrc/langmem/src/langmem/reflection.py",
+        "role": "ReflectionExecutor: background memory processing. LocalReflectionExecutor (254-386) = threading worker + PriorityQueue with debounce/cancel by thread_id; RemoteReflectionExecutor fires LangGraph runs with multitask_strategy='rollback'."
+      },
+      {
+        "path": "/Users/coby/chanyoung/memsys-refsrc/langmem/src/langmem/graphs/semantic.py",
+        "role": "Deployable example graph wiring create_memory_store_manager into a LangGraph entrypoint with an InMemoryStore + openai embeddings."
+      }
+    ],
+    "data_model": "No custom DB/ORM. All persistence is LangGraph's `BaseStore` (e.g. InMemoryStore or the Postgres-backed store). A memory is a store Item: `namespace: tuple[str,...]`, `key: str`, `value: dict`, plus `created_at`/`updated_at`/`score` from the store (reflection.py:31-51 MemoryItem TypedDict mirrors this).\n\nNamespaces are templated tuples like `(\"memories\", \"{langgraph_user_id}\")` resolved at runtime from `config[\"configurable\"]` by `NamespaceTemplate` (utils.py:15-92). This is the only \"schema\" — a hierarchical key prefix, no relational/graph structure.\n\nThe value envelope written by MemoryStoreManager is consistently `{\"kind\": <PydanticModelName>, \"content\": <model_dump|str>}` (extraction.py:1110-1124). `kind` lets it re-hydrate the right Pydantic schema on read via `schema_name_map` (extraction.py:865, _coerce_value 1285-1295). Note the manage_memory *tool* writes a *different* shape — `{\"content\": ...}` with no `kind` (tools.py:298-302) — so the tool path and the manager path are not interoperable envelopes.\n\nMemory \"kinds\" (schemas) are arbitrary user-supplied Pydantic models; default is `Memory(content: str)` (extraction.py:86-92). Stable IDs for store items are `uuid5(NAMESPACE_DNS, str((*namespace, key)))` (extraction.py:937-938) so the same store item maps to the same id across runs.\n\nVector indexing is delegated entirely to the store's `index={\"dims\":..., \"embed\":...}` config (semantic.py:7-12); langmem never touches embeddings directly.",
+    "write_path": "Stateful write path is `MemoryStoreManager.ainvoke` (extraction.py:1006-1137):\n\n1. QUERY GENERATION. If a `query_model` was given, it binds the search tool and lets the LLM emit parallel search queries (1015-1029). Otherwise it falls back to `get_dialated_windows(messages, query_limit//4)` (utils.py:103-119) — it searches using progressively larger suffixes of the conversation (last 1, 2, 4, 8... messages), a cheap multi-resolution recency retrieval with no LLM.\n\n2. RETRIEVE + DEDUP candidates. Runs the searches concurrently, merges by `(namespace,key)`, sorts by score desc, truncates to `query_limit` (`_sort_results` 991-1004). If empty and a `default_factory` is set, it seeds a \"default\" memory (1040-1063) — used for profile-style single-doc memories.\n\n3. ENRICH via trustcall. Builds `existing = [(stable_id, kind, content), ...]` and calls the composed `MemoryManager.ainvoke({messages, existing, max_steps})` (1073-1080). The real insert/update/delete reasoning happens inside `trustcall.create_extractor(self.model, tools=schemas, enable_inserts, enable_updates, enable_deletes, existing_schema_policy=False)` (253-260). trustcall returns each memory tagged with `json_doc_id` (=update of an existing doc) or a `RemoveDoc` object (=delete).\n\n4. MemoryManager LOOP (217-339). Iterates up to `max_steps`. Step 0 uses the schema tools; from step 1 it *adds a `Done` tool* (266-275) so the model can signal completion. After each step it feeds back synthetic tool messages \"Memory {id} updated/deleted/inserted.\" (314-327) so the model sees the effect of its own prior calls, then re-feeds the non-removal results as `existing`. Unmodified existing memories are carried forward (291-293). Breaks when `Done` is called or no tool calls remain.\n\n5. APPLY + DIFF. `_apply_manager_output` (940-975) splits results into store-backed vs ephemeral (newly created) and collects `removed_ids`. Optional extra `phases` (1087-1100) run additional consolidation managers (e.g. a dedup pass) over the accumulated memories — this is langmem's \"consolidation\" feature.\n\n6. PERSIST with change-detection. Only writes items whose `{kind,content}` actually changed vs the stored version (1107-1116) — important so unchanged memories don't churn timestamps. New memories get a fresh `key=stable_id` (1117-1124). Removals become `store.adelete` (1126-1130). All puts+deletes fire concurrently via `asyncio.gather` (1132-1135). Returns the list of puts.\n\nKEY POINT: dedup/conflict detection is NOT algorithmic — it is entirely the trustcall+LLM call deciding whether to emit an update (patch existing json_doc_id) vs a new insert, guided by the `_MEMORY_INSTRUCTIONS` prompt's \"Compare & Update / Consolidate and compress redundant memories\" language (extraction.py:194-198).",
+    "read_path": "Two distinct read paths.\n\nA) Recall for enrichment (inside the write path), described above: optional LLM-generated queries OR `get_dialated_windows` recency windows -> concurrent `store.asearch` -> merge by (namespace,key) -> sort by `score` desc -> top `query_limit` (default 5) (`_sort_results`, extraction.py:991-1004; ainvoke 1015-1039). Token budget is implicit: it's just `query_limit` items, no token accounting, no reranker, no MMR/diversity beyond dedup-by-key.\n\nB) Standalone retrieval pipeline `create_memory_searcher` (extraction.py:695-815): a `ChatPromptTemplate` -> model bound to the search tool with `tool_choice=\"search_memory\"` forces query generation -> `search_tool.abatch` over all generated tool calls -> `return_sorted` (786-799) dedups artifacts by `(*namespace,key)` and sorts by `item.score` desc. Again no reranking model, no cross-encoder, no token budget — raw vector scores from the store only.\n\nFor agent use, `create_search_memory_tool` (tools.py:362-486) is a thin wrapper around `store.search/asearch(namespace, query, filter, limit, offset)` returning `utils.dumps([m.dict()])`; ranking is whatever the underlying store returns. So all ranking quality is inherited from the LangGraph store's vector index; langmem adds only query-fan-out + score-sort + dedup-by-key.",
+    "conflict_resolution_impl": "See above.",
+    "forgetting_impl": "No first-class forgetting/decay/consolidation engine in langmem's own code. What exists:\n- DELETE is opt-in: `enable_deletes` defaults to False in `create_memory_manager` (extraction.py:544) and `create_memory_store_manager` (1675); when on, deletion is purely LLM-driven via trustcall `RemoveDoc` (extraction.py:283-288, 956-965).\n- CONSOLIDATION is the `phases` mechanism (extraction.py:1087-1100): you can configure extra MemoryManager passes whose default instruction is \"Deduplicate, consolidate, and enrich these memories\" (985). It runs every invocation, not on a schedule, and again is entirely LLM-judgment, no scoring/decay math.\n- TTL: not implemented by langmem; it only forwards a `ttl` kwarg to `store.put` (extraction.py:1464-1470, 1646-1648) IF the underlying store supports it. No langmem-level expiry sweeping.\n- No recency/frequency decay, no importance scoring, no access-count reinforcement despite the prompt rhetoric about \"strengthen based on reliability and recency\" (extraction.py:196) and \"Prioritize retention of surprising and persistent information\" (205) — those are instructions to the LLM, not implemented mechanics.\nNet: forgetting = \"the LLM decided to delete or overwrite it.\" That is the entire mechanism.",
+    "notable_prompts": [
+      "_MEMORY_INSTRUCTIONS (extraction.py:185-206): the master semantic-memory prompt. Frames the LLM as a 'long-term memory manager' over 'semantic, procedural, episodic' memory and instructs Extract&Contextualize / Compare&Update / Synthesize&Reason, including 'caveat uncertain info with confidence p(x)', 'consolidate and compress redundant memories', 'maximize SNR by avoiding idle words'. This single prompt is what makes dedup/consolidation/conflict-resolution 'happen' — all behavior is emergent from it.",
+      "_prepare_messages user wrapper (extraction.py:467-478): wraps the conversation in <session_{uuid}> tags and demands 'All operations must be done in single parallel multi-tool call. Avoid duplicate extractions.'",
+      "DEFAULT_GRADIENT_PROMPT (gradient.py:16-65): the 'compute the gradient' reflection prompt. Tells the model to evaluate how well the assistant met intent, identify failure modes (style mismatch, flawed logic, hallucination...), recommend an edit STRATEGY (synthetic few-shot for style, explicit instructions for logic, step-by-step guidelines), and crucially 'ONLY recommend updates if there is evidence of failures' + 'minimally invasive' + set warrants_adjustment=False otherwise.",
+      "DEFAULT_GRADIENT_METAPROMPT (gradient.py:67-85): the 'apply the gradient' prompt — given <hypotheses> and <recommendations>, rewrite the prompt 'minimally invasive'.",
+      "DEFAULT_METAPROMPT (metaprompt.py:27-56): single-pass optimizer; notably 'Retain any f-string variables in the existing prompt exactly as they are (e.g. {{variable_name}})'.",
+      "get_prompt_extraction_schema description (utils.py:217-226): injected into the OptimizedPromptOutput schema to force the model to preserve the exact set of f-string variables found in the original prompt.",
+      "MultiPromptOptimizer Classify prompt (optimization.py:342-350): credit assignment — 'decide which prompts ought to be updated to improve performance on future trajectories'.",
+      "INSTRUCTION_REFLECTION_PROMPT / _MULTIPLE (prompts/prompt.py:3-60): prompt_memory strategy — 'You are helping an AI agent improve... return an updated prompt... return update_prompt=False if no change.'"
+    ],
+    "borrowable": [
+      {
+        "pattern": "Procedural memory = optimize the SYSTEM PROMPT from (trajectory, feedback) pairs, with a strict 'only change if there's evidence of failure, be minimally invasive' guardrail and a separate warrants_adjustment gate.",
+        "file_ref": "gradient.py:46-65, 318-360",
+        "why_good": "This is langmem's genuinely novel contribution and directly transferable: learning *behavioral* memory (how to act) instead of only *factual* memory. The 'no-op unless failure evidence' gate prevents prompt drift/degradation that naive self-editing loops suffer from."
+      },
+      {
+        "pattern": "Two-stage gradient: a think/critique/recommend ReAct loop produces hypotheses+recommendations, then a SEPARATE constrained extractor rewrites the prompt. Separation of 'diagnose' from 'edit'.",
+        "file_ref": "gradient.py:130-205 (loop), 244-291 (apply)",
+        "why_good": "Decoupling credit-assignment from text-generation gives better, more auditable edits and lets you log the 'why' (hypotheses) separately from the 'what' (new prompt)."
+      },
+      {
+        "pattern": "f-string variable preservation via mask->edit->unmask 'var healer' plus a schema model_validator that hard-fails if a required {var} is dropped.",
+        "file_ref": "utils.py:165-248",
+        "why_good": "Self-editing prompts will silently delete template placeholders and break the agent. The mask/unmask + all_required assertion is a robust, reusable safety net for any prompt-rewriting system."
+      },
+      {
+        "pattern": "Multi-resolution recency retrieval with no LLM: search using exponentially growing suffixes of the conversation (last 1,2,4,8... messages).",
+        "file_ref": "utils.py:103-119 (get_dialated_windows), extraction.py:1031-1037",
+        "why_good": "Cheap, embedding-only way to get both fine-grained recent context and broader topical context as query vectors without paying for an LLM query-gen call."
+      },
+      {
+        "pattern": "Write only on real change: diff new {kind,content} against stored value before put; delete only known ids.",
+        "file_ref": "extraction.py:1107-1135",
+        "why_good": "Avoids timestamp/version churn and unnecessary embedding recomputation — important for cost and for any recency signals layered on top."
+      },
+      {
+        "pattern": "Background memory consolidation with debounce-by-thread: cancel the pending reflection for a thread when a newer one arrives; remote uses multitask 'rollback'.",
+        "file_ref": "reflection.py:254-329, 401-471",
+        "why_good": "Classic pattern for 'process memory after the turn settles' without racing or doing redundant work while the user is still typing. The PriorityQueue+after_seconds gives free debounce/delay."
+      },
+      {
+        "pattern": "Consolidation as composable 'phases' — extra LLM passes over accumulated memories with a dedup/enrich instruction.",
+        "file_ref": "extraction.py:977-989, 1087-1100",
+        "why_good": "Clean way to separate per-turn extraction from periodic compaction while reusing the same manager machinery."
+      },
+      {
+        "pattern": "Stable, deterministic memory IDs via uuid5 over (namespace,key).",
+        "file_ref": "extraction.py:937-938",
+        "why_good": "Lets you map retrieved store items back to stable identities for update/delete decisions across runs without storing an extra id field."
+      }
+    ],
+    "landmines": [
+      {
+        "issue": "The entire memory intelligence (dedup, conflict resolution, consolidation, forgetting) is delegated to the third-party `trustcall` library + one big prompt. langmem contains essentially zero deterministic memory logic. If you want predictable, testable conflict resolution you must build it yourself; you cannot rely on this.",
+        "file_ref": "extraction.py:253-260, 185-206"
+      },
+      {
+        "issue": "Two incompatible value envelopes: MemoryStoreManager writes {'kind','content'} (extraction.py:1110), but create_manage_memory_tool writes {'content'} with no kind (tools.py:298-302). Memories created by the tool won't re-hydrate via _coerce_value (1288-1295) and mixing the two paths in one namespace will be inconsistent.",
+        "file_ref": "tools.py:298-302 vs extraction.py:1109-1124"
+      },
+      {
+        "issue": "No optimistic locking / version field on memories. Concurrent reflections across *different* thread_ids writing the same namespace can clobber each other (debounce is per-thread only). Last-write-wins silently.",
+        "file_ref": "reflection.py:308-312, extraction.py:1132-1135"
+      },
+      {
+        "issue": "LocalReflectionExecutor runs an unbounded in-process daemon thread with a PriorityQueue; failures are only logged (reflection.py:449-450) and futures are fire-and-forget from the agent's perspective. No retry, no dead-letter, no backpressure. Not suitable for high-throughput multi-tenant prod without the remote/LangGraph-platform path.",
+        "file_ref": "reflection.py:401-471"
+      },
+      {
+        "issue": "Optimizers raise hard ValueError/RuntimeError if the reflection loop never emits a final recommendation within max_steps (gradient.py:203-205, metaprompt.py:204). A flaky model can crash the optimize call rather than degrade gracefully.",
+        "file_ref": "gradient.py:203-205, metaprompt.py:242"
+      },
+      {
+        "issue": "The dilated-window fallback query count is query_limit//4, so with the default query_limit=5 that's 5//4=1 window — effectively only the single most recent message-suffix is used for recall when no query_model is configured. Easy to under-retrieve unknowingly.",
+        "file_ref": "extraction.py:1032, 1167"
+      },
+      {
+        "issue": "max_steps loop feeds synthetic 'Memory X updated' tool messages back to the model; the action-labeling zips response order against step_results.items() order (extraction.py:322-325) which is fragile if trustcall ever reorders responses vs tool_calls. Mislabeled feedback could mislead the next step.",
+        "file_ref": "extraction.py:316-327"
+      },
+      {
+        "issue": "Almost no test coverage of the memory core. Only short_term/summarization has real unit tests; extraction, gradient, metaprompt, optimization, tools, reflection are exercised only indirectly via docstring-example execution (test_docstring_examples.py) against recorded cassettes. Treat behavior as under-specified.",
+        "file_ref": "tests/ (only short_term/*, test_docstring_examples.py)"
+      }
+    ],
+    "production_readiness": "Research-to-early-prod grade, NOT a turnkey production memory system. Honest assessment:\n\nSTORAGE/SCALE: Solid foundation because persistence/vector-index is delegated to LangGraph's BaseStore (Postgres-backed in the platform), so scaling the *data* is a solved external problem. But langmem adds no batching, no pagination strategy beyond limit/offset, no caching, and recall is just top-k by raw vector score with dedup-by-key — no reranker, no MMR, no token budgeting. Retrieval quality is whatever the store's embeddings give you.\n\nCORRECTNESS/DETERMINISM: All the hard parts (dedup, conflict resolution, consolidation, forgetting, credit assignment) are LLM+prompt-driven via trustcall. Zero deterministic guarantees; behavior shifts with model version. This is fine for a 'memory that mostly works' assistant feature, risky for anything requiring auditability or consistency.\n\nERROR HANDLING: Thin. Background worker swallows errors to logs (reflection.py:449); optimizers throw on non-convergence; tool layer raises ValueErrors for bad args (good) but has no idempotency/transaction guarantees across multi-put/delete (extraction.py:1132 uses gather with no rollback on partial failure).\n\nCONCURRENCY: Per-thread debounce is thoughtful; cross-thread/cross-namespace races are unhandled (no versioning/CAS).\n\nTESTS: Effectively none for the memory core — only summarization is unit-tested; everything else relies on docstring-example smoke tests against VCR cassettes. You cannot refactor the core safely without writing your own tests first.\n\nCODE QUALITY: Clean, typed, well-documented (docstrings are extensive), sync+async parity throughout. But heavy duplication between sync/async branches (extraction.py invoke vs ainvoke are ~identical 130-line copies; same in gradient/metaprompt) is a maintenance hazard.\n\nVERDICT for building YOUR OWN product: Borrow the *ideas and prompts* — especially the procedural-memory prompt-optimization (gradient two-stage diagnose/edit + warrants_adjustment gate + var-healer), the write-only-on-change diff, and the debounce-by-thread background pattern. Do NOT inherit its 'let one prompt + trustcall do all the memory reasoning' architecture if you need deterministic dedup/conflict/decay — those must be engineered explicitly. Plan to own retrieval ranking, forgetting/decay, versioning, and a real test suite yourself."
+  },
+  {
+    "system": "A-mem (Agentic Memory) — the Zettelkasten-style reference implementation. A small Python library (~830 LOC across 3 core files) that stores \"memory notes\" in ChromaDB, uses an LLM (OpenAI/Ollama via litellm) to auto-generate keywords/context/tags on ingest, and runs an LLM-driven \"memory evolution\" step that links new notes to neighbors and rewrites neighbor attributes (tags/context). Repo: /Users/coby/chanyoung/memsys-refsrc/A-mem.",
+    "architecture_overview": "Three files under agentic_memory/. (1) memory_system.py: MemoryNote (a plain data holder, NOT a dataclass) + AgenticMemorySystem, the orchestrator that owns an in-memory dict self.memories: {id -> MemoryNote}, a ChromaRetriever, an LLMController, and an evolution counter. (2) retrievers.py: ChromaRetriever wraps a ChromaDB client + SentenceTransformer embedding function; plus Persistent/Copied variants for cross-session sharing. (3) llm_controller.py: thin backend abstraction over OpenAI SDK and Ollama (litellm), both forced into JSON-object mode.\n\nThe canonical flow is add_note() -> MemoryNote(...) -> process_memory() (the agentic evolution step) -> store in self.memories dict AND ChromaDB. NOTE: the dict self.memories is the source of truth; ChromaDB is a secondary index used only for vector search. There are TWO parallel representations of every note (Python object + Chroma metadata) kept in sync by hand on every add/update/delete, which is a major correctness liability (memory_system.py:242-258, 378-394).\n\nCritically, the marketing/paper describes auto-generation of keywords/context/tags via analyze_content() with an LLM prompt — but add_note() NEVER calls analyze_content() (memory_system.py:233-264). New notes get the bare constructor defaults (keywords=[], context='General', tags=[]) unless the caller passes them. analyze_content() (memory_system.py:159-231) is dead code in the default ingest path. The README/example claim \"A-mem automatically generates tags/context via LLM here\" (examples/sovereign_memory.py:30) is FALSE for add_note as written.",
+    "key_files": [
+      {
+        "path": "/Users/coby/chanyoung/memsys-refsrc/A-mem/agentic_memory/memory_system.py",
+        "role": "MemoryNote data model, AgenticMemorySystem orchestrator, add_note ingest, process_memory evolution (link + neighbor rewrite), search variants, consolidate_memories. The entire memory core."
+      },
+      {
+        "path": "/Users/coby/chanyoung/memsys-refsrc/A-mem/agentic_memory/retrievers.py",
+        "role": "ChromaRetriever (vector store wrapper, embedding fn, add/delete/search + metadata serialization round-trip via json.dumps / ast.literal_eval). Persistent and Copied variants for cross-session/agent sharing."
+      },
+      {
+        "path": "/Users/coby/chanyoung/memsys-refsrc/A-mem/agentic_memory/llm_controller.py",
+        "role": "LLM backend abstraction: OpenAIController (OpenAI SDK, temp 0.7, max_tokens 1000) and OllamaController (litellm). Forces 'You must respond with a JSON object.' system prompt."
+      },
+      {
+        "path": "/Users/coby/chanyoung/memsys-refsrc/A-mem/tests/test_memory_system.py",
+        "role": "Unit tests — hit the REAL OpenAI API (no mocking), so they are integration tests requiring OPENAI_API_KEY and incurring cost/nondeterminism."
+      },
+      {
+        "path": "/Users/coby/chanyoung/memsys-refsrc/A-mem/examples/sovereign_memory.py",
+        "role": "Ollama/local usage example; documents the (incorrect) claim that add_note auto-generates metadata."
+      }
+    ],
+    "data_model": "MemoryNote (memory_system.py:24-81) is a plain class (not @dataclass, no __eq__/__repr__). Fields set in __init__:\n- content: str (the note text)\n- id: str (uuid4 if not supplied) (line 65)\n- keywords: List[str], default [] (line 68)\n- links: Dict per type hint but defaults to [] — a LIST, type annotation lies (line 69). Holds neighbor memory IDs (strings).\n- context: str, default 'General' (line 70)\n- category: str, default 'Uncategorized' (line 71)\n- tags: List[str], default [] (line 72)\n- timestamp: str 'YYYYMMDDHHMM' (line 75-76)\n- last_accessed: str 'YYYYMMDDHHMM' (line 77) — set once, never actually updated on reads anywhere in the code.\n- retrieval_count: int, default 0 (line 80) — declared but never incremented anywhere; dead usage stat.\n- evolution_history: List, default [] (line 81) — declared but NEVER appended to anywhere; the 'evolution tracking' in the docstring is unimplemented.\n\nStorage representations: (1) self.memories dict in RAM. (2) ChromaDB collection 'memories' where each note = document(content) + metadata(all 11 fields) + id. In Chroma, lists/dicts are json.dumps'd to strings (retrievers.py:73-79) because Chroma metadata only accepts scalars, then converted back with ast.literal_eval on read (retrievers.py:130-144). No SQL, no graph DB — 'links' is just an ID list embedded in metadata; the Zettelkasten graph is implicit/emergent, never materialized as a real graph structure.",
+    "write_path": "add_note(content, time=None, **kwargs) (memory_system.py:233-264):\n1. If time passed, set kwargs['timestamp']=time (line 236-237).\n2. note = MemoryNote(content, **kwargs) — metadata comes ONLY from kwargs; no LLM extraction here (line 238).\n3. evo_label, note = self.process_memory(note) — the evolution/linking step (line 241).\n4. self.memories[note.id] = note (line 242).\n5. Build metadata dict of all 11 fields and self.retriever.add_document(content, metadata, id) (line 245-258).\n6. If evo_label True: self.evo_cnt += 1; every evo_threshold (default 100) hits, call consolidate_memories() (line 260-263).\n\nprocess_memory(note) (memory_system.py:590-727) — the agentic core:\n- If self.memories empty (first note ever): return (False, note), no evolution (line 600-601).\n- neighbors_text, indices = find_related_memories(note.content, k=5) (line 605). find_related_memories (line 288-313) does a Chroma top-k search and formats each neighbor into a tab-separated string 'memory index:{i}\\ttalk start time:{timestamp}\\tmemory content:...\\tcontext...\\tkeywords...\\ttags...'. CRITICAL: indices are just the enumerate position 0..k-1 (line 308 indices.append(i)) — NOT memory IDs and NOT positions into self.memories. This index is later misused (see landmines).\n- Build evolution prompt via self._evolution_system_prompt.format(...) (line 612-618) and call LLM with a strict JSON schema (line 621-671).\n- Parse should_evolve (line 673-674). If True, loop over actions (line 678):\n  - 'strengthen': note.links.extend(suggested_connections); note.tags = tags_to_update (line 679-683). suggested_connections is meant to be neighbor IDs but the prompt feeds the model 'memory index:{i}' not real IDs, so the model returns indices/garbage, not valid IDs.\n  - 'update_neighbor': for i in range(min(len(indices), len(new_tags_neighborhood))): take new tag list + new context, then memorytmp_idx = indices[i]; notetmp = noteslist[memorytmp_idx]; notetmp.tags=tag; notetmp.context=context; write back to self.memories (line 684-716). This rewrites NEIGHBOR notes' tags/context in place.\n\nThere is NO deduplication of notes (no content-hash, no near-duplicate detection), NO conflict detection between contradictory facts. 'Evolution' is purely additive linking + attribute rewriting. The neighbor-rewrite writes only to the RAM dict — it does NOT re-sync the rewritten neighbors into ChromaDB, so Chroma metadata for neighbors goes stale until the next consolidate_memories() reset (line 266-286 rebuilds the whole collection from the dict).",
+    "read_path": "Vector top-k cosine via ChromaDB, NO reranker, NO BM25 actually wired in (despite imports). Multiple overlapping search methods exist:\n- ChromaRetriever.search(query, k) (retrievers.py:93-109): self.collection.query(query_texts=[query], n_results=k). Embeddings = SentenceTransformerEmbeddingFunction(model_name) default 'all-MiniLM-L6-v2' (retrievers.py:56-58). Chroma default space is L2/cosine on normalized MiniLM embeddings; returns ids, metadatas, distances. 'distances' (lower=closer), NOT similarity — but the code labels them 'score' everywhere (e.g. memory_system.py:447) and never inverts, so any consumer ranking by 'score' descending would be backwards.\n- search() (memory_system.py:432-450): single Chroma query, returns id/content/context/keywords/score, slices [:k].\n- _search() (memory_system.py:452-507): claims 'hybrid' combining Chroma + 'embedding retriever', but it calls self.retriever.search() TWICE identically (line 473 and 489) and then iterates the second result as if it were a list of dicts when it is actually a Chroma result dict — dead/broken code.\n- search_agentic() (memory_system.py:509-588): the real public search. Top-k Chroma, builds memory_dicts from metadata, then expands with linked neighbors (is_neighbor flag) up to k total. The neighbor expansion reads links from the live MemoryNote objects.\n\nNo token-budget management, no cross-encoder rerank, no MMR/diversity, no recency weighting at read time. rank_bm25.BM25Okapi, SentenceTransformer, AutoModel/AutoTokenizer, sklearn cosine_similarity, nltk word_tokenize are all imported at the top of memory_system.py (lines 9-16) but NONE are used in the class — pure import bloat / leftover from an earlier hybrid design.",
+    "conflict_resolution_impl": "None in the contradiction sense. There is no detection of conflicting/contradictory facts and no resolution policy (no 'newer wins', no supersede, no merge). The only thing resembling reconciliation is the LLM 'update_neighbor' action (memory_system.py:684-716) which can REWRITE a neighbor's tags and context wholesale (last write wins, blindly trusting the LLM output). On 'strengthen' the new note's tags are also fully REPLACED by tags_to_update (note.tags = new_tags, line 683) rather than merged. Links are append-only via list.extend (line 682) with NO dedup, so the same neighbor can be linked multiple times. Update of an existing note (update(), line 357-396) is a delete-then-re-add in Chroma and a blind setattr loop on the RAM object — again last-write-wins, no versioning.",
+    "forgetting_impl": "No real forgetting. No TTL, no decay function, no eviction, no relevance-based pruning, no invalidation. retrieval_count and last_accessed exist on MemoryNote but are never updated, so no usage-based aging is even possible. The only consolidation is consolidate_memories() (memory_system.py:266-286), which is misleadingly named: it does NOT summarize, merge, or drop anything — it tears down the Chroma collection and rebuilds it by re-adding EVERY note from the RAM dict. Its real purpose is to flush the stale-Chroma problem caused by neighbor rewrites not being synced. It is triggered only as a side effect every evo_threshold (default 100) successful evolutions (line 260-263). Memory grows unbounded.",
+    "notable_prompts": [
+      "EVOLUTION PROMPT (memory_system.py:127-157, self._evolution_system_prompt): 'You are an AI memory evolution agent... Analyze the new memory note according to keywords and context, also with their several nearest neighbors memory.' Injects {context},{content},{keywords},{nearest_neighbors_memories},{neighbor_number}. Asks: (1) Should this memory be evolved? (2) actions strengthen|update_neighbor: 2.1 strengthen -> which memory to connect to + updated tags of THIS memory; 2.2 update_neighbor -> update context+tags of the neighbor memories (must keep same length as #neighbors, in input order). Returns JSON {should_evolve, actions[], suggested_connections[], tags_to_update[], new_context_neighborhood[], new_tags_neighborhood[[...]]}. This single prompt is the entire 'Zettelkasten' intelligence: link decision + neighbor-attribute rewriting fused into one call.",
+      "CONTENT ANALYSIS PROMPT (memory_system.py:176-203, analyze_content): 'Generate a structured analysis... 1. salient keywords (nouns/verbs/concepts, most-to-least important, exclude speaker names/time, >=3) 2. context = ONE sentence (main topic/domain, key points, audience/purpose) 3. tags = broad categories (domain/format/type, >=3).' Returns JSON {keywords[], context, tags[]}. IMPORTANT: this prompt is NEVER invoked by add_note — it is dead in the default ingest path.",
+      "SYSTEM PRIMER (llm_controller.py:30 and :76): both backends hardcode system message 'You must respond with a JSON object.' to coerce JSON mode alongside the response_format schema."
+    ],
+    "borrowable": [
+      {
+        "pattern": "Fuse 'should I link?' + 'how should I update neighbors?' into ONE structured-JSON LLM call over the top-k neighbors, with a strict json_schema response_format",
+        "file_ref": "memory_system.py:127-157 (prompt) + 621-671 (strict schema)",
+        "why_good": "One round-trip does both graph-linking and neighbor attribute reconciliation; the strict schema with required fields + additionalProperties:false is a clean way to make LLM output parseable. Good skeleton — but we should pass real IDs, not display indices."
+      },
+      {
+        "pattern": "Note as a self-describing unit carrying semantic metadata (keywords/context/tags) + relational links + temporal fields, embedding only the content while storing metadata alongside",
+        "file_ref": "memory_system.py:24-81, 245-258",
+        "why_good": "Clean separation of 'what to embed' (content) vs 'what to filter/display by' (metadata). The Zettelkasten idea of self-contained linked atomic notes is the right mental model for a personal memory product."
+      },
+      {
+        "pattern": "Metadata serialization round-trip for a scalar-only vector store: json.dumps lists/dicts on write, ast.literal_eval back on read",
+        "file_ref": "retrievers.py:73-79 + 130-144",
+        "why_good": "A pragmatic adapter for ChromaDB's scalar-only metadata constraint. (Caveat: ast.literal_eval is safer than eval but still prefer json.loads to be robust.)"
+      },
+      {
+        "pattern": "Pluggable LLM backend behind a tiny ABC (OpenAI vs Ollama) with identical get_completion(prompt, response_format) signature",
+        "file_ref": "llm_controller.py:7-97",
+        "why_good": "Lets you swap cloud vs local sovereign inference without touching the memory core; good seam for our own provider abstraction."
+      },
+      {
+        "pattern": "Persistent + Copied Chroma retriever variants for cross-session and per-agent isolated copies of a shared starting memory",
+        "file_ref": "retrievers.py:147-303",
+        "why_good": "CopiedChromaRetriever clones a base collection into a temp dir and auto-cleans via atexit — a neat pattern for giving each agent/session an isolated fork of shared memory."
+      }
+    ],
+    "landmines": [
+      {
+        "issue": "add_note NEVER calls analyze_content — new notes get empty keywords/tags and context='General' unless the caller supplies them. The advertised 'automatic LLM metadata extraction on ingest' does not happen. Contradicts README and examples/sovereign_memory.py:30.",
+        "file_ref": "memory_system.py:233-264 vs 159-231"
+      },
+      {
+        "issue": "'indices' are enumerate positions 0..k-1 of the search RESULT (find_related_memories line 308), but process_memory then uses indices[i] as an index into noteslist=list(self.memories.values()) (line 708-716). These two orderings are unrelated, so update_neighbor rewrites the WRONG notes' tags/context. Silent data corruption.",
+        "file_ref": "memory_system.py:308, 687-716"
+      },
+      {
+        "issue": "suggested_connections from the LLM are appended to note.links as 'links', but the prompt only ever showed the model 'memory index:{i}' (line 307), never real UUIDs. So links contain indices/hallucinated strings, not valid memory IDs — the graph edges are largely invalid. find_related_memories_raw / search_agentic then silently skip link_ids not in self.memories (line 339, 568).",
+        "file_ref": "memory_system.py:307, 680-682, 339, 568"
+      },
+      {
+        "issue": "Neighbor rewrites in update_neighbor mutate only the RAM dict, NOT ChromaDB. Chroma metadata for neighbors is stale until a full consolidate_memories() rebuild every 100 evolutions. Search returning Chroma metadata (search_agentic uses metadata) will serve outdated tags/context.",
+        "file_ref": "memory_system.py:710-716 vs 266-286"
+      },
+      {
+        "issue": "Constructor RESETS the entire ChromaDB collection on every AgenticMemorySystem() init (temp_retriever.client.reset()). Instantiating the system wipes all prior in-process Chroma data. Dangerous default for any real product.",
+        "file_ref": "memory_system.py:111-119"
+      },
+      {
+        "issue": "'distances' from Chroma (lower=closer) are stored/returned as 'score' with no inversion; any caller sorting by score descending gets worst-first.",
+        "file_ref": "memory_system.py:447, 485, 549"
+      },
+      {
+        "issue": "_search() advertises hybrid retrieval but calls the same Chroma search twice and then iterates a dict as a list — broken/dead. BM25, sklearn, transformers, nltk are imported but unused.",
+        "file_ref": "memory_system.py:452-507, 9-16"
+      },
+      {
+        "issue": "evolution_history, retrieval_count, last_accessed are declared but never written — 'usage statistics' and 'evolution tracking' in the docstring are unimplemented.",
+        "file_ref": "memory_system.py:34-81"
+      },
+      {
+        "issue": "No dedup, no contradiction handling, unbounded growth, no forgetting. links append-only with no de-dup.",
+        "file_ref": "memory_system.py:682, 266-286"
+      }
+    ],
+    "production_readiness": "Research-grade / reference prototype, NOT production-ready. Honest assessment:\n- Correctness: contains at least three latent data-corruption bugs (the index/ID confusion in update_neighbor, invalid link IDs, stale-Chroma-after-rewrite). The 'hybrid search' is broken and most public search methods (search, _search, search_agentic) overlap with subtly different behavior — unclear which is canonical. The headline 'auto-metadata on ingest' is not wired up.\n- Tests: tests/test_memory_system.py exercises real behavior but hits the LIVE OpenAI API with no mocking (setUp builds a real AgenticMemorySystem with llm_model gpt-4o-mini), so the suite is nondeterministic, costs money, requires a key, and asserts mostly 'not None' rather than correct values — it would not catch the index/link bugs. Retriever tests are more solid. No CI signal on the core evolution logic.\n- Error handling: broad try/except that swallows exceptions and returns empty/default (e.g. analyze_content returns {keywords:[],context:'General',tags:[]} on any error; process_memory returns (False,note) on any error) — fails silent, hides corruption.\n- Scale: self.memories is an in-process dict (no persistence of the source-of-truth objects — only Chroma persists, and only via the Persistent variant which add_note does NOT use). consolidate_memories rebuilds the entire collection O(N) and is the only sync mechanism. One LLM call per add_note (the evolution step) — latency + cost scale linearly with ingest and there is no batching. Constructor wipes Chroma. No concurrency safety, no transactions across the dual store.\n- Verdict: excellent as a CONCEPTUAL blueprint for the Zettelkasten approach (atomic notes + LLM-driven linking + neighbor reconciliation in one structured call) and for the backend/retriever abstraction patterns. For our own product we should: pass real IDs (not display indices) into/out of the evolution prompt; make the vector store the single source of truth or use a real transactional store; add dedup + contradiction policy + forgetting; mock the LLM in tests and assert on actual link/tag outcomes; remove the constructor reset and the dead hybrid/import code; and actually call the metadata-extraction prompt on ingest.",
+    "storage_impl": "Dual store kept in manual sync. (1) Authoritative: self.memories: Dict[str, MemoryNote] in RAM, populated in add_note (memory_system.py:242) — NOT persisted to disk by the default ChromaRetriever path. (2) Index: ChromaDB collection 'memories'. Default ChromaRetriever uses chromadb.Client(Settings(allow_reset=True)) — an in-memory/ephemeral client (retrievers.py:55); PersistentChromaRetriever uses chromadb.PersistentClient(path=~/.chromadb or given dir) (retrievers.py:188) but add_note/AgenticMemorySystem instantiate the NON-persistent ChromaRetriever (memory_system.py:113,119,269), so out of the box NOTHING survives process restart. Each Chroma record = documents=[content], metadatas=[serialized 11-field dict], ids=[uuid]. Lists/dicts json.dumps'd to strings on write (retrievers.py:73-79), ast.literal_eval'd back on read (retrievers.py:130-144). Embeddings computed by SentenceTransformerEmbeddingFunction('all-MiniLM-L6-v2') inside Chroma. delete = collection.delete(ids=[id]) + del dict entry (memory_system.py:398-413); update = Chroma delete+re-add + setattr loop (line 357-396)."
+  }
+]

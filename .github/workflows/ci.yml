@@ -1,0 +1,56 @@
+name: CI
+
+# Core merge gate (R16/R17): lint + types + offline mock-LLM tests.
+# NO API keys, NO network-dependent steps — tests-core run on HashEmbedder +
+# mock LLM only (markers `slow`/`live` are excluded).
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: lint + mypy + pytest (offline)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install (.[dev])
+        run: uv pip install --system ".[dev]"
+
+      - name: Ruff lint
+        run: ruff check .
+
+      - name: Ruff format check
+        run: ruff format --check .
+
+      - name: mypy (strict)
+        run: mypy cold_frame
+
+      - name: pytest (core, offline)
+        # No keys, no network: exclude slow + live markers.
+        run: pytest -q -m "not slow and not live"
+
+  # ── Publish gate (DEFERRED) ──────────────────────────────────────────────
+  # Intentionally NO `twine upload` / `uv publish` job here.
+  # Per CLAUDE.md §8 + D19: the dist name `cold-frame` (D19) vs abandon-the-name
+  # (D-P2) is unresolved and PyPI/trademark clearance is unverified. Do NOT add
+  # a publish job until that gate (D19 name/trademark/PyPI clearance) closes.
