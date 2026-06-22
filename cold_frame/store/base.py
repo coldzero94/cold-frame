@@ -141,6 +141,28 @@ class Store(ABC):
         self, id: str, status: StatusLiteral, *, invalid_at: datetime | None = None
     ) -> None: ...
 
+    @abstractmethod
+    def archive(self, id: str, *, now: datetime) -> None:
+        """Soft-archive a note (forgetting/cap): status→archived + expired_at=now (txn-time
+        end) + co-written ``archive`` event + note_history, ONE txn (I2/I3/I17). Valid-time
+        (valid_at/invalid_at) is unchanged — the fact isn't false, we just stopped keeping it."""
+        ...
+
+    @abstractmethod
+    def revive(self, id: str) -> None:
+        """Un-archive (status→active, clear invalid_at/expired_at) + co-written event (I2)."""
+        ...
+
+    @abstractmethod
+    def set_pinned(self, id: str, pinned: bool) -> None:
+        """Set the pin flag; pinned notes are exempt from decay/archive (I13)."""
+        ...
+
+    @abstractmethod
+    def cold_demote(self, ids: list[str], *, factor: float) -> None:
+        """Multiply decay_S by ``factor`` (consolidation cold-demote — sources fade faster)."""
+        ...
+
     # ── retrieval ───────────────────────────────────────────────────────────
     @abstractmethod
     def knn(

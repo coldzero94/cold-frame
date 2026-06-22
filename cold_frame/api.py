@@ -15,6 +15,7 @@ from typing import Literal, TypedDict
 
 from cold_frame.branding import DB_PATH
 from cold_frame.exceptions import EmbedderMismatchError, NoteNotFound
+from cold_frame.forget.consolidate import Consolidator
 from cold_frame.llm.base import LLM, Clock, Embedder, HashEmbedder, SystemClock
 from cold_frame.models import (
     AddResult,
@@ -87,6 +88,13 @@ class Memory:
         self._read = RetrievePipeline(
             self._store, embedder=self._embedder, llm=self._llm, clock=self._clock
         )
+        self._consolidator = Consolidator(
+            self._store,
+            embedder=self._embedder,
+            llm=self._llm,
+            clock=self._clock,
+            new_id=self._new_id,
+        )
 
     # ── write ────────────────────────────────────────────────────────────
     def add(
@@ -150,13 +158,16 @@ class Memory:
         raise NotImplementedError
 
     def pin(self, id: str) -> Note:
-        raise NotImplementedError
+        self._store.set_pinned(id, True)  # exempt from decay/archive (I13)
+        return self.get(id)
 
     def forget(self, id: str) -> Note:
-        raise NotImplementedError
+        self._store.archive(id, now=self._clock.now())  # archive-not-delete (I2), event co-written
+        return self.get(id)
 
     def revive(self, id: str) -> Note:
-        raise NotImplementedError
+        self._store.revive(id)  # un-archive: clears invalid_at/expired_at, event co-written
+        return self.get(id)
 
     # ── read ─────────────────────────────────────────────────────────────
     def search(
@@ -218,9 +229,15 @@ class Memory:
 
     # ── maintenance / forgetting ─────────────────────────────────────────
     def consolidate(
-        self, *, scope: Scope | None = None, now: datetime | None = None
+        self,
+        *,
+        scope: Scope | None = None,
+        now: datetime | None = None,
+        caps: dict[str, int] | None = None,
     ) -> ConsolidateResult:
-        raise NotImplementedError
+        return self._consolidator.consolidate(
+            scope=scope or self._default_scope, now=now, caps=caps
+        )
 
     def triage_queue(self, *, scope: Scope | None = None, limit: int = 50) -> list[TriageItem]:
         raise NotImplementedError

@@ -25,6 +25,7 @@ _SUBCOMMANDS: tuple[str, ...] = (
     "timeline",
     "path",
     "doctor",
+    "consolidate",
     "ui",
     "mcp",
     "setup",
@@ -89,6 +90,12 @@ def _cmd_mcp(args: argparse.Namespace) -> int:
     return mcp_main()
 
 
+def _cmd_consolidate(args: argparse.Namespace) -> int:
+    res = _memory(args).consolidate()  # manual forgetting trigger (SPEC §6); sync
+    print(f"consolidate: archived {len(res.archived)}, merged {len(res.merged)}")
+    return 0
+
+
 def _cmd_ui(args: argparse.Namespace) -> int:
     from cold_frame.ui.server import serve  # lazy import (stdlib-only server)
 
@@ -129,6 +136,9 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("path", help="show edge path between notes")
     sub.add_parser("doctor", help="run install/DB/embedder/invariant checks").set_defaults(
         func=_cmd_doctor
+    )
+    sub.add_parser("consolidate", help="run forgetting/consolidation now").set_defaults(
+        func=_cmd_consolidate
     )
     p_ui = sub.add_parser("ui", help="launch the local web UI")
     p_ui.add_argument("--port", type=int, default=None, help="UI port (else 27182 + auto-fallback)")
