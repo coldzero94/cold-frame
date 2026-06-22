@@ -32,6 +32,7 @@ from cold_frame.models import (
     TriageItem,
 )
 from cold_frame.read.retrieve import RetrievePipeline
+from cold_frame.read.strength import compute_strength
 from cold_frame.store.sqlite import SQLiteStore
 from cold_frame.write.core import WriteCore
 from cold_frame.write.extract import extract
@@ -190,10 +191,22 @@ class Memory:
         return self._store.doctor()
 
     def get_many(self, ids: list[str]) -> list[Note]:
-        raise NotImplementedError
+        return self._store.get_notes(ids)
 
     def strength(self, id: str) -> Strength:
-        raise NotImplementedError
+        return compute_strength(self.get(id), self._clock.now())
+
+    def list_active(
+        self,
+        *,
+        scope: Scope | None = None,
+        sort: Literal["decay", "recent", "importance"] = "recent",
+        limit: int = 200,
+    ) -> list[Note]:
+        """Active notes for the inspector/UI (the 'what I know about you now' list)."""
+        return self._store.by_status(
+            scope=scope or self._default_scope, status="active", sort=sort, limit=limit
+        )
 
     def neighbors(
         self, id: str, *, relations: list[EdgeRelation] | None = None, hops: int = 1

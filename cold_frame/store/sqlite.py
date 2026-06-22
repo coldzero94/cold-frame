@@ -855,7 +855,26 @@ class SQLiteStore(Store):
         limit: int,
         offset: int = 0,
     ) -> list[Note]:
-        raise NotImplementedError
+        order = {
+            "recent": "created_at DESC",
+            "importance": "importance DESC",
+            "decay": "decay_S ASC",  # least-stable (most-decayed) first
+        }[sort]
+        clauses = ["user_id = ?", "status = ?"]
+        params: list[Any] = [scope.user_id, status]
+        if scope.agent_id is not None:
+            clauses.append("agent_id = ?")
+            params.append(scope.agent_id)
+        if scope.session_id is not None:
+            clauses.append("session_id = ?")
+            params.append(scope.session_id)
+        rows = self._conn.execute(
+            f"SELECT * FROM notes WHERE {' AND '.join(clauses)} "
+            f"ORDER BY {order}, id LIMIT ? OFFSET ?",
+            [*params, limit, offset],
+        ).fetchall()
+        sources = self._load_sources([str(r["id"]) for r in rows])
+        return [self._row_to_note(r, sources.get(str(r["id"]), [])) for r in rows]
 
     def as_of(self, ids: list[str], *, at: datetime) -> list[Note]:
         raise NotImplementedError
