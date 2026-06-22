@@ -1,22 +1,122 @@
 """MCP stdio server (SPEC §8) — the ONE async seam (I4).
 
-Leaf stub. This is the only module allowed ``async def``: each tool handler wraps a
-sync ``Memory`` call in ``anyio.to_thread.run_sync``. The ``mcp`` SDK is import-guarded
-(behind the ``[server]``/MCP extra, I9) so importing this module never pulls heavy deps
-into core. ``main()`` is a stub until P1 wires up ``FastMCP``.
+This is the only module with ``async def``: each tool handler wraps a SYNC ``Memory``
+call in ``anyio.to_thread.run_sync`` (no sync/async logic duplication — the logic lives
+in the sync ``_*_impl`` helpers). The ``mcp`` SDK and ``anyio`` are imported LAZILY
+(behind the ``[mcp]`` extra, I9) so importing this module never pulls heavy deps into
+core; ``main()`` reports a clean install hint when the SDK is absent.
 """
 
 from __future__ import annotations
 
-from cold_frame.branding import MCP_ID
+from typing import Any
+
+from cold_frame.api import Memory
+from cold_frame.branding import MCP_ID, PKG, fact_deeplink
+from cold_frame.exceptions import ColdFrameError, StoreError, mcp_code_for
+
+_INSTALL_HINT = (
+    f"{MCP_ID}: the MCP server needs an optional dependency — "
+    f"install it with `pip install {PKG}[mcp]` (or `uv sync --extra mcp`)."
+)
+
+# One Memory per server process, set by build_server() at serve time.
+_MEMORY: Memory | None = None
+
+
+def _require_memory() -> Memory:
+    if _MEMORY is None:
+        raise StoreError("MCP server memory is not initialized")
+    return _MEMORY
+
+
+# ── sync tool logic (the single implementation; fully testable offline) ───────
+def _search_impl(mem: Memory, query: str, k: int = 10) -> dict[str, Any]:
+    res = mem.search(query, k=k)
+    return {
+        "hits": [
+            {
+                "id": h.note.id,
+                "content": h.note.content,
+                "score": h.score,
+                "deeplink": fact_deeplink(h.note.id),
+            }
+            for h in res.hits
+        ],
+        "used": res.used_tokens or 0,
+    }
+
+
+def _add_impl(mem: Memory, text: str) -> dict[str, Any]:
+    res = mem.add(text)
+    return {
+        "added": [
+            {"id": n.id, "content": n.content, "deeplink": fact_deeplink(n.id)} for n in res.added
+        ],
+        "held": [n.id for n in res.held],
+        "blocked": [b.reason for b in res.blocked],
+    }
+
+
+def _error_response(exc: ColdFrameError) -> dict[str, Any]:
+    """Map an internal error to a stable MCP error code (exceptions.mcp_code_for)."""
+    return {"error": {"code": mcp_code_for(exc), "message": str(exc)}}
+
+
+# ── async tool handlers (the ONLY async in the codebase, I4) ──────────────────
+async def search_memory(query: str, k: int = 10) -> dict[str, Any]:
+    """MCP tool: search memory; returns {hits:[{id,content,score,deeplink}], used}."""
+    import anyio
+
+    mem = _require_memory()
+    try:
+        result: dict[str, Any] = await anyio.to_thread.run_sync(lambda: _search_impl(mem, query, k))
+        return result
+    except ColdFrameError as exc:
+        return _error_response(exc)
+
+
+async def add_memory(text: str) -> dict[str, Any]:
+    """MCP tool: add a fact/messages; returns {added, held, blocked}."""
+    import anyio
+
+    mem = _require_memory()
+    try:
+        result: dict[str, Any] = await anyio.to_thread.run_sync(lambda: _add_impl(mem, text))
+        return result
+    except ColdFrameError as exc:
+        return _error_response(exc)
+
+
+# ── server wiring (lazy SDK import, I9) ───────────────────────────────────────
+def build_server(memory: Memory | None = None) -> Any:  # noqa: ANN401 - FastMCP type optional
+    """Construct the FastMCP stdio server with the two tools registered.
+
+    Raises ``ColdFrameError`` (install hint) if the ``[mcp]`` extra is not installed —
+    BEFORE touching disk, so a missing SDK never creates a DB.
+    """
+    try:
+        from mcp.server.fastmcp import FastMCP
+    except ImportError as exc:
+        raise ColdFrameError(_INSTALL_HINT) from exc
+
+    global _MEMORY
+    _MEMORY = memory if memory is not None else Memory()
+    server = FastMCP(MCP_ID)
+    server.tool()(search_memory)
+    server.tool()(add_memory)
+    return server
 
 
 def main() -> int:
-    """Run the ``cold-frame`` MCP stdio server (stub). Returns a process exit code."""
-    # P1: lazily import the `mcp` SDK here (import-guarded, I9), construct one Memory,
-    # register search_memory/add_memory/summarize/correct_memory + resources, serve stdio.
-    print(f"{MCP_ID}: MCP server not implemented")
-    return 1
+    """Run the ``cold-frame`` MCP stdio server. Returns a process exit code."""
+    try:
+        server = build_server()
+    except ColdFrameError as exc:
+        print(str(exc))
+        return 2
+    server.run()  # serve over stdio (blocks)
+    return 0
 
 
 if __name__ == "__main__":

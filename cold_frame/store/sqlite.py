@@ -306,7 +306,15 @@ class SQLiteStore(Store):
         parent = Path(db_path).parent
         if str(parent) not in ("", "."):
             parent.mkdir(parents=True, exist_ok=True)  # e.g. ~/.cold-frame on first run
-        conn = sqlite3.connect(db_path, timeout=BUSY_TIMEOUT_MS / 1000, isolation_level=None)
+        # check_same_thread=False: the MCP async seam runs sync Store calls in anyio worker
+        # threads (I4). Access stays serialized (sequential tool calls + BEGIN IMMEDIATE +
+        # busy_timeout); per-thread connection pooling is the P3 concurrency step (§3.2).
+        conn = sqlite3.connect(
+            db_path,
+            timeout=BUSY_TIMEOUT_MS / 1000,
+            isolation_level=None,
+            check_same_thread=False,
+        )
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
         conn.execute("PRAGMA foreign_keys=ON")
