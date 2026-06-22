@@ -1,0 +1,34 @@
+# P1 gate suite: precision@k (the relevant note ranks first among distractors).
+# Offline: HashEmbedder + BM25 + RRF, no LLM.
+suite: precision_at_k
+embedder: hash
+cases:
+  - id: relevant-note-tops-among-distractors
+    description: "each query surfaces its own relevant note at rank 0"
+    steps:
+      - op: add
+        at: "2026-01-02T09:00:00Z"
+        scope: {user_id: u}
+        text: "I prefer dark roast coffee in the morning"
+      - op: add
+        at: "2026-01-02T09:01:00Z"
+        scope: {user_id: u}
+        text: "I drive a Ferrari 488 GTB on weekends"
+      - op: add
+        at: "2026-01-02T09:02:00Z"
+        scope: {user_id: u}
+        text: "My favorite programming language is Python"
+    expect:
+      search:
+        - query: "coffee preference"
+          scope: {user_id: u}
+          k: 3
+          expect_top_content_like: "dark roast coffee"
+        - query: "what car do I drive"
+          scope: {user_id: u}
+          k: 3
+          expect_top_content_like: "Ferrari"
+        - query: "favorite programming language"
+          scope: {user_id: u}
+          k: 3
+          expect_top_content_like: "Python"

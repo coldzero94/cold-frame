@@ -7,6 +7,26 @@ unmatched call is a hard ``EvalError`` by design.
 
 from __future__ import annotations
 
-from cold_frame.eval.harness import Case, EvalError, RunReport, Suite, load_suite, run
+from cold_frame.eval.harness import (
+    Case,
+    CaseReport,
+    EvalError,
+    ScriptedLLM,
+    Suite,
+    SuiteReport,
+    load_suite,
+    run_case,
+    run_suite,
+)
 
-__all__ = ["Case", "EvalError", "RunReport", "Suite", "load_suite", "run"]
+__all__ = [
+    "Case",
+    "CaseReport",
+    "EvalError",
+    "ScriptedLLM",
+    "Suite",
+    "SuiteReport",
+    "load_suite",
+    "run_case",
+    "run_suite",
+]

@@ -1,0 +1,33 @@
+# P1 gate suite: cross-scope (a search in scope B never returns scope A's notes).
+# Leak count MUST be 0 — the tenancy boundary.
+suite: cross_scope
+embedder: hash
+cases:
+  - id: no-leak-across-users
+    description: "alice's and bob's memories are isolated by scope"
+    steps:
+      - op: add
+        at: "2026-01-02T09:00:00Z"
+        scope: {user_id: alice}
+        text: "Alice prefers dark roast coffee"
+      - op: add
+        at: "2026-01-02T09:01:00Z"
+        scope: {user_id: bob}
+        text: "Bob prefers loose-leaf green tea"
+    expect:
+      search:
+        # bob searching for coffee must NOT see alice's coffee note
+        - query: "coffee"
+          scope: {user_id: bob}
+          expect_count: 0
+        # alice searching for tea must NOT see bob's tea note
+        - query: "tea"
+          scope: {user_id: alice}
+          expect_count: 0
+        # positive control: each user can still recall their own fact
+        - query: "coffee preference"
+          scope: {user_id: alice}
+          expect_top_content_like: "dark roast coffee"
+        - query: "tea preference"
+          scope: {user_id: bob}
+          expect_top_content_like: "green tea"

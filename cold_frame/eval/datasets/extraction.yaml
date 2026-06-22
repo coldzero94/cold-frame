@@ -1,0 +1,49 @@
+# P1 gate suite: extraction (offline naive — 1 user message = 1 episodic fact).
+# Runs with llm=None + HashEmbedder; no llm_script needed.
+suite: extraction
+embedder: hash
+cases:
+  - id: single-preference
+    description: "one user message becomes one active episodic fact, recallable by search"
+    steps:
+      - op: add
+        at: "2026-01-02T09:00:00Z"
+        scope: {user_id: alice}
+        text: "I prefer dark roast coffee in the morning"
+    expect:
+      notes:
+        - where: {content_like: "dark roast coffee"}
+          status: active
+          memory_type: episodic
+      search:
+        - query: "coffee preference"
+          scope: {user_id: alice}
+          expect_top_content_like: "dark roast coffee"
+
+  - id: multi-message-each-its-own-fact
+    description: "each user message is extracted as its own fact"
+    steps:
+      - op: add
+        at: "2026-01-02T09:00:00Z"
+        scope: {user_id: bob}
+        text: "I live in Seoul near the Han river"
+      - op: add
+        at: "2026-01-02T09:05:00Z"
+        scope: {user_id: bob}
+        text: "I work as a backend software engineer"
+    expect:
+      notes:
+        - where: {content_like: "Seoul"}
+          status: active
+          memory_type: episodic
+        - where: {content_like: "software engineer"}
+          status: active
+          memory_type: episodic
+      search:
+        # HashEmbedder is bag-of-words: queries must share vocabulary with the target.
+        - query: "where do I live"
+          scope: {user_id: bob}
+          expect_top_content_like: "Seoul"
+        - query: "software engineer work"
+          scope: {user_id: bob}
+          expect_top_content_like: "software engineer"
