@@ -89,6 +89,21 @@ def _cmd_mcp(args: argparse.Namespace) -> int:
     return mcp_main()
 
 
+def _cmd_ui(args: argparse.Namespace) -> int:
+    from cold_frame.ui.server import serve  # lazy import (stdlib-only server)
+
+    port = args.port or branding.UI_PORT
+
+    def _ready(resolved: int) -> None:
+        print(f"{PKG} ui → {branding.ui_base_url(resolved)}  (Ctrl-C to stop)")
+
+    try:
+        serve(_memory(args), port=port, on_ready=_ready)
+    except KeyboardInterrupt:
+        print("\nstopped")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Construct the argparse tree (one subparser per SPEC §9 subcommand)."""
     parser = argparse.ArgumentParser(prog=PKG, description="local-first memory for LLM agents")
@@ -115,7 +130,9 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("doctor", help="run install/DB/embedder/invariant checks").set_defaults(
         func=_cmd_doctor
     )
-    sub.add_parser("ui", help="launch the local web UI")
+    p_ui = sub.add_parser("ui", help="launch the local web UI")
+    p_ui.add_argument("--port", type=int, default=None, help="UI port (else 27182 + auto-fallback)")
+    p_ui.set_defaults(func=_cmd_ui)
     sub.add_parser("mcp", help="run the MCP stdio server").set_defaults(func=_cmd_mcp)
     sub.add_parser("setup", help="first-run setup")
 

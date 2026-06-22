@@ -89,6 +89,42 @@ def test_set_status_archive_and_revive(store: SQLiteStore) -> None:
     assert store.get_notes(["n"])[0].status == "active"
 
 
+def test_supersede_rolls_back_on_mid_txn_failure(
+    store: SQLiteStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    old = _note("old", "works at Vessl", T1)
+    store.add_note(old, _emb(old.content))
+
+    def _boom(note_id: str, emb: object) -> None:
+        raise RuntimeError("simulated mid-supersede failure")
+
+    monkeypatch.setattr(store, "_insert_vec", _boom)
+    with pytest.raises(StoreError):
+        store.supersede("old", _note("new", "works at Anthropic", T2), _emb("works at Anthropic"))
+
+    # full ROLLBACK (I3): old stays active/unversioned, new absent, no supersedes edge
+    old_after = store.get_notes(["old"])[0]
+    assert old_after.status == "active" and old_after.version == 1
+    assert store.get_notes(["new"]) == []
+    assert store.neighbors(["new"], relations=["supersedes"]) == []
+
+
+def test_add_note_provenance_guard_rejects_sourceless_active(store: SQLiteStore) -> None:
+    """I14: an active, high-confidence, source-less note is refused at the INSERT guard."""
+    bad = Note(
+        id="bad",
+        content="a high-confidence fact with no provenance",
+        memory_type="semantic",
+        scope=Scope(),
+        created_at=T1,
+        confidence=1.0,
+        sources=[],
+    )
+    with pytest.raises(StoreError):
+        store.add_note(bad, _emb(bad.content))
+    assert store.get_notes(["bad"]) == []
+
+
 def test_add_edge_and_neighbors_with_relation_filter(store: SQLiteStore) -> None:
     store.add_note(_note("a", "alpha topic", T1), _emb("alpha topic"))
     store.add_note(_note("b", "beta topic", T1), _emb("beta topic"))

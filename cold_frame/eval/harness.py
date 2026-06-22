@@ -77,9 +77,11 @@ class ExpectSearch(BaseModel):
     scope: Scope | None = None
     as_of: datetime | None = None
     k: int = 10
+    token_budget: int | None = None  # pass a token budget to the packer (§5.8)
     expect_top_content_like: str | None = None
     expect_contains: list[str] | None = None  # each substring must appear in some top-k hit
     expect_count: int | None = None  # e.g. 0 for the cross-scope leak guard
+    expect_used_le: int | None = None  # SearchResult.used_tokens must be <= this (budget cap)
 
 
 class ExpectBlock(BaseModel):
@@ -323,11 +325,17 @@ def _check_note(en: ExpectNote, notes: list[Note]) -> list[str]:
 
 
 def _check_search(es: ExpectSearch, mem: Memory) -> list[str]:
-    res = mem.search(es.query, scope=es.scope or Scope(), k=es.k, as_of=es.as_of)
+    res = mem.search(
+        es.query, scope=es.scope or Scope(), k=es.k, as_of=es.as_of, token_budget=es.token_budget
+    )
     hits = res.hits
     out: list[str] = []
     if es.expect_count is not None and len(hits) != es.expect_count:
         out.append(f"search {es.query!r}: got {len(hits)} hits, want {es.expect_count}")
+    if es.expect_used_le is not None:
+        used = res.used_tokens or 0
+        if used > es.expect_used_le:
+            out.append(f"search {es.query!r}: used {used} tokens > budget {es.expect_used_le}")
     if es.expect_top_content_like is not None:
         if not hits:
             out.append(f"search {es.query!r}: no hits, want top ~ {es.expect_top_content_like!r}")
