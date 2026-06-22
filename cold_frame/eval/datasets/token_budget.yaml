@@ -1,0 +1,32 @@
+# P3 gate suite: token_budget (packer respects the cap AND keeps the highest-rank fact).
+suite: token_budget
+embedder: hash
+cases:
+  - id: budget-keeps-top-drops-rest
+    description: "a tight budget keeps the top-ranked fact under the token cap, drops the rest"
+    steps:
+      - op: add
+        scope: {user_id: u}
+        text: "I prefer dark roast coffee"
+        extra: {raw: true}
+      - op: add
+        scope: {user_id: u}
+        text: "I prefer green tea"
+        extra: {raw: true}
+      - op: add
+        scope: {user_id: u}
+        text: "I prefer sparkling water"
+        extra: {raw: true}
+    expect:
+      search:
+        # all three share "I prefer"; the query strongly favors the coffee fact (top rank).
+        - query: "I prefer dark roast coffee"
+          scope: {user_id: u}
+          token_budget: 7
+          expect_used_le: 7  # used_tokens never exceeds the cap
+          expect_count: 1  # only the top fact fits → the rest are dropped
+          expect_top_content_like: "dark roast coffee"  # highest-strength note is present
+        # no budget → all matching facts returned (sanity)
+        - query: "I prefer dark roast coffee"
+          scope: {user_id: u}
+          expect_top_content_like: "dark roast coffee"

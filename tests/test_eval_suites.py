@@ -28,8 +28,15 @@ _CASES = _all_cases()
 
 def test_gate_suites_exist() -> None:
     suites = {cid.split(":", 1)[0] for cid, _ in _CASES}
-    # P1 gate + P2 gate (dedup + freshness)
-    assert {"extraction", "precision_at_k", "cross_scope", "dedup", "freshness"} <= suites
+    # P1 gate + P2 gate (dedup + freshness) + P3 gate (token_budget)
+    assert {
+        "extraction",
+        "precision_at_k",
+        "cross_scope",
+        "dedup",
+        "freshness",
+        "token_budget",
+    } <= suites
 
 
 @pytest.mark.parametrize("case", [c for _, c in _CASES], ids=[cid for cid, _ in _CASES])
