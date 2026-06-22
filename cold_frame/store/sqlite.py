@@ -13,8 +13,11 @@ quarantine is the ``held_for_human`` / ``quarantined`` / ``triage_reason`` flag 
 
 from __future__ import annotations
 
+import hashlib
+import json
 import sqlite3
 import uuid
+from collections import defaultdict
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -35,6 +38,7 @@ from cold_frame.models import (
     EdgeRelation,
     Note,
     Scope,
+    Source,
     StatusLiteral,
     UpdateType,
 )
@@ -54,6 +58,25 @@ def _to_iso(dt: datetime) -> str:
 def _from_iso(s: str) -> datetime:
     """ISO8601-UTC TEXT -> tz-aware UTC datetime."""
     return datetime.fromisoformat(s.replace("Z", "+00:00"))
+
+
+def _opt_iso(dt: datetime | None) -> str | None:
+    return None if dt is None else _to_iso(dt)
+
+
+def _opt_from_iso(s: str | None) -> datetime | None:
+    return None if s is None else _from_iso(s)
+
+
+def _content_hash(content: str) -> str:
+    """sha256 over whitespace-collapsed, lowercased content (dedup/event grain)."""
+    normalized = " ".join(content.split()).lower()
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def _vec_to_blob(emb: np.ndarray) -> bytes:
+    """float32 little-endian BLOB (dim*4 bytes), canonical vector storage (I10)."""
+    return np.ascontiguousarray(emb, dtype="<f4").tobytes()
 
 
 # ── schema: migration 0 -> 1 (full v1 DDL, idempotent via IF NOT EXISTS) ──────
@@ -235,6 +258,7 @@ class SQLiteStore(Store):
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute(f"PRAGMA wal_autocheckpoint={WAL_AUTOCHECKPOINT}")
         conn.execute("PRAGMA secure_delete=ON")
+        conn.row_factory = sqlite3.Row
         return conn
 
     # ── lifecycle ──────────────────────────────────────────────────────────
@@ -305,9 +329,136 @@ class SQLiteStore(Store):
         else:
             conn.execute("COMMIT")
 
-    # ── atomic write (units 2+) ─────────────────────────────────────────────
+    def _current_embedder_id(self) -> str:
+        if self._embedder is not None:
+            return self._embedder.meta.embedder_id
+        eid = self.get_meta("embedder_id")
+        if eid is None:
+            raise StoreError("no embedder configured and no embedder_id in meta")
+        return eid
+
+    def _next_hlc(self) -> str:
+        """Monotonic Hybrid Logical Clock string; advanced + persisted in the same txn."""
+        device_id = self.get_meta("device_id") or ""
+        last = self.get_meta("hlc_last") or f"0:0:{device_id}"
+        last_ms_s, last_c_s, _dev = last.split(":", 2)
+        now_ms = int(self._clock.now().timestamp() * 1000)
+        last_ms, last_c = int(last_ms_s), int(last_c_s)
+        ms, c = (now_ms, 0) if now_ms > last_ms else (last_ms, last_c + 1)
+        hlc = f"{ms}:{c}:{device_id}"
+        self.set_meta("hlc_last", hlc)
+        return hlc
+
+    # ── atomic write (ALL grains in one txn, I3) ────────────────────────────
     def add_note(self, note: Note, emb: np.ndarray | None) -> None:
-        raise NotImplementedError
+        try:
+            with self.in_transaction():
+                rowid = self._insert_note_row(note)
+                self._insert_fts(rowid, note)
+                if emb is not None:
+                    self._insert_vec(note.id, emb)
+                self._insert_sources(note)
+                self._insert_history(note, update_type="extract")
+                self._co_write_event(note, op="create")
+        except StoreError:
+            raise
+        except Exception as exc:  # any mid-txn failure → rolled back by in_transaction
+            raise StoreError(f"add_note({note.id}) failed: {exc}") from exc
+
+    def _insert_note_row(self, note: Note) -> int:
+        cur = self._conn.execute(
+            "INSERT INTO notes("
+            " id, content, memory_type, keywords, tags, context, confidence, importance,"
+            " user_id, agent_id, session_id, status, version, held_for_human, quarantined,"
+            " triage_reason, pinned, redaction, created_at, expired_at, valid_at, invalid_at,"
+            " last_accessed, access_count, decay_S, content_hash, embedder_id"
+            ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                note.id,
+                note.content,
+                note.memory_type,
+                json.dumps(note.keywords),
+                json.dumps(note.tags),
+                note.context,
+                note.confidence,
+                note.importance,
+                note.scope.user_id,
+                note.scope.agent_id,
+                note.scope.session_id,
+                note.status,
+                note.version,
+                int(note.held_for_human),
+                int(note.quarantined),
+                note.triage_reason,
+                int(note.pinned),
+                None,  # redaction (P1: secrets are BLOCKed pre-disk, never stored)
+                _to_iso(note.created_at),
+                _opt_iso(note.expired_at),
+                _opt_iso(note.valid_at),
+                _opt_iso(note.invalid_at),
+                _opt_iso(note.last_accessed),
+                note.access_count,
+                note.decay_S,
+                _content_hash(note.content),
+                self._current_embedder_id(),
+            ),
+        )
+        return int(cur.lastrowid or 0)
+
+    def _insert_fts(self, rowid: int, note: Note) -> None:
+        # external-content FTS5 does not auto-sync — write the index explicitly (I10).
+        self._conn.execute(
+            "INSERT INTO note_fts(rowid, content, keywords, tags) VALUES (?,?,?,?)",
+            (rowid, note.content, json.dumps(note.keywords), json.dumps(note.tags)),
+        )
+
+    def _insert_vec(self, note_id: str, emb: np.ndarray) -> None:
+        self._conn.execute(
+            "INSERT INTO note_vec(note_id, embedder_id, dim, embedding) VALUES (?,?,?,?)",
+            (note_id, self._current_embedder_id(), int(emb.shape[0]), _vec_to_blob(emb)),
+        )
+
+    def _insert_sources(self, note: Note) -> None:
+        extracted_at = _to_iso(note.created_at)
+        self._conn.executemany(
+            "INSERT INTO sources("
+            " note_id, kind, ref, role, content_hash, extractor, extracted_at, observed_at"
+            ") VALUES (?,?,?,?,?,?,?,?)",
+            [
+                (
+                    note.id,
+                    s.kind,
+                    s.ref,
+                    s.role,
+                    s.content_hash,
+                    _DEFAULT_EXTRACTOR,
+                    extracted_at,
+                    _to_iso(s.observed_at),
+                )
+                for s in note.sources
+            ],
+        )
+
+    def _insert_history(self, note: Note, *, update_type: UpdateType) -> None:
+        self._conn.execute(
+            "INSERT INTO note_history(id, version, snapshot, update_type, changed_at) "
+            "VALUES (?,?,?,?,?)",
+            (note.id, note.version, note.model_dump_json(), update_type, _to_iso(note.created_at)),
+        )
+
+    def _co_write_event(self, note: Note, *, op: Literal["create", "update", "archive"]) -> None:
+        ev = Event(
+            event_id=self._new_id(),
+            device_id=self.get_meta("device_id") or "",
+            hlc=self._next_hlc(),
+            entity="note",
+            entity_id=note.id,
+            op=op,
+            content_hash=_content_hash(note.content),
+            payload=note.model_dump_json(),
+            ts=note.created_at,
+        )
+        self.append_event(ev)
 
     def update_note(
         self, note: Note, *, update_type: UpdateType, emb: np.ndarray | None = None
@@ -318,7 +469,72 @@ class SQLiteStore(Store):
         raise NotImplementedError
 
     def get_notes(self, ids: list[str]) -> list[Note]:
-        raise NotImplementedError
+        if not ids:
+            return []
+        placeholders = ",".join("?" * len(ids))
+        rows = self._conn.execute(
+            f"SELECT * FROM notes WHERE id IN ({placeholders})", ids
+        ).fetchall()
+        by_id = {str(r["id"]): r for r in rows}
+        sources = self._load_sources(list(by_id))
+        out: list[Note] = []
+        for nid in ids:  # preserve requested order; unknown ids skipped silently
+            row = by_id.get(nid)
+            if row is not None:
+                out.append(self._row_to_note(row, sources.get(nid, [])))
+        return out
+
+    def _load_sources(self, note_ids: list[str]) -> dict[str, list[Source]]:
+        if not note_ids:
+            return {}
+        placeholders = ",".join("?" * len(note_ids))
+        rows = self._conn.execute(
+            f"SELECT note_id, kind, ref, role, content_hash, observed_at "
+            f"FROM sources WHERE note_id IN ({placeholders})",
+            note_ids,
+        ).fetchall()
+        out: dict[str, list[Source]] = defaultdict(list)
+        for r in rows:
+            out[str(r["note_id"])].append(
+                Source(
+                    kind=r["kind"],
+                    ref=r["ref"],
+                    role=r["role"],
+                    content_hash=r["content_hash"],
+                    observed_at=_from_iso(r["observed_at"]),
+                )
+            )
+        return out
+
+    @staticmethod
+    def _row_to_note(row: sqlite3.Row, sources: list[Source]) -> Note:
+        return Note(
+            id=row["id"],
+            content=row["content"],
+            memory_type=row["memory_type"],
+            keywords=json.loads(row["keywords"]),
+            tags=json.loads(row["tags"]),
+            context=row["context"],
+            confidence=row["confidence"],
+            scope=Scope(
+                user_id=row["user_id"], agent_id=row["agent_id"], session_id=row["session_id"]
+            ),
+            sources=sources,
+            status=row["status"],
+            version=row["version"],
+            created_at=_from_iso(row["created_at"]),
+            expired_at=_opt_from_iso(row["expired_at"]),
+            valid_at=_opt_from_iso(row["valid_at"]),
+            invalid_at=_opt_from_iso(row["invalid_at"]),
+            importance=row["importance"],
+            last_accessed=_opt_from_iso(row["last_accessed"]),
+            access_count=row["access_count"],
+            decay_S=row["decay_S"],
+            held_for_human=bool(row["held_for_human"]),
+            quarantined=bool(row["quarantined"]),
+            triage_reason=row["triage_reason"],
+            pinned=bool(row["pinned"]),
+        )
 
     def set_status(
         self, id: str, status: StatusLiteral, *, invalid_at: datetime | None = None
@@ -405,7 +621,23 @@ class SQLiteStore(Store):
 
     # ── event log / export ──────────────────────────────────────────────────
     def append_event(self, ev: Event) -> None:
-        raise NotImplementedError
+        # Co-write only: called INSIDE add_note/update_note/supersede's txn, never alone.
+        self._conn.execute(
+            "INSERT INTO events("
+            " event_id, device_id, hlc, entity, entity_id, op, content_hash, payload, ts"
+            ") VALUES (?,?,?,?,?,?,?,?,?)",
+            (
+                ev.event_id,
+                ev.device_id,
+                ev.hlc,
+                ev.entity,
+                ev.entity_id,
+                ev.op,
+                ev.content_hash,
+                ev.payload,
+                _to_iso(ev.ts),
+            ),
+        )
 
     def iter_events(self, *, since_hlc: str | None = None) -> Iterator[Event]:
         raise NotImplementedError

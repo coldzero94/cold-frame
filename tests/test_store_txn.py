@@ -8,9 +8,43 @@ offline with HashEmbedder + a FrozenClock, no network, no keys.
 from __future__ import annotations
 
 import sqlite3
+from datetime import UTC, datetime
 
+import numpy as np
+import pytest
+
+from cold_frame.exceptions import StoreError
 from cold_frame.llm.base import EmbedderMeta, HashEmbedder
+from cold_frame.models import Note, Scope, Source
 from cold_frame.store.sqlite import SQLiteStore
+
+_INSTANT = datetime(2026, 6, 21, 12, 0, 0, tzinfo=UTC)
+
+
+def _note(nid: str, content: str, *, scope: Scope | None = None) -> Note:
+    """A minimal episodic Note with one message source (frozen instant)."""
+    return Note(
+        id=nid,
+        content=content,
+        memory_type="episodic",
+        scope=scope or Scope(),
+        created_at=_INSTANT,
+        valid_at=_INSTANT,
+        sources=[
+            Source(kind="message", ref="m1", role="user", content_hash="h1", observed_at=_INSTANT)
+        ],
+    )
+
+
+def _count(store: SQLiteStore, table: str) -> int:
+    return int(store._conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0])
+
+
+@pytest.fixture
+def store(db_path: str) -> SQLiteStore:
+    s = SQLiteStore(db_path, embedder=HashEmbedder())
+    s.migrate()
+    return s
 
 # The 10 core tables migration 0->1 must create (data-layer §1). FTS5 also creates
 # shadow tables (note_fts_data/_idx/...); we assert a subset so those are allowed.
@@ -76,3 +110,58 @@ def test_migrate_is_reopen_safe(db_path: str) -> None:
     reopened.migrate()  # no-op
     assert reopened.get_meta("schema_version") == "1"
     assert reopened.embedder_meta() == EmbedderMeta(embedder_id="hash", dim=256)
+
+
+# ── unit 2: add_note single-txn dual-write + get_notes + append_event ─────────
+def test_add_note_single_txn_roundtrip(store: SQLiteStore) -> None:
+    note = _note("n1", "dark roast coffee")
+    emb = HashEmbedder().embed_one(note.content)
+    store.add_note(note, emb)
+
+    # full hydration round-trip (scope + sources reconstructed)
+    got = store.get_notes(["n1"])
+    assert len(got) == 1
+    assert got[0] == note
+
+    # I10 doctor invariant: every grain co-written in one txn
+    assert _count(store, "notes") == _count(store, "note_fts") == _count(store, "note_vec") == 1
+    assert _count(store, "sources") == 1
+    assert _count(store, "note_history") == 1
+    # one co-written create event (I3)
+    assert int(
+        store._conn.execute("SELECT count(*) FROM events WHERE op='create'").fetchone()[0]
+    ) == 1
+
+
+def test_get_notes_preserves_order_and_skips_unknown(store: SQLiteStore) -> None:
+    emb = HashEmbedder()
+    store.add_note(_note("a", "first fact"), emb.embed_one("first fact"))
+    store.add_note(_note("b", "second fact"), emb.embed_one("second fact"))
+    got = store.get_notes(["b", "missing", "a"])
+    assert [n.id for n in got] == ["b", "a"]  # requested order kept, unknown skipped
+
+
+def test_add_note_emb_none_inserts_no_vec_row(store: SQLiteStore) -> None:
+    store.add_note(_note("n2", "green tea please"), None)
+    assert _count(store, "notes") == 1
+    assert _count(store, "note_fts") == 1
+    assert _count(store, "note_vec") == 0  # no-embed path (I5): notes+fts only
+    assert len(store.get_notes(["n2"])) == 1
+
+
+def test_add_note_rollback_on_failure(store: SQLiteStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    note = _note("n3", "should be rolled back")
+    emb = HashEmbedder().embed_one(note.content)
+
+    def _boom(note_id: str, emb: np.ndarray) -> None:
+        raise RuntimeError("simulated mid-txn failure")
+
+    monkeypatch.setattr(store, "_insert_vec", _boom)
+    with pytest.raises(StoreError):
+        store.add_note(note, emb)
+
+    # full ROLLBACK: no half-write anywhere (I3)
+    assert _count(store, "notes") == 0
+    assert _count(store, "note_fts") == 0
+    assert _count(store, "note_vec") == 0
+    assert _count(store, "events") == 0
