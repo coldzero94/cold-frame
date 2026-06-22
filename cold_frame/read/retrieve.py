@@ -12,7 +12,9 @@ from datetime import datetime
 from cold_frame.constants import FANOUT, FANOUT_MAX, FANOUT_MIN, RRF_K
 from cold_frame.exceptions import StoreError
 from cold_frame.llm.base import LLM, Clock, Embedder
+from cold_frame.llm.tokens import get_token_counter
 from cold_frame.models import Scope, SearchHit, SearchResult, Signals, StatusLiteral
+from cold_frame.read.budget import pack_budget
 from cold_frame.read.fuse import rrf_fuse
 from cold_frame.store.base import Store
 
@@ -97,8 +99,14 @@ class RetrievePipeline:
                 )
             )
 
+        # BUDGET: pack whole facts under the cap BEFORE reinforce, so budget-dropped notes
+        # are not reinforced (being *surfaced* is the reinforcement signal — §5.9).
+        used_tokens: int | None = None
+        if token_budget is not None:
+            hits, used_tokens = pack_budget(hits, token_budget, get_token_counter())
+
         if hits:  # REINFORCE only emitted hits, best-effort (read path stays fast, SPEC §5)
             with suppress(StoreError):
                 self._store.reinforce([h.note.id for h in hits], now=self._clock.now())
 
-        return SearchResult(hits=hits, used_tokens=None, truncated=False)
+        return SearchResult(hits=hits, used_tokens=used_tokens, truncated=False)
