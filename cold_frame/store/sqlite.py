@@ -36,7 +36,7 @@ from cold_frame.constants import (
     SCHEMA_VERSION,
     WAL_AUTOCHECKPOINT,
 )
-from cold_frame.exceptions import StoreError
+from cold_frame.exceptions import NoteNotFound, StoreError
 from cold_frame.llm.base import Clock, Embedder, EmbedderMeta, SystemClock
 from cold_frame.models import (
     Edge,
@@ -529,7 +529,63 @@ class SQLiteStore(Store):
         raise NotImplementedError
 
     def supersede(self, old_id: str, new: Note, emb: np.ndarray | None) -> None:
-        raise NotImplementedError
+        existing = self.get_notes([old_id])
+        if not existing:
+            raise NoteNotFound(old_id)
+        old = existing[0]
+        try:
+            with self.in_transaction():
+                now = self._clock.now()
+                # archive old: valid-time end = new.valid_at, transaction-time end = now (C3);
+                # version++ (the archival is a new version of old). status='archived' so the
+                # provenance trigger (fires only on →active) does not block this.
+                self._conn.execute(
+                    "UPDATE notes SET status='archived', invalid_at=?, expired_at=?, "
+                    "version=version+1 WHERE id=?",
+                    (_opt_iso(new.valid_at), _to_iso(now), old_id),
+                )
+                archived = old.model_copy(
+                    update={
+                        "status": "archived",
+                        "invalid_at": new.valid_at,
+                        "expired_at": now,
+                        "version": old.version + 1,
+                    }
+                )
+                self._conn.execute(
+                    "INSERT INTO note_history(id, version, snapshot, update_type, changed_at) "
+                    "VALUES (?,?,?,?,?)",
+                    (
+                        old_id,
+                        archived.version,
+                        archived.model_dump_json(),
+                        "conflict",
+                        _to_iso(now),
+                    ),
+                )
+                # insert the new active note (same grains as add_note)
+                rowid = self._insert_note_row(new)
+                self._insert_fts(rowid, new)
+                if emb is not None:
+                    self._insert_vec(new.id, emb)
+                self._insert_sources(new)
+                self._insert_history(new, update_type="conflict")
+                # supersedes edge new -> old + co-written events (archive old, create new)
+                self._insert_edge(
+                    Edge(
+                        src_id=new.id,
+                        dst_id=old_id,
+                        relation="supersedes",
+                        created_at=now,
+                        valid_at=new.valid_at,
+                    )
+                )
+                self._co_write_event(archived, op="archive")
+                self._co_write_event(new, op="create")
+        except StoreError:
+            raise
+        except Exception as exc:
+            raise StoreError(f"supersede({old_id}) failed: {exc}") from exc
 
     def get_notes(self, ids: list[str]) -> list[Note]:
         if not ids:
@@ -602,7 +658,17 @@ class SQLiteStore(Store):
     def set_status(
         self, id: str, status: StatusLiteral, *, invalid_at: datetime | None = None
     ) -> None:
-        raise NotImplementedError
+        try:
+            with self.in_transaction():
+                if invalid_at is not None:
+                    self._conn.execute(
+                        "UPDATE notes SET status=?, invalid_at=? WHERE id=?",
+                        (status, _to_iso(invalid_at), id),
+                    )
+                else:
+                    self._conn.execute("UPDATE notes SET status=? WHERE id=?", (status, id))
+        except sqlite3.Error as exc:
+            raise StoreError(f"set_status({id}) failed: {exc}") from exc
 
     # ── retrieval ───────────────────────────────────────────────────────────
     def knn(
@@ -692,13 +758,58 @@ class SQLiteStore(Store):
             raise StoreError(f"reinforce failed: {exc}") from exc
 
     # ── edges ─────────────────────────────────────────────────────────────
+    def _insert_edge(self, edge: Edge) -> None:
+        # upsert (no INSERT OR REPLACE, I8); co-written inside supersede's txn or add_edge's.
+        self._conn.execute(
+            "INSERT INTO edges(src_id, dst_id, relation, weight, created_at, valid_at, invalid_at)"
+            " VALUES (?,?,?,?,?,?,?) ON CONFLICT(src_id, dst_id, relation) DO UPDATE SET "
+            "weight=excluded.weight, valid_at=excluded.valid_at, invalid_at=excluded.invalid_at",
+            (
+                edge.src_id,
+                edge.dst_id,
+                edge.relation,
+                edge.weight,
+                _to_iso(edge.created_at),
+                _opt_iso(edge.valid_at),
+                _opt_iso(edge.invalid_at),
+            ),
+        )
+
     def add_edge(self, edge: Edge) -> None:
-        raise NotImplementedError
+        try:
+            with self.in_transaction():
+                self._insert_edge(edge)
+        except sqlite3.Error as exc:
+            raise StoreError(f"add_edge failed: {exc}") from exc
 
     def neighbors(
         self, ids: list[str], *, relations: list[EdgeRelation] | None = None
     ) -> list[Edge]:
-        raise NotImplementedError
+        if not ids:
+            return []
+        id_ph = ",".join("?" * len(ids))
+        sql = (
+            f"SELECT src_id, dst_id, relation, weight, created_at, valid_at, invalid_at "
+            f"FROM edges WHERE (src_id IN ({id_ph}) OR dst_id IN ({id_ph}))"
+        )
+        params: list[Any] = [*ids, *ids]
+        if relations:
+            rel_ph = ",".join("?" * len(relations))
+            sql += f" AND relation IN ({rel_ph})"
+            params.extend(relations)
+        rows = self._conn.execute(sql, params).fetchall()
+        return [
+            Edge(
+                src_id=r["src_id"],
+                dst_id=r["dst_id"],
+                relation=r["relation"],
+                weight=r["weight"],
+                created_at=_from_iso(r["created_at"]),
+                valid_at=_opt_from_iso(r["valid_at"]),
+                invalid_at=_opt_from_iso(r["invalid_at"]),
+            )
+            for r in rows
+        ]
 
     # ── triage / quarantine reads ───────────────────────────────────────────
     def held_for_human(self, *, scope: Scope, limit: int) -> list[Note]:
