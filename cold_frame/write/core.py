@@ -39,8 +39,23 @@ class WriteCore:
         scope: Scope,
         source: Source | None = None,
     ) -> AddResult:
-        """ADMISSION → DEDUP → CONFLICT → PERSIST for new candidate facts (SPEC §4)."""
-        raise NotImplementedError
+        """ADMISSION → DEDUP → CONFLICT → PERSIST for new candidate facts (SPEC §4).
+
+        P1: ADMISSION is pass-through (no secret classifier yet — P2; the confidence
+        gate is applied upstream at extraction). DEDUP/CONFLICT are P2, so superseded/
+        deduped/blocked stay empty here (I1: code disposes, the LLM never decides
+        freshness). Quarantined/held candidates are persisted but routed to ``held``.
+        """
+        added: list[Note] = []
+        held: list[Note] = []
+        for cand in candidates:
+            emb = self._embedder.embed_one(cand.content)
+            self._store.add_note(cand, emb)
+            if cand.held_for_human or cand.quarantined:
+                held.append(cand)
+            else:
+                added.append(cand)
+        return AddResult(added=added, superseded=[], deduped=[], blocked=[], held=held)
 
     def commit_supersede(
         self,

@@ -22,6 +22,7 @@ from collections import defaultdict
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, Literal
 
 import numpy as np
@@ -298,6 +299,9 @@ class SQLiteStore(Store):
     @staticmethod
     def _open(db_path: str) -> sqlite3.Connection:
         # isolation_level=None → autocommit; transactions are explicit BEGIN IMMEDIATE (I3).
+        parent = Path(db_path).parent
+        if str(parent) not in ("", "."):
+            parent.mkdir(parents=True, exist_ok=True)  # e.g. ~/.cold-frame on first run
         conn = sqlite3.connect(db_path, timeout=BUSY_TIMEOUT_MS / 1000, isolation_level=None)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
