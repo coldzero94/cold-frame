@@ -703,6 +703,67 @@ class SQLiteStore(Store):
         except sqlite3.Error as exc:
             raise StoreError(f"set_pinned({id}) failed: {exc}") from exc
 
+    def archive(self, id: str, *, now: datetime) -> None:
+        existing = self.get_notes([id])
+        if not existing:
+            raise NoteNotFound(id)
+        old = existing[0]
+        try:
+            with self.in_transaction():
+                # transaction-time end only (expired_at=now); valid-time is unchanged — the
+                # fact isn't false, we just stopped keeping it (distinct from supersede).
+                self._conn.execute(
+                    "UPDATE notes SET status='archived', expired_at=?, version=version+1 "
+                    "WHERE id=?",
+                    (_to_iso(now), id),
+                )
+                snap = old.model_copy(
+                    update={"status": "archived", "expired_at": now, "version": old.version + 1}
+                )
+                self._conn.execute(
+                    "INSERT INTO note_history(id, version, snapshot, update_type, changed_at) "
+                    "VALUES (?,?,?,?,?)",
+                    (id, snap.version, snap.model_dump_json(), "consolidate", _to_iso(now)),
+                )
+                self._co_write_event(snap, op="archive")  # I3/I17: co-write the archive grain
+        except StoreError:
+            raise
+        except Exception as exc:
+            raise StoreError(f"archive({id}) failed: {exc}") from exc
+
+    def revive(self, id: str) -> None:
+        existing = self.get_notes([id])
+        if not existing:
+            raise NoteNotFound(id)
+        old = existing[0]
+        now = self._clock.now()
+        try:
+            with self.in_transaction():
+                # un-archive: clear both temporal ends so a revived note is current again (I2)
+                self._conn.execute(
+                    "UPDATE notes SET status='active', invalid_at=NULL, expired_at=NULL, "
+                    "version=version+1 WHERE id=?",
+                    (id,),
+                )
+                snap = old.model_copy(
+                    update={
+                        "status": "active",
+                        "invalid_at": None,
+                        "expired_at": None,
+                        "version": old.version + 1,
+                    }
+                )
+                self._conn.execute(
+                    "INSERT INTO note_history(id, version, snapshot, update_type, changed_at) "
+                    "VALUES (?,?,?,?,?)",
+                    (id, snap.version, snap.model_dump_json(), "manual", _to_iso(now)),
+                )
+                self._co_write_event(snap, op="update")
+        except StoreError:
+            raise
+        except Exception as exc:
+            raise StoreError(f"revive({id}) failed: {exc}") from exc
+
     # ── retrieval ───────────────────────────────────────────────────────────
     def knn(
         self,

@@ -39,6 +39,8 @@ ARCHIVE_THRESHOLD: Final[float] = 0.20
 CAP_SEMANTIC: Final[int] = 2000
 CAP_EPISODIC: Final[int] = 500
 CAP_PROCEDURAL: Final[int] = 100
+# I13: pinned AND high-importance notes are NEVER archived (even over a cap).
+ARCHIVE_PROTECT_IMPORTANCE: Final[float] = 0.80
 
 # ── decay / reinforcement ──
 REINFORCE_DECAY_INC: Final[float] = 0.5  # decay_S += 0.5 on recall (touch)

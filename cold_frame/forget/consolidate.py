@@ -1,9 +1,11 @@
 """Consolidator — capacity cap + decay archive (SPEC §6 / I13).
 
-Non-destructive (archive, not delete — I2), convergent (re-run = no-op), pinned never
-archived. Archive fires when over a per-scope/type capacity cap (lowest ``archive_score``
-first) OR on decay (display ``S < 0.33`` AND ``archive_score < 0.20``). The LLM episodic→
-semantic summary is P4-2; this is the deterministic forgetting core.
+Non-destructive (archive, not delete — I2); pinned AND high-importance never archived.
+Convergent at a fixed clock (re-run with the same ``now`` = no-op); progressive decay
+across later clocks is expected and bounded by the caps. Archive fires when over a
+per-scope/type capacity cap (lowest ``archive_score`` first) OR on decay (display
+``S < 0.33`` AND ``archive_score < 0.20``). The LLM episodic→semantic summary is P4-2;
+this is the deterministic forgetting core.
 """
 
 from __future__ import annotations
@@ -13,6 +15,7 @@ from collections import defaultdict
 from datetime import datetime
 
 from cold_frame.constants import (
+    ARCHIVE_PROTECT_IMPORTANCE,
     ARCHIVE_THRESHOLD,
     ARCHIVE_W_IMPORTANCE,
     ARCHIVE_W_RELEVANCE,
@@ -22,10 +25,14 @@ from cold_frame.constants import (
     CAP_PROCEDURAL,
     CAP_SEMANTIC,
 )
+from cold_frame.exceptions import StoreError
 from cold_frame.llm.base import LLM, Clock
 from cold_frame.models import ConsolidateResult, Note, Scope
+from cold_frame.observability import get_logger
 from cold_frame.read.strength import compute_strength
 from cold_frame.store.base import Store
+
+_log = get_logger(__name__)
 
 _DEFAULT_CAPS: dict[str, int] = {
     "semantic": CAP_SEMANTIC,
@@ -63,7 +70,10 @@ class Consolidator:
         caps: dict[str, int] | None = None,
     ) -> ConsolidateResult:
         at = now or self._clock.now()
-        caps = caps or _DEFAULT_CAPS
+        caps = {
+            **_DEFAULT_CAPS,
+            **(caps or {}),
+        }  # overlay: a partial override never disables others
         active = self._store.by_status(
             scope=scope, status="active", sort="recent", limit=_LIST_LIMIT
         )
@@ -74,9 +84,14 @@ class Consolidator:
         archived: list[str] = []
         for mtype, cap in caps.items():
             notes = by_type.get(mtype, [])
-            candidates = [n for n in notes if not n.pinned]  # pinned exempt (I13)
+            # I13: pinned AND high-importance are never archived (exempt from the cap)
+            candidates = [
+                n for n in notes if not n.pinned and n.importance < ARCHIVE_PROTECT_IMPORTANCE
+            ]
             ranked = sorted(candidates, key=lambda n: (archive_score(n, at), n.id))
 
+            # capacity cap: archive the lowest-score candidates beyond the cap (count protected
+            # against the cap so the active total trends toward `cap`).
             to_archive: list[str] = [n.id for n in ranked[: max(0, len(notes) - cap)]]
             seen = set(to_archive)
             for n in candidates:  # decay archive: weak AND low-value (S<0.33 AND score<0.20)
@@ -87,8 +102,11 @@ class Consolidator:
                     to_archive.append(n.id)
                     seen.add(n.id)
 
-            for nid in to_archive:
-                self._store.set_status(nid, "archived")
-            archived.extend(to_archive)
+            for nid in to_archive:  # per-note atomic archive; resilient to a single failure
+                try:
+                    self._store.archive(nid, now=at)
+                    archived.append(nid)
+                except StoreError:
+                    _log.warning("archive_failed", extra={"note_id_hash": hash(nid)})
 
         return ConsolidateResult(reinforced=0, merged=[], archived=archived)

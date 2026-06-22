@@ -156,11 +156,11 @@ class Memory:
         return self.get(id)
 
     def forget(self, id: str) -> Note:
-        self._store.set_status(id, "archived")  # archive-not-delete (I2), revivable
+        self._store.archive(id, now=self._clock.now())  # archive-not-delete (I2), event co-written
         return self.get(id)
 
     def revive(self, id: str) -> Note:
-        self._store.set_status(id, "active")
+        self._store.revive(id)  # un-archive: clears invalid_at/expired_at, event co-written
         return self.get(id)
 
     # ── read ─────────────────────────────────────────────────────────────
