@@ -9,8 +9,9 @@ from __future__ import annotations
 
 from typing import Final
 
+from cold_frame.prompts.extract import EXTRACT_SYSTEM  # real EXTRACT prompt (P1)
+
 # Placeholder prompt text — populated per phase (build/prompts.md). Empty for now.
-EXTRACT_SYSTEM: Final[str] = ""
 ADMISSION_TIEBREAK_SYSTEM: Final[str] = ""
 DEDUP_BATCH_SYSTEM: Final[str] = ""
 CONFLICT_JUDGE_SYSTEM: Final[str] = ""
