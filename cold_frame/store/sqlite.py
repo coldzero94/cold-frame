@@ -692,6 +692,14 @@ class SQLiteStore(Store):
         except sqlite3.Error as exc:
             raise StoreError(f"set_status({id}) failed: {exc}") from exc
 
+    def set_pinned(self, id: str, pinned: bool) -> None:
+        """Set the pin flag (pinned notes are exempt from decay/archive, I13)."""
+        try:
+            with self.in_transaction():
+                self._conn.execute("UPDATE notes SET pinned=? WHERE id=?", (int(pinned), id))
+        except sqlite3.Error as exc:
+            raise StoreError(f"set_pinned({id}) failed: {exc}") from exc
+
     # ── retrieval ───────────────────────────────────────────────────────────
     def knn(
         self,
