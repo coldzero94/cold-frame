@@ -7,6 +7,7 @@ Method bodies are scaffold stubs raising ``NotImplementedError``; downstream pha
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 from collections.abc import Callable
 from datetime import datetime
@@ -115,7 +116,31 @@ class Memory:
     def correct_memory(
         self, id: str, new_text: str, *, scope: Scope | None = None
     ) -> CorrectResult:
-        raise NotImplementedError
+        old_notes = self._store.get_notes([id])
+        if not old_notes:
+            raise NoteNotFound(id)
+        old = old_notes[0]
+        now = self._clock.now()
+        new = Note(
+            id=self._new_id(),
+            content=new_text,
+            memory_type=old.memory_type,
+            scope=scope or old.scope,
+            created_at=now,
+            valid_at=now,  # the correction is true as of now
+            importance=old.importance,
+            sources=[
+                Source(
+                    kind="manual",
+                    ref="correct_memory",
+                    content_hash=hashlib.sha256(new_text.encode("utf-8")).hexdigest(),
+                    observed_at=now,
+                ),
+                *old.sources,
+            ],
+        )
+        committed = self._write.commit_supersede(id, new, reason="manual correction")
+        return CorrectResult(archived=id, new=committed)
 
     def update(self, id: str, **fields: object) -> Note:
         raise NotImplementedError

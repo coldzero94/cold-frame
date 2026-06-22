@@ -170,5 +170,11 @@ class WriteCore:
         reason: str,
     ) -> Note:
         """Explicit-id supersede (correct/update_fact/supersede): old→archived +
-        invalid_at=now + ``supersedes`` edge new→old + note_history, ONE txn (I3)."""
-        raise NotImplementedError
+        invalid_at=new.valid_at + ``supersedes`` edge new→old + note_history, ONE txn (I3).
+
+        Keyed by an EXPLICIT id (NOT a similarity search) — the same Store.supersede commit
+        the conflict path uses (I15). ADMISSION on ``new`` is pass-through for P2.
+        """
+        emb = self._embedder.embed_one(new.content)
+        self._store.supersede(old_id, new, emb)
+        return new
