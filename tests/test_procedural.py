@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 import pytest
+from cold_frame.api import Memory
 from cold_frame.exceptions import VarHealerError
+from cold_frame.llm.base import HashEmbedder, LLMResult, TaskTag
 from cold_frame.procedural.optimize import heal_vars
+from cold_frame.prompts.procedural import DiagnoseOutput, EditOutput
+
+from tests.conftest import FrozenClock, ScriptedLLM
 
 
 def test_preserves_required_vars() -> None:
@@ -44,3 +49,61 @@ def test_healed_prompt_is_format_safe() -> None:
         "Hi {name}, see {tool}.", "Hi {name}, please use {tool} and {{literal}} text."
     )
     assert healed.format(name="Coby", tool="search")  # no KeyError / ValueError
+
+
+# ── optimize_prompt: diagnose gate → edit → heal → version ────────────────────
+def _proc_memory(
+    db_path: str, clock: FrozenClock, diagnose: DiagnoseOutput, edit: EditOutput | None = None
+) -> Memory:
+    script = {TaskTag.GRADIENT_DIAGNOSE: LLMResult(parsed=diagnose)}
+    if edit is not None:
+        script[TaskTag.GRADIENT_EDIT] = LLMResult(parsed=edit)
+    return Memory(db_path, embedder=HashEmbedder(), llm=ScriptedLLM(script), clock=clock)
+
+
+def test_set_and_get_procedural(db_path: str, frozen_clock: FrozenClock) -> None:
+    m = Memory(db_path, embedder=HashEmbedder(), llm=None, clock=frozen_clock)
+    m.set_procedural("tone", "Reply to {user} in English.")
+    assert m.get_procedural("tone") == "Reply to {user} in English."
+    assert m.get_procedural("missing") == ""  # absent → empty
+
+
+def test_optimize_no_change_when_not_warranted(db_path: str, frozen_clock: FrozenClock) -> None:
+    m = _proc_memory(db_path, frozen_clock, DiagnoseOutput(warrants_adjustment=False))
+    m.set_procedural("tone", "Reply to {user} in English.")
+    res = m.optimize_prompt("tone", [{"role": "user", "content": "hi"}], "looked fine")
+    assert res.changed is False  # drift gate: no concrete failure → untouched
+    assert res.text == "Reply to {user} in English." and res.version == 1
+
+
+def test_optimize_edits_heals_and_versions(db_path: str, frozen_clock: FrozenClock) -> None:
+    m = _proc_memory(
+        db_path,
+        frozen_clock,
+        DiagnoseOutput(warrants_adjustment=True, recommendations="be warmer"),
+        EditOutput(improved_prompt="Warmly reply to {user} in English."),
+    )
+    m.set_procedural("tone", "Reply to {user} in English.")
+    res = m.optimize_prompt("tone", [{"role": "user", "content": "hi"}], "too terse")
+    assert res.changed is True
+    assert res.text == "Warmly reply to {user} in English." and res.version == 2
+    assert m.get_procedural("tone") == "Warmly reply to {user} in English."  # persisted
+
+
+def test_optimize_dropped_var_raises_and_keeps_old(db_path: str, frozen_clock: FrozenClock) -> None:
+    m = _proc_memory(
+        db_path,
+        frozen_clock,
+        DiagnoseOutput(warrants_adjustment=True, recommendations="simplify"),
+        EditOutput(improved_prompt="Reply in English."),  # dropped {user}!
+    )
+    m.set_procedural("tone", "Reply to {user} in English.")
+    with pytest.raises(VarHealerError):
+        m.optimize_prompt("tone", [{"role": "user", "content": "hi"}], "x")
+    assert m.get_procedural("tone") == "Reply to {user} in English."  # unchanged (rollback)
+
+
+def test_optimize_absent_prompt_is_no_change(db_path: str, frozen_clock: FrozenClock) -> None:
+    m = _proc_memory(db_path, frozen_clock, DiagnoseOutput(warrants_adjustment=True))
+    res = m.optimize_prompt("nope", [], "")
+    assert res.changed is False and res.version == 0
