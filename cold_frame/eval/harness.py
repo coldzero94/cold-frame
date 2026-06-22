@@ -279,8 +279,16 @@ def run_case(case: Case) -> CaseReport:
                 mem.search(
                     step.text or str(step.extra.get("query", "")), scope=step.scope or Scope()
                 )
+            elif step.op == "consolidate":
+                mem.consolidate(scope=step.scope or Scope(), caps=step.extra.get("caps"))
+            elif step.op in ("pin", "forget", "revive"):
+                target = _find_created(mem, created, step)
+                if target is None:
+                    failures.append(f"{step.op} step: no created note matches {step.extra!r}")
+                else:
+                    getattr(mem, step.op)(target)
             else:
-                failures.append(f"op {step.op!r} not supported in P1")
+                failures.append(f"op {step.op!r} not supported")
 
         notes = mem._store.get_notes(created)
         for en in case.expect.notes:
@@ -292,6 +300,20 @@ def run_case(case: Case) -> CaseReport:
     finally:
         mem._store.close()
     return CaseReport(case_id=case.id, passed=not failures, failures=failures)
+
+
+def _find_created(mem: Memory, created: list[str], step: Step) -> str | None:
+    """Resolve a pin/forget/revive target among created notes by extra.content_like|id."""
+    nid = step.extra.get("id")
+    if nid is not None:
+        return str(nid) if str(nid) in created else None
+    like = step.extra.get("content_like")
+    if like is None:
+        return None
+    for note in mem._store.get_notes(created):
+        if str(like).lower() in note.content.lower():
+            return note.id
+    return None
 
 
 def _check_edges(ee: ExpectEdge, notes: list[Note], mem: Memory) -> list[str]:

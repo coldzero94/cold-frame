@@ -1,0 +1,41 @@
+# P4 gate suite: forgetting (capacity cap archives the unpinned; pinned stays active).
+# Archive-not-delete — capped notes remain as rows with status=archived (revivable).
+suite: forgetting
+embedder: hash
+cases:
+  - id: cap-archives-unpinned-keeps-pinned
+    description: "over the episodic cap, unpinned notes are archived; the pinned note survives"
+    steps:
+      - op: add
+        scope: {user_id: u}
+        text: "I love hiking in the mountains"
+        extra: {raw: true}
+      - op: add
+        scope: {user_id: u}
+        text: "I enjoy reading science fiction"
+        extra: {raw: true}
+      - op: add
+        scope: {user_id: u}
+        text: "I drink dark roast coffee daily"
+        extra: {raw: true}
+      - op: pin
+        extra: {content_like: "hiking"}
+      - op: consolidate
+        scope: {user_id: u}
+        extra: {caps: {episodic: 1}}
+    expect:
+      notes:
+        - where: {content_like: "hiking"}
+          status: active  # pinned → exempt from the cap (I13)
+        - where: {content_like: "reading"}
+          status: archived  # over-cap → archived, row still present (I2)
+        - where: {content_like: "coffee"}
+          status: archived
+      search:
+        # the archived notes are gone from default search; the pinned one remains
+        - query: "hiking mountains"
+          scope: {user_id: u}
+          expect_top_content_like: "hiking"
+        - query: "science fiction reading"
+          scope: {user_id: u}
+          expect_count: 0
