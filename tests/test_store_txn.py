@@ -12,7 +12,6 @@ from datetime import UTC, datetime
 
 import numpy as np
 import pytest
-
 from cold_frame.exceptions import StoreError
 from cold_frame.llm.base import EmbedderMeta, HashEmbedder
 from cold_frame.models import Note, Scope, Source
@@ -45,6 +44,7 @@ def store(db_path: str) -> SQLiteStore:
     s = SQLiteStore(db_path, embedder=HashEmbedder())
     s.migrate()
     return s
+
 
 # The 10 core tables migration 0->1 must create (data-layer §1). FTS5 also creates
 # shadow tables (note_fts_data/_idx/...); we assert a subset so those are allowed.
@@ -90,7 +90,7 @@ def test_migrate_creates_schema_and_meta(db_path: str) -> None:
         conn.close()
 
     # every core table exists
-    assert EXPECTED_TABLES <= _tables(db_path)
+    assert _tables(db_path) >= EXPECTED_TABLES
 
     # meta seeded: schema_version + embedder identity (dim read from Embedder.meta, I8)
     assert store.get_meta("schema_version") == "1"
@@ -128,9 +128,9 @@ def test_add_note_single_txn_roundtrip(store: SQLiteStore) -> None:
     assert _count(store, "sources") == 1
     assert _count(store, "note_history") == 1
     # one co-written create event (I3)
-    assert int(
-        store._conn.execute("SELECT count(*) FROM events WHERE op='create'").fetchone()[0]
-    ) == 1
+    assert (
+        int(store._conn.execute("SELECT count(*) FROM events WHERE op='create'").fetchone()[0]) == 1
+    )
 
 
 def test_get_notes_preserves_order_and_skips_unknown(store: SQLiteStore) -> None:

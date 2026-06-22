@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 import uuid
 from collections import defaultdict
@@ -26,8 +27,11 @@ from typing import Any, Literal
 import numpy as np
 
 from cold_frame.constants import (
+    ACCESS_LOG_CAP_PER_NOTE,
     BUSY_TIMEOUT_MS,
+    DECAY_S_CAP,
     EMBED_METRIC,
+    REINFORCE_DECAY_INC,
     SCHEMA_VERSION,
     WAL_AUTOCHECKPOINT,
 )
@@ -77,6 +81,49 @@ def _content_hash(content: str) -> str:
 def _vec_to_blob(emb: np.ndarray) -> bytes:
     """float32 little-endian BLOB (dim*4 bytes), canonical vector storage (I10)."""
     return np.ascontiguousarray(emb, dtype="<f4").tobytes()
+
+
+_FTS_TOKEN = re.compile(r"\w+", re.UNICODE)
+
+
+def _fts_query(query: str) -> str | None:
+    """Build a safe FTS5 MATCH expression: quote each term, OR them (recall-first).
+
+    Quoting each token as a string literal neutralizes FTS5 operators/special chars,
+    so an arbitrary user query can never raise a malformed-MATCH error.
+    """
+    terms = _FTS_TOKEN.findall(query.lower())
+    if not terms:
+        return None
+    return " OR ".join(f'"{t}"' for t in terms)
+
+
+def _where_clauses(
+    scope: Scope,
+    statuses: list[StatusLiteral],
+    as_of: datetime | None,
+    *,
+    alias: str,
+) -> tuple[str, list[Any]]:
+    """Shared scope + status + bi-temporal filter for knn/bm25 (cross-scope leak guard)."""
+    clauses = [f"{alias}.user_id = ?"]
+    params: list[Any] = [scope.user_id]
+    if scope.agent_id is not None:
+        clauses.append(f"{alias}.agent_id = ?")
+        params.append(scope.agent_id)
+    if scope.session_id is not None:
+        clauses.append(f"{alias}.session_id = ?")
+        params.append(scope.session_id)
+    if statuses:
+        placeholders = ",".join("?" * len(statuses))
+        clauses.append(f"{alias}.status IN ({placeholders})")
+        params.extend(statuses)
+    if as_of is not None:
+        iso = _to_iso(as_of)
+        clauses.append(f"({alias}.valid_at IS NULL OR {alias}.valid_at <= ?)")
+        clauses.append(f"({alias}.invalid_at IS NULL OR {alias}.invalid_at > ?)")
+        params.extend([iso, iso])
+    return " AND ".join(clauses), params
 
 
 # ── schema: migration 0 -> 1 (full v1 DDL, idempotent via IF NOT EXISTS) ──────
@@ -541,7 +588,7 @@ class SQLiteStore(Store):
     ) -> None:
         raise NotImplementedError
 
-    # ── retrieval (unit 3) ──────────────────────────────────────────────────
+    # ── retrieval ───────────────────────────────────────────────────────────
     def knn(
         self,
         emb: np.ndarray,
@@ -551,7 +598,27 @@ class SQLiteStore(Store):
         statuses: list[StatusLiteral],
         as_of: datetime | None = None,
     ) -> list[tuple[str, float]]:
-        raise NotImplementedError
+        if k <= 0:
+            return []
+        where_sql, where_params = _where_clauses(scope, statuses, as_of, alias="n")
+        # Hard-filter the current embedder (I10): mixed-dim vectors are never compared.
+        rows = self._conn.execute(
+            f"SELECT n.id AS id, v.embedding AS embedding "
+            f"FROM note_vec v JOIN notes n ON n.id = v.note_id "
+            f"WHERE v.embedder_id = ? AND {where_sql} "
+            f"ORDER BY n.created_at, n.id",
+            [self._current_embedder_id(), *where_params],
+        ).fetchall()
+        if not rows:
+            return []
+        ids = [str(r["id"]) for r in rows]
+        mat = np.vstack([np.frombuffer(r["embedding"], dtype="<f4") for r in rows])
+        q = np.asarray(emb, dtype="<f4")
+        norm = float(np.linalg.norm(q))
+        q = q / norm if norm > 0.0 else q
+        sims = np.clip(mat @ q, -1.0, 1.0)
+        order = np.argsort(-sims, kind="stable")[:k]  # desc; stable → deterministic ties
+        return [(ids[i], float(sims[i])) for i in order]
 
     def bm25(
         self,
@@ -562,10 +629,48 @@ class SQLiteStore(Store):
         statuses: list[StatusLiteral],
         as_of: datetime | None = None,
     ) -> list[tuple[str, float]]:
-        raise NotImplementedError
+        if k <= 0:
+            return []
+        match = _fts_query(query)
+        if match is None:
+            return []
+        where_sql, where_params = _where_clauses(scope, statuses, as_of, alias="n")
+        # FTS5 bm25() ranks best-match-first as ascending (more negative = better).
+        rows = self._conn.execute(
+            f"SELECT n.id AS id, bm25(note_fts) AS score "
+            f"FROM note_fts JOIN notes n ON n.rowid = note_fts.rowid "
+            f"WHERE note_fts MATCH ? AND {where_sql} "
+            f"ORDER BY score LIMIT ?",
+            [match, *where_params, k],
+        ).fetchall()
+        return [(str(r["id"]), float(r["score"])) for r in rows]
 
     def reinforce(self, ids: list[str], *, now: datetime) -> None:
-        raise NotImplementedError
+        if not ids:
+            return
+        now_iso = _to_iso(now)
+        try:
+            with self.in_transaction():
+                for nid in ids:
+                    self._conn.execute(
+                        "UPDATE notes SET access_count = access_count + 1, last_accessed = ?, "
+                        "decay_S = MIN(decay_S + ?, ?) WHERE id = ?",
+                        (now_iso, REINFORCE_DECAY_INC, DECAY_S_CAP, nid),
+                    )
+                    self._conn.execute(
+                        "INSERT INTO access_log(note_id, ts, kind) VALUES (?, ?, 'search')",
+                        (nid, now_iso),
+                    )
+                    # per-note cap (I13): keep the most-recently-inserted rows (rowid breaks
+                    # ts ties under a frozen clock).
+                    self._conn.execute(
+                        "DELETE FROM access_log WHERE note_id = ? AND rowid NOT IN "
+                        "(SELECT rowid FROM access_log WHERE note_id = ? ORDER BY rowid DESC "
+                        "LIMIT ?)",
+                        (nid, nid, ACCESS_LOG_CAP_PER_NOTE),
+                    )
+        except sqlite3.Error as exc:
+            raise StoreError(f"reinforce failed: {exc}") from exc
 
     # ── edges ─────────────────────────────────────────────────────────────
     def add_edge(self, edge: Edge) -> None:
