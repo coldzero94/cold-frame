@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 
 import numpy as np
 import pytest
-from cold_frame.exceptions import StoreError
+from cold_frame.exceptions import NoteNotFound, StoreError
 from cold_frame.llm.base import EmbedderMeta, HashEmbedder
 from cold_frame.models import Note, Scope, Source
 from cold_frame.store.sqlite import SQLiteStore
@@ -147,6 +147,31 @@ def test_add_note_emb_none_inserts_no_vec_row(store: SQLiteStore) -> None:
     assert _count(store, "note_fts") == 1
     assert _count(store, "note_vec") == 0  # no-embed path (I5): notes+fts only
     assert len(store.get_notes(["n2"])) == 1
+
+
+def test_update_note_in_place_resyncs_fts_and_versions(store: SQLiteStore) -> None:
+    note = _note("u1", "I prefer light roast coffee")
+    store.add_note(note, HashEmbedder().embed_one(note.content))
+
+    updated = note.model_copy(update={"content": "I prefer dark roast coffee", "version": 2})
+    store.update_note(updated, update_type="manual", emb=HashEmbedder().embed_one(updated.content))
+
+    got = store.get_notes(["u1"])[0]
+    assert got.content == "I prefer dark roast coffee"
+    assert got.version == 2
+    # FTS re-synced: new content searchable, old term gone
+    assert store.bm25("dark", 10, scope=Scope(), statuses=["active"])
+    assert store.bm25("light", 10, scope=Scope(), statuses=["active"]) == []
+    # no drift + one update event co-written (I3)
+    assert _count(store, "notes") == _count(store, "note_fts") == _count(store, "note_vec") == 1
+    assert (
+        int(store._conn.execute("SELECT count(*) FROM events WHERE op='update'").fetchone()[0]) == 1
+    )
+
+
+def test_update_note_unknown_raises(store: SQLiteStore) -> None:
+    with pytest.raises(NoteNotFound):
+        store.update_note(_note("missing", "some text here"), update_type="manual")
 
 
 def test_add_note_rollback_on_failure(store: SQLiteStore, monkeypatch: pytest.MonkeyPatch) -> None:

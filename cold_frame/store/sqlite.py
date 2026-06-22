@@ -551,7 +551,57 @@ class SQLiteStore(Store):
     def update_note(
         self, note: Note, *, update_type: UpdateType, emb: np.ndarray | None = None
     ) -> None:
-        raise NotImplementedError
+        existing = self.get_notes([note.id])
+        if not existing:
+            raise NoteNotFound(note.id)
+        old = existing[0]
+        try:
+            with self.in_transaction():  # ONE txn: notes + fts + vec + history + event (I3)
+                rowid = int(
+                    self._conn.execute("SELECT rowid FROM notes WHERE id=?", (note.id,)).fetchone()[
+                        0
+                    ]
+                )
+                now = self._clock.now()
+                # external-content FTS5 has no auto-sync: delete the OLD index row, insert the NEW
+                self._conn.execute(
+                    "INSERT INTO note_fts(note_fts, rowid, content, keywords, tags) "
+                    "VALUES ('delete', ?, ?, ?, ?)",
+                    (rowid, old.content, json.dumps(old.keywords), json.dumps(old.tags)),
+                )
+                self._conn.execute(
+                    "UPDATE notes SET content=?, keywords=?, tags=?, context=?, confidence=?, "
+                    "importance=?, status=?, version=?, valid_at=?, invalid_at=?, content_hash=? "
+                    "WHERE id=?",
+                    (
+                        note.content,
+                        json.dumps(note.keywords),
+                        json.dumps(note.tags),
+                        note.context,
+                        note.confidence,
+                        note.importance,
+                        note.status,
+                        note.version,
+                        _opt_iso(note.valid_at),
+                        _opt_iso(note.invalid_at),
+                        _content_hash(note.content),
+                        note.id,
+                    ),
+                )
+                self._insert_fts(rowid, note)
+                if emb is not None:  # replace the vector (content may have changed)
+                    self._conn.execute("DELETE FROM note_vec WHERE note_id=?", (note.id,))
+                    self._insert_vec(note.id, emb)
+                self._conn.execute(
+                    "INSERT INTO note_history(id, version, snapshot, update_type, changed_at) "
+                    "VALUES (?,?,?,?,?)",
+                    (note.id, note.version, note.model_dump_json(), update_type, _to_iso(now)),
+                )
+                self._co_write_event(note, op="update")
+        except StoreError:
+            raise
+        except Exception as exc:
+            raise StoreError(f"update_note({note.id}) failed: {exc}") from exc
 
     def supersede(self, old_id: str, new: Note, emb: np.ndarray | None) -> None:
         existing = self.get_notes([old_id])
