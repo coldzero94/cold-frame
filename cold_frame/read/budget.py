@@ -15,17 +15,30 @@ from cold_frame.models import SearchHit
 
 def pack_budget(
     hits: list[SearchHit], budget: int, counter: TokenCounter
-) -> tuple[list[SearchHit], int]:
-    """Return ``(kept hits, used tokens)`` packing whole facts in rank order under ``budget``."""
+) -> tuple[list[SearchHit], int, bool]:
+    """Pack whole facts in rank order under ``budget``.
+
+    Returns ``(kept hits, used tokens, truncated)``. ``used`` NEVER exceeds ``budget`` (a
+    hard cap). The non-empty guarantee is the single bend: when even the top-ranked fact
+    alone exceeds the budget it is still emitted (better one fact than none), but ``used``
+    is reported as the full budget and ``truncated=True`` flags that the cap was hit.
+    """
+    if budget <= 0 or not hits:
+        return [], 0, False
     kept: list[SearchHit] = []
     used = 0
+    truncated = False
     for hit in hits:
         tokens = counter.count(hit.note.content)
         if not kept:  # non-empty guarantee: the top-ranked hit is always emitted
             kept.append(hit)
-            used += tokens
+            if tokens > budget:  # oversized top fact → emit whole, but report a capped used
+                used = budget
+                truncated = True
+            else:
+                used = tokens
             continue
         if used + tokens <= budget:  # whole fact fits → include; else skip + keep trying
             kept.append(hit)
             used += tokens
-    return kept, used
+    return kept, used, truncated

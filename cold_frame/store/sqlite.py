@@ -30,6 +30,7 @@ import numpy as np
 from cold_frame.constants import (
     ACCESS_LOG_CAP_PER_NOTE,
     BUSY_TIMEOUT_MS,
+    CONFIDENCE_FLOOR,
     DECAY_S_CAP,
     EMBED_METRIC,
     REINFORCE_DECAY_INC,
@@ -422,6 +423,19 @@ class SQLiteStore(Store):
 
     # ── atomic write (ALL grains in one txn, I3) ────────────────────────────
     def add_note(self, note: Note, emb: np.ndarray | None) -> None:
+        # Provenance invariant pre-commit guard (I14): an active, non-quarantined,
+        # high-confidence note MUST carry >=1 source. The DB trigger only covers the
+        # UPDATE→active path; this guards the INSERT path (the trigger does not fire on INSERT).
+        if (
+            note.status == "active"
+            and not note.quarantined
+            and note.confidence >= CONFIDENCE_FLOOR
+            and not note.sources
+        ):
+            raise StoreError(
+                f"provenance invariant (I14): active note {note.id} "
+                f"(confidence {note.confidence}) needs >=1 source"
+            )
         try:
             with self.in_transaction():
                 rowid = self._insert_note_row(note)

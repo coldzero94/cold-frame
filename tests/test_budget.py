@@ -42,3 +42,13 @@ def test_budget_guarantees_nonempty_even_when_top_exceeds(memory: Memory) -> Non
     memory.add("a fairly long fact about dark roast coffee preferences in the early morning")
     res = memory.search("coffee", token_budget=1)  # tiny budget < the top hit
     assert len(res.hits) == 1  # the top hit is still emitted (never an empty result)
+    assert res.used_tokens is not None and res.used_tokens <= 1  # cap NEVER exceeded
+    assert res.truncated is True  # but the bend is flagged
+
+
+def test_budget_zero_returns_empty(memory: Memory) -> None:
+    memory.add("dark roast coffee")
+    res = memory.search("coffee", token_budget=0)
+    assert res.hits == []
+    assert res.used_tokens == 0
+    assert res.truncated is False

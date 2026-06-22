@@ -97,29 +97,35 @@ class WriteCore:
         return AddResult(added=added, superseded=superseded, deduped=deduped, blocked=[], held=held)
 
     def _classify(self, cand: Note, emb: np.ndarray, scope: Scope) -> tuple[str, object]:
-        """Decide a candidate's fate vs the nearest active note (SPEC §4 DEDUP→CONFLICT)."""
-        hits = self._store.knn(emb, 5, scope=scope, statuses=["active"])
-        if not hits:
-            return ("add", None)
-        top_id, top_cos = hits[0]
-        # DEDUP band (>=0.82): the dedup judge decides duplicate-or-distinct. A near-dup
-        # that is NOT a duplicate is distinct — we do NOT escalate the same pair to the
-        # conflict judge (contradictions sit BELOW the band, ~0.75).
-        if top_cos >= DEDUP_AUTO_MERGE:
-            return ("dedup", top_id)
-        if top_cos >= DEDUP_NEAR_DUP:
-            if self._llm is not None and self._dedup_judge(cand, top_id):
-                return ("dedup", top_id)
-            return ("add", None)
-        # CONFLICT range [floor, 0.82): same-subject contradictions (LLM only; offline adds).
-        if self._llm is not None and top_cos >= CONFLICT_CANDIDATE_FLOOR:
-            existing = self._store.get_notes([top_id])
-            if existing:
+        """Decide a candidate's fate vs its active neighbors (SPEC §4 DEDUP→CONFLICT).
+
+        Walks the nearest active notes in descending cosine (not just hits[0]): a true
+        same-subject contradiction can sit at rank 2+ when a higher-cosine neighbor is a
+        near-dup-not-duplicate. ≥0.93 auto-merge; [0.82,0.93) dedup judge (duplicate→merge,
+        else keep scanning — not escalated to conflict, contradictions sit below the band);
+        [floor,0.82) conflict judge (duplicate→merge, contradiction→deterministic freshness,
+        else keep scanning); below floor → stop (hits are cosine-descending).
+        """
+        for nid, cos in self._store.knn(emb, 5, scope=scope, statuses=["active"]):
+            if cos >= DEDUP_AUTO_MERGE:
+                return ("dedup", nid)
+            if cos >= DEDUP_NEAR_DUP:
+                if self._llm is not None and self._dedup_judge(cand, nid):
+                    return ("dedup", nid)
+                continue  # near-dup but not a duplicate → distinct; scan the next neighbor
+            if cos >= CONFLICT_CANDIDATE_FLOOR:
+                if self._llm is None:
+                    continue  # offline: no contradiction judging
+                existing = self._store.get_notes([nid])
+                if not existing:
+                    continue
                 relation = self._conflict_judge(cand, existing[0])
                 if relation == "duplicate":
-                    return ("dedup", top_id)
+                    return ("dedup", nid)
                 if relation == "contradiction":
                     return self._freshness(cand, existing[0])
+                continue  # unrelated → scan the next neighbor
+            break  # cosine-descending: nothing below the conflict floor is worth judging
         return ("add", None)
 
     @staticmethod
