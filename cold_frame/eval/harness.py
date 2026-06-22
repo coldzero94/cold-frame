@@ -263,7 +263,14 @@ def run_case(case: Case) -> CaseReport:
                 if step.text is None:
                     failures.append("add step missing text")
                     continue
-                res = mem.add(step.text, scope=step.scope or Scope(), observed_at=clock.now())
+                res = mem.add(
+                    step.text,
+                    scope=step.scope or Scope(),
+                    observed_at=clock.now(),
+                    raw=bool(
+                        step.extra.get("raw", False)
+                    ),  # raw → naive extract (script only dedup/conflict)
+                )
                 created.extend(n.id for n in res.added)
                 created.extend(n.id for n in res.held)
             elif step.op == "search":
@@ -276,11 +283,24 @@ def run_case(case: Case) -> CaseReport:
         notes = mem._store.get_notes(created)
         for en in case.expect.notes:
             failures.extend(_check_note(en, notes))
+        for ee in case.expect.edges:
+            failures.extend(_check_edges(ee, notes, mem))
         for es in case.expect.search:
             failures.extend(_check_search(es, mem))
     finally:
         mem._store.close()
     return CaseReport(case_id=case.id, passed=not failures, failures=failures)
+
+
+def _check_edges(ee: ExpectEdge, notes: list[Note], mem: Memory) -> list[str]:
+    src = next((n for n in notes if ee.src_like and ee.src_like.lower() in n.content.lower()), None)
+    dst = next((n for n in notes if ee.dst_like and ee.dst_like.lower() in n.content.lower()), None)
+    if src is None or dst is None:
+        return [f"edge {ee.relation}: note(s) not found (src~{ee.src_like!r}, dst~{ee.dst_like!r})"]
+    edges = mem._store.neighbors([src.id], relations=[ee.relation])
+    if not any(e.src_id == src.id and e.dst_id == dst.id for e in edges):
+        return [f"edge {ee.relation} {ee.src_like!r}→{ee.dst_like!r} not found"]
+    return []
 
 
 def _check_note(en: ExpectNote, notes: list[Note]) -> list[str]:

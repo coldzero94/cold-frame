@@ -1,0 +1,42 @@
+# P2 gate suite: dedup (positives collapse to 1 note; negatives stay separate).
+# raw:true → naive extract, so only the DEDUP judge is scripted (for the band case).
+suite: dedup
+embedder: hash
+cases:
+  - id: positive-near-dup-merges
+    description: "a near-duplicate (cosine 0.866 band) is merged → one note"
+    llm_script:
+      - task: dedup_batch
+        match: {any: true}
+        returns: {relation: "duplicate", confidence: 0.9, rationale: "same preference"}
+    steps:
+      - op: add
+        scope: {user_id: u}
+        text: "dark roast coffee"
+        extra: {raw: true}
+      - op: add
+        scope: {user_id: u}
+        text: "dark roast coffee beans"  # 0.866 band → DEDUP judge says duplicate → merged
+        extra: {raw: true}
+    expect:
+      search:
+        - query: "coffee"
+          scope: {user_id: u}
+          expect_count: 1  # collapsed to a single note
+
+  - id: negative-distinct-stays-separate
+    description: "an unrelated fact (cosine 0.18) is kept separate → two notes"
+    steps:
+      - op: add
+        scope: {user_id: v}
+        text: "dark roast coffee"
+        extra: {raw: true}
+      - op: add
+        scope: {user_id: v}
+        text: "I drive a Ferrari 488 GTB"  # cosine ~0.18 → distinct, no LLM call
+        extra: {raw: true}
+    expect:
+      search:
+        - query: "coffee ferrari"
+          scope: {user_id: v}
+          expect_count: 2  # both notes retained

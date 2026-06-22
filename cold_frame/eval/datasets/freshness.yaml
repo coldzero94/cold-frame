@@ -1,0 +1,65 @@
+# P2 gate suite: freshness (bi-temporal conflict + deterministic supersession).
+# raw:true → naive extract (the text IS the fact), so only the CONFLICT judge is scripted.
+suite: freshness
+embedder: hash
+cases:
+  - id: job-switch
+    description: "Vessl→Anthropic: Vessl archived (invalid_at + supersedes edge), as_of returns Vessl"
+    llm_script:
+      - task: conflict_judge
+        match: {any: true}
+        returns: {relation: "contradiction", confidence: 0.9, rationale: "different employer"}
+    steps:
+      - op: add
+        at: "2026-01-02T09:00:00Z"
+        scope: {user_id: alice}
+        text: "I work at Vessl"
+        extra: {raw: true}
+      - op: add
+        at: "2026-06-02T09:00:00Z"
+        scope: {user_id: alice}
+        text: "I work at Anthropic"
+        extra: {raw: true}
+    expect:
+      notes:
+        - where: {content_like: "Anthropic"}
+          status: active
+        - where: {content_like: "Vessl"}
+          status: archived
+          invalid_at: "2026-06-02T09:00:00Z"  # valid-time end = new fact's valid_at (C3)
+      edges:
+        - {relation: supersedes, src_like: "Anthropic", dst_like: "Vessl"}
+      search:
+        - query: "where do I work"
+          scope: {user_id: alice}
+          expect_top_content_like: "Anthropic"   # current belief
+        - query: "where do I work"
+          scope: {user_id: alice}
+          as_of: "2026-03-01T00:00:00Z"
+          expect_top_content_like: "Vessl"        # belief reconstructed at that time
+
+  - id: older-fact-does-not-supersede
+    description: "an OLDER contradicting fact is bounded (stale), never archives the current belief"
+    llm_script:
+      - task: conflict_judge
+        match: {any: true}
+        returns: {relation: "contradiction", confidence: 0.9, rationale: "different employer"}
+    steps:
+      - op: add
+        at: "2026-06-02T09:00:00Z"
+        scope: {user_id: bob}
+        text: "I work at Anthropic"
+        extra: {raw: true}
+      - op: add
+        at: "2026-01-02T09:00:00Z"
+        scope: {user_id: bob}
+        text: "I work at Vessl"
+        extra: {raw: true}
+    expect:
+      notes:
+        - where: {content_like: "Anthropic"}
+          status: active   # current belief stays active (not archived by an older fact)
+      search:
+        - query: "where do I work"
+          scope: {user_id: bob}
+          expect_top_content_like: "Anthropic"

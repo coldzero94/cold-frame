@@ -49,7 +49,12 @@ class RetrievePipeline:
         Default FILTER = ``status='active' AND NOT quarantined`` (G2, enforced in the
         Store channels). Never raises on no match — returns an empty SearchResult.
         """
-        statuses: list[StatusLiteral] = ["active", "archived"] if include_archived else ["active"]
+        # Default = active only (currently-valid). With as_of, bypass the status filter (C3):
+        # the TRUE predicate (valid_at<=as_of<invalid_at, applied in the Store channels) decides
+        # membership, so a since-archived note that WAS valid at as_of is surfaced.
+        statuses: list[StatusLiteral] = (
+            ["active", "archived"] if as_of is not None or include_archived else ["active"]
+        )
         cand_k = max(FANOUT_MIN, min(FANOUT_MAX, k * FANOUT))  # over-fetch per channel
 
         query_emb = self._embedder.embed_one(query)
