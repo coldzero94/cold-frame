@@ -106,8 +106,12 @@ def _where_clauses(
     *,
     alias: str,
 ) -> tuple[str, list[Any]]:
-    """Shared scope + status + bi-temporal filter for knn/bm25 (cross-scope leak guard)."""
-    clauses = [f"{alias}.user_id = ?"]
+    """Shared scope + status + bi-temporal filter for knn/bm25.
+
+    Always excludes quarantined notes (the default search FILTER = ``status active AND
+    NOT quarantined``, G2) and enforces the cross-scope leak guard via ``user_id``.
+    """
+    clauses = [f"{alias}.user_id = ?", f"{alias}.quarantined = 0"]
     params: list[Any] = [scope.user_id]
     if scope.agent_id is not None:
         clauses.append(f"{alias}.agent_id = ?")
@@ -621,8 +625,11 @@ class SQLiteStore(Store):
         norm = float(np.linalg.norm(q))
         q = q / norm if norm > 0.0 else q
         sims = np.clip(mat @ q, -1.0, 1.0)
-        order = np.argsort(-sims, kind="stable")[:k]  # desc; stable → deterministic ties
-        return [(ids[i], float(sims[i])) for i in order]
+        order = np.argsort(-sims, kind="stable")  # desc; stable → deterministic ties
+        # Exclude exact-orthogonal (cosine 0 = no shared signal) so a no-match query
+        # returns []; HashEmbedder buckets are disjoint per token → 0 is genuine.
+        hits = [(ids[i], float(sims[i])) for i in order if sims[i] > 0.0]
+        return hits[:k]
 
     def bm25(
         self,

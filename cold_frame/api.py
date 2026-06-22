@@ -144,7 +144,15 @@ class Memory:
         include_archived: bool = False,
         rerank: bool = False,
     ) -> SearchResult:
-        raise NotImplementedError
+        return self._read.search(
+            query,
+            scope=scope or self._default_scope,
+            k=k,
+            token_budget=token_budget,
+            as_of=as_of,
+            include_archived=include_archived,
+            rerank=rerank,
+        )
 
     def get(self, id: str) -> Note:
         notes = self._store.get_notes([id])
