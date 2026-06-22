@@ -158,6 +158,11 @@ class Store(ABC):
         """Set the pin flag; pinned notes are exempt from decay/archive (I13)."""
         ...
 
+    @abstractmethod
+    def cold_demote(self, ids: list[str], *, factor: float) -> None:
+        """Multiply decay_S by ``factor`` (consolidation cold-demote — sources fade faster)."""
+        ...
+
     # ── retrieval ───────────────────────────────────────────────────────────
     @abstractmethod
     def knn(

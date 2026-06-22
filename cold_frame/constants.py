@@ -41,6 +41,10 @@ CAP_EPISODIC: Final[int] = 500
 CAP_PROCEDURAL: Final[int] = 100
 # I13: pinned AND high-importance notes are NEVER archived (even over a cap).
 ARCHIVE_PROTECT_IMPORTANCE: Final[float] = 0.80
+# consolidation: episodic notes with pairwise cosine >= this cluster into one semantic summary.
+CONSOLIDATE_CLUSTER_COSINE: Final[float] = 0.50
+# cold-demote: a consolidated source's decay_S is multiplied by this (faster future forgetting).
+CONSOLIDATE_DEMOTE_FACTOR: Final[float] = 0.5
 
 # ── decay / reinforcement ──
 REINFORCE_DECAY_INC: Final[float] = 0.5  # decay_S += 0.5 on recall (touch)

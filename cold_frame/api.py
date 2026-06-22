@@ -88,7 +88,13 @@ class Memory:
         self._read = RetrievePipeline(
             self._store, embedder=self._embedder, llm=self._llm, clock=self._clock
         )
-        self._consolidator = Consolidator(self._store, llm=self._llm, clock=self._clock)
+        self._consolidator = Consolidator(
+            self._store,
+            embedder=self._embedder,
+            llm=self._llm,
+            clock=self._clock,
+            new_id=self._new_id,
+        )
 
     # ── write ────────────────────────────────────────────────────────────
     def add(

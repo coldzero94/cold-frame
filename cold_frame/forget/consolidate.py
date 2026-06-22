@@ -10,9 +10,11 @@ this is the deterministic forgetting core.
 
 from __future__ import annotations
 
+import hashlib
 import math
 from collections import defaultdict
-from datetime import datetime
+from collections.abc import Callable
+from datetime import UTC, datetime
 
 from cold_frame.constants import (
     ARCHIVE_PROTECT_IMPORTANCE,
@@ -24,15 +26,36 @@ from cold_frame.constants import (
     CAP_EPISODIC,
     CAP_PROCEDURAL,
     CAP_SEMANTIC,
+    CONSOLIDATE_CLUSTER_COSINE,
+    CONSOLIDATE_DEMOTE_FACTOR,
 )
 from cold_frame.exceptions import StoreError
-from cold_frame.llm.base import LLM, Clock
-from cold_frame.models import ConsolidateResult, Note, Scope
+from cold_frame.llm.base import LLM, Clock, Embedder, TaskTag
+from cold_frame.models import ConsolidateResult, Edge, Note, Scope, Source
 from cold_frame.observability import get_logger
+from cold_frame.prompts.consolidate import (
+    CONSOLIDATE_SUMMARY_SYSTEM,
+    ConsolidationOutput,
+    build_consolidate_user,
+)
 from cold_frame.read.strength import compute_strength
 from cold_frame.store.base import Store
 
 _log = get_logger(__name__)
+
+
+def _opt_iso(dt: datetime | None) -> str:
+    return dt.astimezone(UTC).isoformat().replace("+00:00", "Z") if dt is not None else ""
+
+
+def _parse_iso(s: str | None) -> datetime | None:
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
 
 _DEFAULT_CAPS: dict[str, int] = {
     "semantic": CAP_SEMANTIC,
@@ -57,10 +80,20 @@ def archive_score(note: Note, now: datetime, *, relevance: float = 0.0) -> float
 class Consolidator:
     """Forgetting-curve maintenance: archive over-cap / decayed notes (SPEC §6)."""
 
-    def __init__(self, store: Store, *, llm: LLM | None, clock: Clock) -> None:
+    def __init__(
+        self,
+        store: Store,
+        *,
+        embedder: Embedder,
+        llm: LLM | None,
+        clock: Clock,
+        new_id: Callable[[], str],
+    ) -> None:
         self._store = store
+        self._embedder = embedder
         self._llm = llm
         self._clock = clock
+        self._new_id = new_id
 
     def consolidate(
         self,
@@ -74,6 +107,11 @@ class Consolidator:
             **_DEFAULT_CAPS,
             **(caps or {}),
         }  # overlay: a partial override never disables others
+
+        # 1. episodic → semantic merge (LLM only; convergent). Mutates the store, so the
+        #    capacity/decay pass below sees the post-consolidation active set.
+        merged = self._consolidate_episodic(scope, at) if self._llm is not None else []
+
         active = self._store.by_status(
             scope=scope, status="active", sort="recent", limit=_LIST_LIMIT
         )
@@ -109,4 +147,87 @@ class Consolidator:
                 except StoreError:
                     _log.warning("archive_failed", extra={"note_id_hash": hash(nid)})
 
-        return ConsolidateResult(reinforced=0, merged=[], archived=archived)
+        return ConsolidateResult(reinforced=0, merged=merged, archived=archived)
+
+    def _consolidate_episodic(self, scope: Scope, at: datetime) -> list[str]:
+        """Cluster same-topic active episodics → one semantic summary each (convergent)."""
+        active = self._store.by_status(
+            scope=scope, status="active", sort="recent", limit=_LIST_LIMIT
+        )
+        episodic = [n for n in active if n.memory_type == "episodic"]
+        if len(episodic) < 2:
+            return []
+        # convergence: a note already summarized has an incoming derived_from edge — skip it,
+        # so a re-run produces no new merges (idempotent at a fixed state).
+        consumed = {
+            e.dst_id
+            for e in self._store.neighbors([n.id for n in episodic], relations=["derived_from"])
+            if e.relation == "derived_from"
+        }
+        fresh = [n for n in episodic if n.id not in consumed]
+        if len(fresh) < 2:
+            return []
+
+        sim = self._embedder.embed([n.content for n in fresh])  # (m, dim), L2-normalized
+        cos = sim @ sim.T
+        assigned: set[str] = set()
+        merged: list[str] = []
+        for i, seed in enumerate(fresh):
+            if seed.id in assigned:
+                continue
+            members = [
+                fresh[j]
+                for j in range(len(fresh))
+                if fresh[j].id not in assigned and cos[i, j] >= CONSOLIDATE_CLUSTER_COSINE
+            ]
+            if len(members) < 2:  # no same-topic neighbors → nothing to consolidate
+                continue
+            for m in members:
+                assigned.add(m.id)
+            summary_id = self._summarize_cluster(members, scope, at)
+            if summary_id is not None:
+                merged.append(summary_id)
+        return merged
+
+    def _summarize_cluster(self, members: list[Note], scope: Scope, at: datetime) -> str | None:
+        """LLM-summarize one episodic cluster → a semantic note + derived_from + cold-demote."""
+        assert self._llm is not None
+        cluster = [{"text": m.content, "valid_at": _opt_iso(m.valid_at)} for m in members]
+        result = self._llm.complete(
+            task=TaskTag.CONSOLIDATE_SUMMARY,
+            system=CONSOLIDATE_SUMMARY_SYSTEM,
+            user=build_consolidate_user(cluster),
+            schema=ConsolidationOutput,
+        )
+        out = result.parsed
+        if not isinstance(out, ConsolidationOutput) or not out.summary:
+            return None
+
+        valids = [m.valid_at for m in members if m.valid_at is not None]
+        valid_at = _parse_iso(out.valid_at) or (min(valids) if valids else at)
+        summary = Note(
+            id=self._new_id(),
+            content=out.summary,
+            memory_type="semantic",  # episodic cluster distilled to a standing fact
+            keywords=out.keywords,
+            scope=scope,
+            created_at=at,
+            valid_at=valid_at,
+            importance=max(m.importance for m in members),
+            confidence=min(m.confidence for m in members),
+            sources=[
+                Source(
+                    kind="manual",
+                    ref="consolidate",
+                    content_hash=hashlib.sha256(out.summary.encode("utf-8")).hexdigest(),
+                    observed_at=at,
+                )
+            ],
+        )
+        self._store.add_note(summary, self._embedder.embed_one(summary.content))
+        for m in members:  # derived_from edge summary → each source (non-destructive link)
+            self._store.add_edge(
+                Edge(src_id=summary.id, dst_id=m.id, relation="derived_from", created_at=at)
+            )
+        self._store.cold_demote([m.id for m in members], factor=CONSOLIDATE_DEMOTE_FACTOR)
+        return summary.id

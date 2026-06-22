@@ -703,6 +703,19 @@ class SQLiteStore(Store):
         except sqlite3.Error as exc:
             raise StoreError(f"set_pinned({id}) failed: {exc}") from exc
 
+    def cold_demote(self, ids: list[str], *, factor: float) -> None:
+        if not ids:
+            return
+        placeholders = ",".join("?" * len(ids))
+        try:
+            with self.in_transaction():
+                self._conn.execute(
+                    f"UPDATE notes SET decay_S = decay_S * ? WHERE id IN ({placeholders})",
+                    [factor, *ids],
+                )
+        except sqlite3.Error as exc:
+            raise StoreError(f"cold_demote failed: {exc}") from exc
+
     def archive(self, id: str, *, now: datetime) -> None:
         existing = self.get_notes([id])
         if not existing:

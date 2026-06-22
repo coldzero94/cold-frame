@@ -9,8 +9,11 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from cold_frame.api import Memory
-from cold_frame.llm.base import HashEmbedder
+from cold_frame.llm.base import HashEmbedder, LLMResult, TaskTag
 from cold_frame.models import Note, Scope, Source
+from cold_frame.prompts.consolidate import ConsolidationOutput
+
+from tests.conftest import FrozenClock, ScriptedLLM
 
 
 def _add_many(memory: Memory, contents: list[str]) -> list[str]:
@@ -118,3 +121,43 @@ def test_revive_clears_invalid_at_on_superseded_note(memory: Memory) -> None:
     assert memory.get(a).invalid_at is not None  # superseded → invalidated
     revived = memory.revive(a)
     assert revived.status == "active" and revived.invalid_at is None  # revive clears it (I2)
+
+
+# ── P4-2: LLM episodic → semantic consolidation ───────────────────────────────
+def _consolidating_memory(db_path: str, clock: FrozenClock) -> tuple[Memory, ScriptedLLM]:
+    llm = ScriptedLLM(
+        {
+            TaskTag.CONSOLIDATE_SUMMARY: LLMResult(
+                parsed=ConsolidationOutput(
+                    summary="User likes dark roast coffee", keywords=["coffee"]
+                )
+            )
+        }
+    )
+    return Memory(db_path, embedder=HashEmbedder(), llm=llm, clock=clock), llm
+
+
+def test_consolidate_merges_episodic_cluster(db_path: str, frozen_clock: FrozenClock) -> None:
+    m, llm = _consolidating_memory(db_path, frozen_clock)
+    _seed(m, "a", "dark roast coffee")  # seeded directly → bypass add-time dedup/conflict judges
+    _seed(m, "b", "dark roast coffee beans")  # cosine 0.866 → same cluster
+    res = m.consolidate(caps={"episodic": 1000, "semantic": 1000})  # high caps → isolate the merge
+
+    assert TaskTag.CONSOLIDATE_SUMMARY in llm.calls
+    assert len(res.merged) == 1
+    summary = m.get(res.merged[0])
+    assert summary.memory_type == "semantic"  # episodic cluster distilled to a standing fact
+    assert "dark roast coffee" in summary.content
+    # derived_from edges link the summary back to BOTH sources (non-destructive)
+    assert {e.dst_id for e in m.neighbors(res.merged[0], relations=["derived_from"])} == {"a", "b"}
+    assert m.get("a").decay_S < 1.0  # sources cold-demoted (fade faster), not deleted
+
+
+def test_consolidate_is_convergent_no_remerge(db_path: str, frozen_clock: FrozenClock) -> None:
+    m, _ = _consolidating_memory(db_path, frozen_clock)
+    _seed(m, "a", "dark roast coffee")
+    _seed(m, "b", "dark roast coffee beans")
+    r1 = m.consolidate(caps={"episodic": 1000, "semantic": 1000})
+    r2 = m.consolidate(caps={"episodic": 1000, "semantic": 1000})
+    assert len(r1.merged) == 1
+    assert r2.merged == []  # sources already consumed (incoming derived_from) → no re-merge
