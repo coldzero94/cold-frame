@@ -7,11 +7,13 @@ WriteCore persist path (I15); unit 6 adds the search-recall cases.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
 from cold_frame.api import Memory
 from cold_frame.exceptions import EmbedderMismatchError, NoteNotFound
 from cold_frame.llm.base import HashEmbedder
-from cold_frame.models import Scope
+from cold_frame.models import Note, Scope, Source
 from cold_frame.write.core import WriteCore
 
 
@@ -91,3 +93,29 @@ def test_search_reinforces_returned_hits(memory: Memory) -> None:
     nid = res.added[0].id
     memory.search("coffee")
     assert memory.get(nid).access_count == 1  # being surfaced is the reinforcement signal
+
+
+def test_search_as_of_returns_belief_at_that_time(memory: Memory) -> None:
+    """C3 bi-temporal hero: as_of bypasses the status filter + TRUE predicate."""
+    t1 = datetime(2026, 1, 1, tzinfo=UTC)  # worked at Vessl from here
+    t2 = datetime(2026, 6, 1, tzinfo=UTC)  # switched to Anthropic here
+    mid = datetime(2026, 3, 1, tzinfo=UTC)  # belief checkpoint (between)
+
+    old_id = memory.add("I work at Vessl", observed_at=t1).added[0].id
+    # drive the conflict commit at the Store level (the WriteCore conflict path is P2-4)
+    new = Note(
+        id="new-job",
+        content="I work at Anthropic",
+        memory_type="episodic",
+        scope=Scope(),
+        created_at=t2,
+        valid_at=t2,
+        sources=[Source(kind="message", ref="m", content_hash="h", observed_at=t2)],
+    )
+    memory._store.supersede(old_id, new, HashEmbedder().embed_one(new.content))
+
+    now_hits = memory.search("where do I work").hits
+    assert now_hits and "Anthropic" in now_hits[0].note.content  # current active belief
+
+    mid_hits = memory.search("where do I work", as_of=mid).hits
+    assert mid_hits and "Vessl" in mid_hits[0].note.content  # what was TRUE at `mid`
