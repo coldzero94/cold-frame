@@ -16,6 +16,7 @@ from cold_frame.llm.tokens import get_token_counter
 from cold_frame.models import Scope, SearchHit, SearchResult, Signals, StatusLiteral
 from cold_frame.read.budget import pack_budget
 from cold_frame.read.fuse import rrf_fuse
+from cold_frame.read.rerank import apply_meta_boost
 from cold_frame.store.base import Store
 
 
@@ -81,7 +82,7 @@ class RetrievePipeline:
         sem_scores = dict(sem)
         bm_scores = dict(bm)
         hits: list[SearchHit] = []
-        for nid, rrf_score in fused[:k]:
+        for nid, rrf_score in fused:  # build over ALL fused candidates (boost may reorder)
             note = note_map.get(nid)
             if note is None:
                 continue
@@ -98,6 +99,11 @@ class RetrievePipeline:
                     ),
                 )
             )
+
+        # META BOOST (default; the optional LLM/BGE rerank backend is an extra). Clamped to
+        # +15% so it nudges, never dominates RRF — read path stays deterministic for eval.
+        apply_meta_boost(hits, now=self._clock.now(), scope=scope)
+        hits = hits[:k]  # truncate to k AFTER boost (boost may promote within the candidate set)
 
         # BUDGET: pack whole facts under the cap BEFORE reinforce, so budget-dropped notes
         # are not reinforced (being *surfaced* is the reinforcement signal — §5.9).
