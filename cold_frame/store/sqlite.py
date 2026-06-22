@@ -103,6 +103,7 @@ def _where_clauses(
     scope: Scope,
     statuses: list[StatusLiteral],
     as_of: datetime | None,
+    now: datetime,
     *,
     alias: str,
 ) -> tuple[str, list[Any]]:
@@ -110,6 +111,8 @@ def _where_clauses(
 
     Always excludes quarantined notes (the default search FILTER = ``status active AND
     NOT quarantined``, G2) and enforces the cross-scope leak guard via ``user_id``.
+    With ``as_of`` → TRUE predicate (``valid_at<=as_of<invalid_at``); without ``as_of`` →
+    default "currently valid + not expired" so a since-invalidated note never leaks (§5).
     """
     clauses = [f"{alias}.user_id = ?", f"{alias}.quarantined = 0"]
     params: list[Any] = [scope.user_id]
@@ -128,6 +131,11 @@ def _where_clauses(
         clauses.append(f"({alias}.valid_at IS NULL OR {alias}.valid_at <= ?)")
         clauses.append(f"({alias}.invalid_at IS NULL OR {alias}.invalid_at > ?)")
         params.extend([iso, iso])
+    else:
+        now_iso = _to_iso(now)
+        clauses.append(f"({alias}.invalid_at IS NULL OR {alias}.invalid_at > ?)")
+        clauses.append(f"({alias}.expired_at IS NULL OR {alias}.expired_at > ?)")
+        params.extend([now_iso, now_iso])
     return " AND ".join(clauses), params
 
 
@@ -682,7 +690,9 @@ class SQLiteStore(Store):
     ) -> list[tuple[str, float]]:
         if k <= 0:
             return []
-        where_sql, where_params = _where_clauses(scope, statuses, as_of, alias="n")
+        where_sql, where_params = _where_clauses(
+            scope, statuses, as_of, self._clock.now(), alias="n"
+        )
         # Hard-filter the current embedder (I10): mixed-dim vectors are never compared.
         rows = self._conn.execute(
             f"SELECT n.id AS id, v.embedding AS embedding "
@@ -719,7 +729,9 @@ class SQLiteStore(Store):
         match = _fts_query(query)
         if match is None:
             return []
-        where_sql, where_params = _where_clauses(scope, statuses, as_of, alias="n")
+        where_sql, where_params = _where_clauses(
+            scope, statuses, as_of, self._clock.now(), alias="n"
+        )
         # FTS5 bm25() ranks best-match-first as ascending (more negative = better).
         rows = self._conn.execute(
             f"SELECT n.id AS id, bm25(note_fts) AS score "

@@ -60,6 +60,9 @@ DEDUP_NEAR_DUP: Final[float] = 0.82  # cosine >= 0.82 → near-dup candidate (LL
 DEDUP_AUTO_MERGE: Final[float] = 0.93  # cosine >= 0.93 → auto-merge (no LLM)
 # the [0.82, 0.93) band is the ONLY band sent to the conflict/dedup LLM.
 MINHASH_THRESHOLD: Final[float] = 0.90  # MinHash Jaccard exact-ish dedup gate
+# conflict-candidate retrieval floor: same-subject contradictions ("works at X" vs
+# "works at Y") sit BELOW the dedup band (~0.75), so the CONFLICT judge casts a wider net.
+CONFLICT_CANDIDATE_FLOOR: Final[float] = 0.50
 
 # ── importance feedback EMA ──
 IMPORTANCE_EMA_ALPHA: Final[float] = 0.10
