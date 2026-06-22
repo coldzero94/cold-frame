@@ -160,6 +160,10 @@ class Memory:
             raise NoteNotFound(id)
         return notes[0]
 
+    def health(self) -> dict[str, object]:
+        """Doctor/health snapshot: invariant counts + integrity + embedder (eval §C.8)."""
+        return self._store.doctor()
+
     def get_many(self, ids: list[str]) -> list[Note]:
         raise NotImplementedError
 

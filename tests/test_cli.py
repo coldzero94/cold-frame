@@ -1,0 +1,54 @@
+"""CLI tests (P1 unit 9): offline add → search recall, doctor, mcp dispatch."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+from cold_frame.cli import main
+
+
+@pytest.fixture
+def cli_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    db = tmp_path / "cli.db"
+    monkeypatch.setenv("COLD_FRAME_DB", str(db))
+    return db
+
+
+def test_cli_add_then_search_recall(cli_db: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["add", "I prefer dark roast coffee"]) == 0
+    assert "dark roast" in capsys.readouterr().out
+    assert main(["search", "coffee roast"]) == 0
+    assert "dark roast" in capsys.readouterr().out
+
+
+def test_cli_search_no_match_is_success(cli_db: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    main(["add", "I prefer dark roast coffee"])
+    capsys.readouterr()
+    assert main(["search", "zzz nothing qqq"]) == 0
+    assert "no matches" in capsys.readouterr().out.lower()
+
+
+def test_cli_doctor_reports_invariant(cli_db: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    main(["add", "I prefer dark roast"])
+    capsys.readouterr()
+    assert main(["doctor"]) == 0
+    out = capsys.readouterr().out.lower()
+    assert "integrity" in out
+    assert "notes=1" in out and "fts=1" in out and "vec=1" in out
+
+
+def test_cli_mcp_subcommand_dispatches(cli_db: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = {"n": 0}
+
+    def fake_mcp_main() -> int:
+        calls["n"] += 1
+        return 0
+
+    monkeypatch.setattr("cold_frame.mcp.main", fake_mcp_main)
+    assert main(["mcp"]) == 0
+    assert calls["n"] == 1
+
+
+def test_cli_add_without_text_errors(cli_db: Path) -> None:
+    assert main(["add"]) == 1

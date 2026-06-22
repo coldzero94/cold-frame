@@ -763,5 +763,23 @@ class SQLiteStore(Store):
         raise NotImplementedError
 
     # ── housekeeping ─────────────────────────────────────────────────────────
+    def doctor(self) -> dict[str, Any]:
+        """Invariant snapshot for ``cold-frame doctor`` (I10 + integrity_check)."""
+        notes = int(self._conn.execute("SELECT count(*) FROM notes").fetchone()[0])
+        fts = int(self._conn.execute("SELECT count(*) FROM note_fts").fetchone()[0])
+        vec = int(self._conn.execute("SELECT count(*) FROM note_vec").fetchone()[0])
+        integrity = str(self._conn.execute("PRAGMA integrity_check").fetchone()[0])
+        meta = self.embedder_meta()
+        return {
+            "db_path": self._db_path,
+            "notes": notes,
+            "fts": fts,
+            "vec": vec,
+            "counts_match": notes == fts == vec,  # I10: notes==fts==vec
+            "integrity": integrity,
+            "embedder_id": meta.embedder_id if meta else None,
+            "dim": meta.dim if meta else None,
+        }
+
     def close(self) -> None:
         self._conn.close()
