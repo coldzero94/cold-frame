@@ -211,7 +211,7 @@ class Memory:
     def neighbors(
         self, id: str, *, relations: list[EdgeRelation] | None = None, hops: int = 1
     ) -> list[Edge]:
-        raise NotImplementedError
+        return self._store.neighbors([id], relations=relations)  # 1-hop (multi-hop later)
 
     def fork_history(self, id: str) -> list[Note]:
         raise NotImplementedError
