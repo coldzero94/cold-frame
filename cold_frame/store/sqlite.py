@@ -21,7 +21,7 @@ import uuid
 from collections import defaultdict
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 
@@ -33,7 +33,10 @@ from cold_frame.constants import (
     CONFIDENCE_FLOOR,
     DECAY_S_CAP,
     EMBED_METRIC,
+    LEASE_TTL,
+    MAX_ATTEMPTS,
     REINFORCE_DECAY_INC,
+    RETRY_BACKOFF_BASE,
     SCHEMA_VERSION,
     WAL_AUTOCHECKPOINT,
 )
@@ -887,7 +890,24 @@ class SQLiteStore(Store):
     def as_of(self, ids: list[str], *, at: datetime) -> list[Note]:
         raise NotImplementedError
 
-    # ── jobs (durable queue) ────────────────────────────────────────────────
+    # ── jobs (durable queue, I12) ───────────────────────────────────────────
+    def _row_to_job(self, row: sqlite3.Row) -> Job:
+        return Job(
+            id=row["id"],
+            kind=row["kind"],
+            payload=json.loads(row["payload"]),
+            status=row["status"],
+            attempts=row["attempts"],
+            max_attempts=row["max_attempts"],
+            dedup_key=row["dedup_key"],
+            run_after=_from_iso(row["run_after"]),
+            locked_by=row["locked_by"],
+            locked_at=_opt_from_iso(row["locked_at"]),
+            last_error=row["last_error"],
+            created_at=_from_iso(row["created_at"]),
+            updated_at=_from_iso(row["updated_at"]),
+        )
+
     def enqueue(
         self,
         kind: str,
@@ -896,16 +916,92 @@ class SQLiteStore(Store):
         dedup_key: str | None = None,
         run_after: datetime | None = None,
     ) -> str:
-        raise NotImplementedError
+        now = self._clock.now()
+        ra = _to_iso(run_after or now)
+        now_iso = _to_iso(now)
+        try:
+            with self.in_transaction():
+                if dedup_key is not None:  # debounce: one pending job per dedup_key
+                    row = self._conn.execute(
+                        "SELECT id FROM jobs WHERE dedup_key=? AND status='pending'", (dedup_key,)
+                    ).fetchone()
+                    if row is not None:
+                        existing = str(row["id"])
+                        self._conn.execute(
+                            "UPDATE jobs SET run_after=MIN(run_after, ?), updated_at=? WHERE id=?",
+                            (ra, now_iso, existing),
+                        )
+                        return existing
+                jid = self._new_id()
+                self._conn.execute(
+                    "INSERT INTO jobs(id, kind, payload, status, attempts, max_attempts, "
+                    "dedup_key, run_after, created_at, updated_at) "
+                    "VALUES (?,?,?,'pending',0,?,?,?,?,?)",
+                    (jid, kind, json.dumps(payload), MAX_ATTEMPTS, dedup_key, ra, now_iso, now_iso),
+                )
+                return jid
+        except sqlite3.Error as exc:
+            raise StoreError(f"enqueue({kind}) failed: {exc}") from exc
 
     def lease_job(self, *, worker: str, now: datetime) -> Job | None:
-        raise NotImplementedError
+        now_iso = _to_iso(now)
+        stale = _to_iso(now - timedelta(seconds=LEASE_TTL))  # crashed-worker reclaim
+        try:
+            with self.in_transaction():
+                row = self._conn.execute(
+                    "SELECT id FROM jobs WHERE (status='pending' AND run_after<=?) "
+                    "OR (status='running' AND locked_at<?) ORDER BY run_after LIMIT 1",
+                    (now_iso, stale),
+                ).fetchone()
+                if row is None:
+                    return None
+                jid = str(row["id"])
+                self._conn.execute(
+                    "UPDATE jobs SET status='running', locked_by=?, locked_at=?, "
+                    "attempts=attempts+1, updated_at=? WHERE id=?",
+                    (worker, now_iso, now_iso, jid),
+                )
+                leased = self._conn.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone()
+                return self._row_to_job(leased)
+        except sqlite3.Error as exc:
+            raise StoreError(f"lease_job failed: {exc}") from exc
 
     def finish_job(self, id: str) -> None:
-        raise NotImplementedError
+        try:
+            with self.in_transaction():
+                self._conn.execute(
+                    "UPDATE jobs SET status='done', updated_at=? WHERE id=?",
+                    (_to_iso(self._clock.now()), id),
+                )
+        except sqlite3.Error as exc:
+            raise StoreError(f"finish_job({id}) failed: {exc}") from exc
 
     def fail_job(self, id: str, *, error: str, retry_after: datetime | None) -> None:
-        raise NotImplementedError
+        now = self._clock.now()
+        try:
+            with self.in_transaction():
+                row = self._conn.execute(
+                    "SELECT attempts, max_attempts FROM jobs WHERE id=?", (id,)
+                ).fetchone()
+                if row is None:
+                    raise StoreError(f"fail_job: job {id} not found")
+                if (
+                    row["attempts"] >= row["max_attempts"]
+                ):  # exhausted → dead-letter (never dropped)
+                    self._conn.execute(
+                        "UPDATE jobs SET status='dead', last_error=?, updated_at=? WHERE id=?",
+                        (error, _to_iso(now), id),
+                    )
+                else:  # reschedule with exponential backoff
+                    backoff = RETRY_BACKOFF_BASE * (2 ** row["attempts"])
+                    ra = retry_after or (now + timedelta(seconds=backoff))
+                    self._conn.execute(
+                        "UPDATE jobs SET status='pending', run_after=?, last_error=?, "
+                        "updated_at=? WHERE id=?",
+                        (_to_iso(ra), error, _to_iso(now), id),
+                    )
+        except sqlite3.Error as exc:
+            raise StoreError(f"fail_job({id}) failed: {exc}") from exc
 
     # ── event log / export ──────────────────────────────────────────────────
     def append_event(self, ev: Event) -> None:
