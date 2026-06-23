@@ -26,6 +26,7 @@ _SUBCOMMANDS: tuple[str, ...] = (
     "path",
     "doctor",
     "consolidate",
+    "worker",
     "ui",
     "mcp",
     "setup",
@@ -101,6 +102,25 @@ def _cmd_consolidate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_worker(args: argparse.Namespace) -> int:
+    """Drain the durable jobs queue (consolidation + dead-letter recovery, I12)."""
+    mem = _memory(args)
+    if args.once:
+        ran = mem.run_pending_jobs()
+        print(f"worker: ran {ran} job(s)")
+        return 0
+    import time  # background poller: run pending jobs, sleep, repeat (Ctrl-C to stop)
+
+    print(f"{PKG} worker: polling every {args.interval}s (Ctrl-C to stop)")
+    try:
+        while True:
+            mem.run_pending_jobs()
+            time.sleep(args.interval)
+    except KeyboardInterrupt:
+        print("\nstopped")
+        return 0
+
+
 def _cmd_ui(args: argparse.Namespace) -> int:
     from cold_frame.ui.server import serve  # lazy import (stdlib-only server)
 
@@ -145,6 +165,10 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("consolidate", help="run forgetting/consolidation now").set_defaults(
         func=_cmd_consolidate
     )
+    p_worker = sub.add_parser("worker", help="drain the background jobs queue (maintenance)")
+    p_worker.add_argument("--once", action="store_true", help="run one drain pass and exit")
+    p_worker.add_argument("--interval", type=float, default=5.0, help="poll interval seconds")
+    p_worker.set_defaults(func=_cmd_worker)
     p_ui = sub.add_parser("ui", help="launch the local web UI")
     p_ui.add_argument("--port", type=int, default=None, help="UI port (else 27182 + auto-fallback)")
     p_ui.set_defaults(func=_cmd_ui)

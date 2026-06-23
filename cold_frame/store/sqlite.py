@@ -343,6 +343,9 @@ class SQLiteStore(Store):
     def migrate(self) -> None:
         try:
             current = self._schema_version()
+            target = _MIGRATIONS[-1][0]
+            if 0 < current < target:  # real upgrade (not a fresh install) → snapshot first
+                self._backup_before_upgrade(current)
             for version, ddl in _MIGRATIONS:
                 if version <= current:
                     continue
@@ -352,6 +355,18 @@ class SQLiteStore(Store):
             self._seed_meta_once()
         except sqlite3.Error as exc:  # pragma: no cover - exercised via rollback tests later
             raise StoreError(f"migrate failed: {exc}") from exc
+
+    def _backup_before_upgrade(self, current: int) -> None:
+        """Snapshot the DB to ``<db>.bak.<current>`` before an upgrade (data-layer §4) so a
+        failed migration never destroys the user's only copy. Consistent online backup (incl.
+        WAL); skipped for in-memory DBs. A backup failure aborts the migration (fail-safe)."""
+        if self._db_path == ":memory:":
+            return
+        dst = sqlite3.connect(f"{self._db_path}.bak.{current}")
+        try:
+            self._conn.backup(dst)
+        finally:
+            dst.close()
 
     def _schema_version(self) -> int:
         v = self.get_meta("schema_version")
@@ -541,7 +556,7 @@ class SQLiteStore(Store):
         self,
         note: Note,
         *,
-        op: Literal["create", "update", "archive"],
+        op: Literal["create", "update", "archive", "delete"],
         ts: datetime | None = None,
     ) -> None:
         # event ts = when the operation happened: `ts` for update/archive, created_at for create.
@@ -841,6 +856,32 @@ class SQLiteStore(Store):
             raise
         except Exception as exc:
             raise StoreError(f"revive({id}) failed: {exc}") from exc
+
+    def delete(self, id: str) -> None:
+        existing = self.get_notes([id])
+        if not existing:
+            raise NoteNotFound(id)
+        old = existing[0]
+        now = self._clock.now()
+        try:
+            with self.in_transaction():
+                rowid = int(
+                    self._conn.execute("SELECT rowid FROM notes WHERE id=?", (id,)).fetchone()[0]
+                )
+                # external-content FTS5 has no FK cascade: drop the index entry explicitly
+                self._conn.execute(
+                    "INSERT INTO note_fts(note_fts, rowid, content, keywords, tags) "
+                    "VALUES ('delete', ?, ?, ?, ?)",
+                    (rowid, old.content, json.dumps(old.keywords), json.dumps(old.tags)),
+                )
+                self._co_write_event(old, op="delete", ts=now)  # audit the removal (payload kept)
+                self._conn.execute("DELETE FROM note_history WHERE id=?", (id,))  # no FK cascade
+                # DELETE notes cascades note_vec / edges / sources / access_log (ON DELETE CASCADE)
+                self._conn.execute("DELETE FROM notes WHERE id=?", (id,))
+        except StoreError:
+            raise
+        except Exception as exc:
+            raise StoreError(f"delete({id}) failed: {exc}") from exc
 
     # ── retrieval ───────────────────────────────────────────────────────────
     def knn(
