@@ -159,6 +159,13 @@ class Store(ABC):
         ...
 
     @abstractmethod
+    def delete(self, id: str) -> None:
+        """Hard-delete a note + its searchable grains (notes/fts/vec/sources/history/edges) in ONE
+        txn + a co-written ``delete`` event. NOT the secret-scrub (that's ``purge``): the prior
+        append-only event payloads are retained. NoteNotFound if absent."""
+        ...
+
+    @abstractmethod
     def cold_demote(self, ids: list[str], *, factor: float) -> None:
         """Multiply decay_S by ``factor`` (consolidation cold-demote — sources fade faster)."""
         ...

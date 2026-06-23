@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import UTC, datetime
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -186,6 +187,48 @@ def test_update_note_in_place_resyncs_fts_and_versions(store: SQLiteStore) -> No
 def test_update_note_unknown_raises(store: SQLiteStore) -> None:
     with pytest.raises(NoteNotFound):
         store.update_note(_note("missing", "some text here"), update_type="manual")
+
+
+def test_delete_removes_all_searchable_grains(store: SQLiteStore) -> None:
+    note = _note("d1", "a removable fact about coffee")
+    store.add_note(note, HashEmbedder().embed_one(note.content))
+    store.delete("d1")
+    assert store.get_notes(["d1"]) == []
+    assert _count(store, "notes") == _count(store, "note_fts") == _count(store, "note_vec") == 0
+    assert store.bm25("coffee", 10, scope=Scope(), statuses=["active"]) == []  # FTS grain gone
+    assert (
+        int(
+            store._conn.execute(
+                "SELECT count(*) FROM events WHERE op='delete' AND entity_id=?", ("d1",)
+            ).fetchone()[0]
+        )
+        == 1  # the removal is audited
+    )
+
+
+def test_delete_unknown_raises(store: SQLiteStore) -> None:
+    with pytest.raises(NoteNotFound):
+        store.delete("ghost")
+
+
+def test_backup_before_upgrade_snapshots_the_db(db_path: str) -> None:
+    store = SQLiteStore(db_path, embedder=HashEmbedder())
+    store.migrate()
+    store.add_note(_note("n1", "keep me through the upgrade"), HashEmbedder().embed_one("keep me"))
+    store._backup_before_upgrade(1)  # simulate an upgrade from v1 → snapshot first
+
+    bak = Path(f"{db_path}.bak.1")
+    assert bak.exists()
+    snap = sqlite3.connect(str(bak))
+    try:
+        assert snap.execute("SELECT count(*) FROM notes").fetchone()[0] == 1  # consistent copy
+    finally:
+        snap.close()
+
+
+def test_fresh_migrate_creates_no_backup(db_path: str) -> None:
+    SQLiteStore(db_path, embedder=HashEmbedder()).migrate()  # current 0 → 1: a fresh install
+    assert not list(Path(db_path).parent.glob("*.bak.*"))  # nothing to protect yet
 
 
 def test_update_note_optimistic_version_lock(store: SQLiteStore) -> None:

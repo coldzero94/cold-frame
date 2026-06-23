@@ -107,6 +107,17 @@ def test_apply_tool_memory_type_passthrough_and_validation(
         m.apply_tool("create_fact", {"text": "x", "memory_type": "bogus"})
 
 
+def test_memory_delete_requires_force(db_path: str, frozen_clock: FrozenClock) -> None:
+    m = _mem(db_path, frozen_clock)
+    fid = m.create_fact("a deletable fact").added[0].id
+    with pytest.raises(ValueError, match="force=True"):
+        m.delete(fid)  # safe default refuses → no accidental permanent loss
+    assert m.get(fid).status == "active"  # untouched
+    m.delete(fid, force=True)
+    with pytest.raises(NoteNotFound):
+        m.get(fid)  # permanently gone (not revivable, unlike forget)
+
+
 def test_update_fact_unknown_id_raises(db_path: str, frozen_clock: FrozenClock) -> None:
     m = _mem(db_path, frozen_clock)
     with pytest.raises(NoteNotFound):

@@ -52,3 +52,17 @@ def test_cli_mcp_subcommand_dispatches(cli_db: Path, monkeypatch: pytest.MonkeyP
 
 def test_cli_add_without_text_errors(cli_db: Path) -> None:
     assert main(["add"]) == 1
+
+
+def test_cli_worker_once_drains(cli_db: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    main(["add", "a fact"])
+    capsys.readouterr()
+    assert main(["worker", "--once"]) == 0  # one drain pass, exits (no hang)
+    assert "worker: ran" in capsys.readouterr().out
+
+
+def test_cli_consolidate_dispatches(cli_db: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    main(["add", "a fact"])
+    capsys.readouterr()
+    assert main(["consolidate"]) == 0
+    assert "consolidate:" in capsys.readouterr().out

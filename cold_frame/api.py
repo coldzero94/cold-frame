@@ -164,9 +164,16 @@ class Memory:
             {"scope": scope.model_dump()},
             dedup_key=f"consolidate:{scope.user_id}:{scope.agent_id}:{scope.session_id}",
         )
-        for _ in range(5):  # bounded drain; consolidate is convergent + debounced
-            if not self._worker.run_once(self._job_handlers):
-                break
+        self.run_pending_jobs(max_jobs=5)  # bounded inline drain; consolidate is convergent
+
+    def run_pending_jobs(self, *, max_jobs: int = 50) -> int:
+        """Lease + run up to ``max_jobs`` due jobs; returns how many ran. Recovers backed-off/
+        stale-leased jobs the inline write-path drain may miss — the `cold-frame worker` loop and
+        long-running servers call this so maintenance/dead-letter actually progresses (I12)."""
+        count = 0
+        while count < max_jobs and self._worker.run_once(self._job_handlers):
+            count += 1
+        return count
 
     def _run_consolidate_job(self, job: Job) -> None:
         scope = Scope(**job.payload.get("scope", {}))
@@ -224,7 +231,14 @@ class Memory:
         raise NotImplementedError
 
     def delete(self, id: str, *, force: bool = False) -> None:
-        raise NotImplementedError
+        """Permanently remove a note + its searchable grains (NOT revivable). Requires
+        ``force=True`` — use ``forget`` to archive (revivable) instead. The local append-only
+        event log keeps prior payloads; a full content scrub is ``purge`` (planned)."""
+        if not force:
+            raise ValueError(
+                "delete() permanently removes a note — pass force=True, or use forget() to archive"
+            )
+        self._store.delete(id)
 
     def pin(self, id: str) -> Note:
         self._store.set_pinned(id, True)  # exempt from decay/archive (I13)
