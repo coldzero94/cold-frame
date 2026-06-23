@@ -174,6 +174,27 @@ def test_update_note_unknown_raises(store: SQLiteStore) -> None:
         store.update_note(_note("missing", "some text here"), update_type="manual")
 
 
+def test_update_note_rollback_on_failure(
+    store: SQLiteStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    note = _note("u9", "original roast content")
+    store.add_note(note, HashEmbedder().embed_one(note.content))
+
+    def _boom(note_id: str, emb: np.ndarray) -> None:
+        raise RuntimeError("simulated mid-update failure")
+
+    monkeypatch.setattr(store, "_insert_vec", _boom)
+    updated = note.model_copy(update={"content": "changed content", "version": 2})
+    with pytest.raises(StoreError):
+        store.update_note(updated, update_type="manual", emb=HashEmbedder().embed_one("changed"))
+
+    # full ROLLBACK (I3): content/version unchanged, FTS not drifted by the delete+reinsert
+    got = store.get_notes(["u9"])[0]
+    assert got.content == "original roast content" and got.version == 1
+    assert _count(store, "notes") == _count(store, "note_fts") == _count(store, "note_vec") == 1
+    assert store.bm25("original", 10, scope=Scope(), statuses=["active"])
+
+
 def test_add_note_rollback_on_failure(store: SQLiteStore, monkeypatch: pytest.MonkeyPatch) -> None:
     note = _note("n3", "should be rolled back")
     emb = HashEmbedder().embed_one(note.content)

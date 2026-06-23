@@ -534,7 +534,14 @@ class SQLiteStore(Store):
             (note.id, note.version, note.model_dump_json(), update_type, _to_iso(note.created_at)),
         )
 
-    def _co_write_event(self, note: Note, *, op: Literal["create", "update", "archive"]) -> None:
+    def _co_write_event(
+        self,
+        note: Note,
+        *,
+        op: Literal["create", "update", "archive"],
+        ts: datetime | None = None,
+    ) -> None:
+        # event ts = when the operation happened: `ts` for update/archive, created_at for create.
         ev = Event(
             event_id=self._new_id(),
             device_id=self.get_meta("device_id") or "",
@@ -544,7 +551,7 @@ class SQLiteStore(Store):
             op=op,
             content_hash=_content_hash(note.content),
             payload=note.model_dump_json(),
-            ts=note.created_at,
+            ts=ts or note.created_at,
         )
         self.append_event(ev)
 
@@ -597,7 +604,7 @@ class SQLiteStore(Store):
                     "VALUES (?,?,?,?,?)",
                     (note.id, note.version, note.model_dump_json(), update_type, _to_iso(now)),
                 )
-                self._co_write_event(note, op="update")
+                self._co_write_event(note, op="update", ts=now)
         except StoreError:
             raise
         except Exception as exc:
@@ -655,7 +662,7 @@ class SQLiteStore(Store):
                         valid_at=new.valid_at,
                     )
                 )
-                self._co_write_event(archived, op="archive")
+                self._co_write_event(archived, op="archive", ts=now)
                 self._co_write_event(new, op="create")
         except StoreError:
             raise
@@ -788,7 +795,7 @@ class SQLiteStore(Store):
                     "VALUES (?,?,?,?,?)",
                     (id, snap.version, snap.model_dump_json(), "consolidate", _to_iso(now)),
                 )
-                self._co_write_event(snap, op="archive")  # I3/I17: co-write the archive grain
+                self._co_write_event(snap, op="archive", ts=now)  # I3/I17: archive grain
         except StoreError:
             raise
         except Exception as exc:
@@ -821,7 +828,7 @@ class SQLiteStore(Store):
                     "VALUES (?,?,?,?,?)",
                     (id, snap.version, snap.model_dump_json(), "manual", _to_iso(now)),
                 )
-                self._co_write_event(snap, op="update")
+                self._co_write_event(snap, op="update", ts=now)
         except StoreError:
             raise
         except Exception as exc:

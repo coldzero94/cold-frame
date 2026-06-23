@@ -1,7 +1,11 @@
-"""ProceduralOptimizer — gradient diagnose → edit, with f-string var-healer (SPEC §7).
+"""ProceduralOptimizer — gradient diagnose (drift gate) → edit → var-heal → version (SPEC §7).
 
-Leaf stub. Bodies raise ``NotImplementedError``; P5 fills them in (GRADIENT_DIAGNOSE
-gate → GRADIENT_EDIT; preserve all f-string vars or raise ``VarHealerError``).
+Self-improving behavior directives: DIAGNOSE recommends a change only on concrete evidence
+(else no edit), EDIT rewrites minimally, the deterministic var-healer preserves every
+f-string variable (``VarHealerError`` on a drop), and ``Store.update_note`` versions the
+``procedural`` note in place. The LLM proposes; code disposes (I1). A procedural write goes
+through ``update_note`` directly — a deliberate WriteCore exception (I15) since a directive
+is author-supplied, not an extracted fact.
 """
 
 from __future__ import annotations
@@ -15,6 +19,7 @@ from typing import TYPE_CHECKING
 from cold_frame.exceptions import VarHealerError
 from cold_frame.llm.base import LLM, Clock, Embedder, TaskTag
 from cold_frame.models import Note, ProceduralResult, Scope, Source
+from cold_frame.observability import get_logger
 from cold_frame.prompts.procedural import (
     GRADIENT_DIAGNOSE_SYSTEM,
     GRADIENT_EDIT_SYSTEM,
@@ -28,34 +33,49 @@ from cold_frame.store.base import Store
 if TYPE_CHECKING:
     from cold_frame.api import Msg
 
+_log = get_logger(__name__)
 _LIST_LIMIT = 10_000
 
-_VAR = re.compile(r"\{([^{}]+)\}")  # an f-string slot {var} (no nested braces)
+# An f-string slot, capturing the VARIABLE NAME (group 1); tolerates conversion (!r) +
+# a format spec (:>10) so a cosmetic spec change is not mistaken for a dropped variable.
+_SLOT = re.compile(r"\{([a-zA-Z_]\w*)(?:![rsa])?(?::[^{}]*)?\}")
 _TO_OPTIMIZE = re.compile(r"</?TO_OPTIMIZE>")
 
 
-def heal_vars(current: str, improved: str) -> str:
-    """Preserve every f-string var from ``current`` in ``improved`` (langmem var-healer, §7.3).
+def _slot_names(text: str) -> set[str]:
+    return {m.group(1) for m in _SLOT.finditer(text)}
 
-    Hard-fails (``VarHealerError``) if the edit dropped a required ``{var}``. Strips
-    ``<TO_OPTIMIZE>`` markers and escapes any stray braces the edit introduced (so a new
-    ``{var}`` the LLM invented becomes a literal, never an f-string KeyError) while keeping
-    the required slots intact.
+
+def heal_vars(current: str, improved: str) -> str:
+    """Preserve every f-string variable from ``current`` in ``improved`` (langmem var-healer, §7.3).
+
+    Hard-fails (``VarHealerError``) if the edit dropped a required variable (matched by NAME,
+    so ``{x:>10}`` → ``{x:>8}`` is fine). Strips ``<TO_OPTIMIZE>`` markers; escapes stray
+    braces the edit introduced — a slot whose name is NOT required becomes a literal, never an
+    f-string KeyError — while leaving already-doubled ``{{ }}`` literals untouched.
     """
-    required = set(_VAR.findall(current))
-    missing = sorted(v for v in required if "{" + v + "}" not in improved)
+    required = _slot_names(current)
+    missing = sorted(required - _slot_names(improved))
     if missing:
         raise VarHealerError(f"procedural edit dropped required variable(s): {missing}")
 
     text = _TO_OPTIMIZE.sub("", improved)
     masks: dict[str, str] = {}
-    for i, var in enumerate(sorted(required)):  # mask required slots so they survive escaping
-        token = f"\x00{i}\x00"
-        masks[token] = "{" + var + "}"
-        text = text.replace("{" + var + "}", token)
-    text = text.replace("{", "{{").replace("}", "}}")  # escape stray (LLM-introduced) braces
-    for token, original in masks.items():
-        text = text.replace(token, original)
+
+    def _protect(match: re.Match[str]) -> str:  # keep required slots verbatim through escaping
+        if match.group(1) not in required:
+            return match.group(0)  # non-required slot → fall through to be escaped (literal)
+        token = f"\x00{len(masks)}\x00"
+        masks[token] = match.group(0)
+        return token
+
+    text = _SLOT.sub(_protect, text)
+    # escape stray single braces, but DON'T double-already-doubled ones ({{ }} stay literal)
+    text = text.replace("{{", "\x01").replace("}}", "\x02")
+    text = text.replace("{", "{{").replace("}", "}}")
+    text = text.replace("\x01", "{{").replace("\x02", "}}")
+    for token, slot in masks.items():
+        text = text.replace(token, slot)
     return text
 
 
@@ -80,10 +100,16 @@ class ProceduralOptimizer:
         self._scope = scope or Scope()
 
     def _find(self, name: str) -> Note | None:
+        # Exact-scope match: by_status with a broad scope (e.g. user-only) would otherwise
+        # bleed in a procedural note written under a narrower agent/session scope.
         for note in self._store.by_status(
             scope=self._scope, status="active", sort="recent", limit=_LIST_LIMIT
         ):
-            if note.memory_type == "procedural" and note.context == name:
+            if (
+                note.memory_type == "procedural"
+                and note.context == name
+                and note.scope == self._scope
+            ):
                 return note
         return None
 
@@ -139,12 +165,17 @@ class ProceduralOptimizer:
             user=build_diagnose_user(current.content, traj, feedback),
             schema=DiagnoseOutput,
         ).parsed
-        if not isinstance(diagnosis, DiagnoseOutput) or not diagnosis.warrants_adjustment:
+        if not isinstance(diagnosis, DiagnoseOutput):  # malformed parse ≠ healthy no-op → log it
+            _log.warning("diagnose_parse_failed", extra={"directive": name, "task": "diagnose"})
+            return ProceduralResult(
+                name=name, changed=False, text=current.content, version=current.version
+            )
+        if not diagnosis.warrants_adjustment:
             return ProceduralResult(  # drift gate: no concrete failure → leave it untouched
                 name=name, changed=False, text=current.content, version=current.version
             )
 
-        required = sorted(set(_VAR.findall(current.content)))
+        required = sorted(_slot_names(current.content))
         edit = self._llm.complete(
             task=TaskTag.GRADIENT_EDIT,
             system=GRADIENT_EDIT_SYSTEM,
@@ -153,7 +184,8 @@ class ProceduralOptimizer:
             ),
             schema=EditOutput,
         ).parsed
-        if not isinstance(edit, EditOutput):
+        if not isinstance(edit, EditOutput):  # warranted but unusable edit → log, keep current
+            _log.warning("edit_parse_failed", extra={"directive": name, "task": "edit"})
             return ProceduralResult(
                 name=name, changed=False, text=current.content, version=current.version
             )

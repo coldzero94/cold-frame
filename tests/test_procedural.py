@@ -6,6 +6,7 @@ import pytest
 from cold_frame.api import Memory
 from cold_frame.exceptions import VarHealerError
 from cold_frame.llm.base import HashEmbedder, LLMResult, TaskTag
+from cold_frame.models import Scope
 from cold_frame.procedural.optimize import heal_vars
 from cold_frame.prompts.procedural import DiagnoseOutput, EditOutput
 
@@ -49,6 +50,19 @@ def test_healed_prompt_is_format_safe() -> None:
         "Hi {name}, see {tool}.", "Hi {name}, please use {tool} and {{literal}} text."
     )
     assert healed.format(name="Coby", tool="search")  # no KeyError / ValueError
+
+
+def test_format_spec_var_not_dropped() -> None:
+    # a cosmetic spec change ({count:>5} → {count:>3}) must NOT read as a dropped variable
+    healed = heal_vars("Show {count:>5} items.", "Display {count:>3} items.")
+    assert "{count" in healed
+    assert healed.format(count=7) == "Display   7 items."
+
+
+def test_preescaped_literal_brace_stays_single() -> None:
+    # the edit already escaped a literal brace ({{literal}}) → don't double-escape it
+    healed = heal_vars("Hi {name}.", "Hi {name}, write {{literal}} verbatim.")
+    assert healed.format(name="Coby") == "Hi Coby, write {literal} verbatim."
 
 
 # ── optimize_prompt: diagnose gate → edit → heal → version ────────────────────
@@ -100,10 +114,65 @@ def test_optimize_dropped_var_raises_and_keeps_old(db_path: str, frozen_clock: F
     m.set_procedural("tone", "Reply to {user} in English.")
     with pytest.raises(VarHealerError):
         m.optimize_prompt("tone", [{"role": "user", "content": "hi"}], "x")
-    assert m.get_procedural("tone") == "Reply to {user} in English."  # unchanged (rollback)
+    # heal_vars raises BEFORE any write, so the stored note is never touched (no partial edit)
+    assert m.get_procedural("tone") == "Reply to {user} in English."
 
 
 def test_optimize_absent_prompt_is_no_change(db_path: str, frozen_clock: FrozenClock) -> None:
     m = _proc_memory(db_path, frozen_clock, DiagnoseOutput(warrants_adjustment=True))
     res = m.optimize_prompt("nope", [], "")
     assert res.changed is False and res.version == 0
+
+
+def test_set_procedural_replace_bumps_version(db_path: str, frozen_clock: FrozenClock) -> None:
+    m = Memory(db_path, embedder=HashEmbedder(), llm=None, clock=frozen_clock)
+    m.set_procedural("tone", "First {u}.")
+    n2 = m.set_procedural("tone", "Second {u}.")
+    assert n2.version == 2  # REPLACE routes through update_note (version++)
+    assert m.get_procedural("tone") == "Second {u}."
+
+
+def test_optimize_offline_existing_is_live_noop(db_path: str, frozen_clock: FrozenClock) -> None:
+    m = Memory(db_path, embedder=HashEmbedder(), llm=None, clock=frozen_clock)  # I5 offline
+    m.set_procedural("tone", "Reply to {u}.")
+    res = m.optimize_prompt("tone", [], "fb")
+    assert res.changed is False
+    assert res.text == "Reply to {u}." and res.version == 1  # live version, not 0
+
+
+def test_optimize_malformed_diagnose_is_safe_noop(db_path: str, frozen_clock: FrozenClock) -> None:
+    llm = ScriptedLLM({TaskTag.GRADIENT_DIAGNOSE: LLMResult(parsed=None)})  # unparseable
+    m = Memory(db_path, embedder=HashEmbedder(), llm=llm, clock=frozen_clock)
+    m.set_procedural("tone", "Reply to {u}.")
+    res = m.optimize_prompt("tone", [{"role": "user", "content": "hi"}], "fb")
+    assert res.changed is False and res.version == 1  # malformed parse → safe no-op, no write
+    assert m.get_procedural("tone") == "Reply to {u}."
+
+
+def test_optimize_malformed_edit_is_safe_noop(db_path: str, frozen_clock: FrozenClock) -> None:
+    llm = ScriptedLLM(
+        {
+            TaskTag.GRADIENT_DIAGNOSE: LLMResult(parsed=DiagnoseOutput(warrants_adjustment=True)),
+            TaskTag.GRADIENT_EDIT: LLMResult(parsed=None),  # warranted, but unusable edit
+        }
+    )
+    m = Memory(db_path, embedder=HashEmbedder(), llm=llm, clock=frozen_clock)
+    m.set_procedural("tone", "Reply to {u}.")
+    res = m.optimize_prompt("tone", [{"role": "user", "content": "hi"}], "fb")
+    assert res.changed is False and res.version == 1
+    assert m.get_procedural("tone") == "Reply to {u}."
+
+
+def test_procedural_lookup_is_scope_exact(db_path: str, frozen_clock: FrozenClock) -> None:
+    # write under a NARROW scope; a BROADER default scope must not bleed/edit that directive
+    narrow = Memory(
+        db_path,
+        embedder=HashEmbedder(),
+        llm=None,
+        clock=frozen_clock,
+        default_scope=Scope(agent_id="agent-a"),
+    )
+    narrow.set_procedural("tone", "Narrow {u}.")
+    broad = Memory(db_path, embedder=HashEmbedder(), llm=None, clock=frozen_clock)  # Scope()
+    assert broad.get_procedural("tone") == ""  # scope isolation: no cross-scope match
+    assert narrow.get_procedural("tone") == "Narrow {u}."  # its own scope still resolves
