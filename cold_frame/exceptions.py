@@ -23,7 +23,8 @@ class EmbedderMismatchError(ColdFrameError):
 
 
 class SecretBlocked(ColdFrameError):
-    """Raised ONLY in strict mode (error-on-block). Default add() reports in AddResult.blocked."""
+    """A secret in the new text of a supersede/update (the explicit self-edit path, which returns
+    a single Note). The ``add``/``create_fact`` path instead reports it in ``AddResult.blocked``."""
 
 
 class VarHealerError(ColdFrameError):
@@ -35,7 +36,9 @@ class StoreError(ColdFrameError):
 
 
 class PolicyError(ColdFrameError):
-    """An invariant policy was violated (e.g. non-local LLM for admission_tiebreak, I7)."""
+    """A local-only policy was violated (non-local LLM for a secret-span eval, I7). Raised by
+    ``llm.assert_local_for``; that guard is DEFERRED with admission/I7 (D25) so nothing in v1
+    dispatches it yet — it's tested and ready for when admission lands (v1.1/hosted)."""
 
 
 class ToolError(ColdFrameError):

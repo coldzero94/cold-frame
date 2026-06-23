@@ -106,7 +106,11 @@ class LLM(ABC):
 
 
 def assert_local_for(task: TaskTag, llm: LLM) -> None:
-    """Enforce I-LOCAL in one place: a secret span NEVER reaches a remote endpoint (I7)."""
+    """Enforce I-LOCAL in one place: a secret span NEVER reaches a remote endpoint (I7).
+
+    DEFERRED in v1 (D25): admission/I7 isn't wired, so no production path calls this yet — it is
+    unit-tested and ready to gate the secret-span eval when admission lands (v1.1/hosted).
+    """
     if task in LOCAL_ONLY_TASKS and not llm.is_local:
         raise PolicyError(f"task={task.value} requires a local LLM (D4/R11); got {llm.name!r}")
 
