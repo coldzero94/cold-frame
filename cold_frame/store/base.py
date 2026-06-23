@@ -219,7 +219,8 @@ class Store(ABC):
     # ── triage / quarantine reads (G2 flag-column model) ───────────────────
     @abstractmethod
     def held_for_human(self, *, scope: Scope, limit: int) -> list[Note]:
-        """Notes with ``held_for_human=True`` (Triage queue)."""
+        """Active notes with ``held_for_human=True`` (the Triage queue), ranked importance-first.
+        Archived/resolved holds are excluded — clearing the flag is what removes an item."""
         ...
 
     @abstractmethod

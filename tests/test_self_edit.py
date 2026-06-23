@@ -163,6 +163,16 @@ def test_update_patches_metadata(db_path: str, frozen_clock: FrozenClock) -> Non
     assert updated.version == 2 and updated.content == "dark roast coffee"  # content unchanged
 
 
+def test_update_persists_pinned(db_path: str, frozen_clock: FrozenClock) -> None:
+    m = _mem(db_path, frozen_clock)
+    fid = m.create_fact("keep this safe from decay").added[0].id
+    assert m.get(fid).pinned is False
+    updated = m.update(fid, pinned=True)  # advertised in _UPDATABLE → must actually persist (I13)
+    assert updated.pinned is True
+    assert m.get(fid).pinned is True  # re-read from disk confirms it stuck
+    assert m.update(fid, pinned=False).pinned is False  # and unpin round-trips
+
+
 def test_update_rejects_content_field(db_path: str, frozen_clock: FrozenClock) -> None:
     m = _mem(db_path, frozen_clock)
     fid = m.create_fact("a fact").added[0].id

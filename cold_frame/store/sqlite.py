@@ -52,6 +52,7 @@ from cold_frame.models import (
     UpdateType,
 )
 from cold_frame.observability import get_logger
+from cold_frame.store._ddl import DDL_V1
 from cold_frame.store.base import Event, Job, PurgeReport, Store
 
 _log = get_logger(__name__)
@@ -106,6 +107,19 @@ def _fts_query(query: str) -> str | None:
     return " OR ".join(f'"{t}"' for t in terms)
 
 
+def _scope_predicate(scope: Scope) -> tuple[list[str], list[Any]]:
+    """Cross-scope leak guard for unqualified-column reads (held_for_human / by_status):
+    ``user_id`` always; ``agent_id`` / ``session_id`` only when the scope pins them. The one
+    home for the leak-guard shape; ``_where_clauses`` builds the alias-qualified search variant.
+    """
+    clauses, params = ["user_id = ?"], [scope.user_id]
+    for col, val in (("agent_id", scope.agent_id), ("session_id", scope.session_id)):
+        if val is not None:
+            clauses.append(f"{col} = ?")
+            params.append(val)
+    return clauses, params
+
+
 def _where_clauses(
     scope: Scope,
     statuses: list[StatusLiteral],
@@ -146,152 +160,8 @@ def _where_clauses(
     return " AND ".join(clauses), params
 
 
-# ── schema: migration 0 -> 1 (full v1 DDL, idempotent via IF NOT EXISTS) ──────
-_DDL_V1 = """
-CREATE TABLE IF NOT EXISTS meta (
-  key   TEXT PRIMARY KEY,
-  value TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS notes (
-  id             TEXT PRIMARY KEY,
-  content        TEXT NOT NULL,
-  memory_type    TEXT NOT NULL,
-  keywords       TEXT NOT NULL DEFAULT '[]',
-  tags           TEXT NOT NULL DEFAULT '[]',
-  context        TEXT NOT NULL DEFAULT '',
-  confidence     REAL NOT NULL DEFAULT 1.0,
-  importance     REAL NOT NULL DEFAULT 0.5,
-  user_id        TEXT NOT NULL DEFAULT 'default',
-  agent_id       TEXT,
-  session_id     TEXT,
-  status         TEXT NOT NULL DEFAULT 'active',   -- active|archived|deleted (3-value, code wins)
-  version        INTEGER NOT NULL DEFAULT 1,
-  held_for_human INTEGER NOT NULL DEFAULT 0,
-  quarantined    INTEGER NOT NULL DEFAULT 0,       -- G2 flag column (excluded from default search)
-  triage_reason  TEXT,
-  pinned         INTEGER NOT NULL DEFAULT 0,
-  redaction      TEXT,                             -- null | 'pii' | 'secret_tombstone'
-  created_at     TEXT NOT NULL,
-  expired_at     TEXT,
-  valid_at       TEXT,
-  invalid_at     TEXT,
-  last_accessed  TEXT,
-  access_count   INTEGER NOT NULL DEFAULT 0,
-  decay_S        REAL NOT NULL DEFAULT 1.0,
-  content_hash   TEXT NOT NULL,
-  embedder_id    TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_notes_scope    ON notes(user_id, agent_id, session_id, status);
-CREATE INDEX IF NOT EXISTS idx_notes_type     ON notes(memory_type, status);
-CREATE INDEX IF NOT EXISTS idx_notes_valid    ON notes(valid_at, invalid_at);
-CREATE INDEX IF NOT EXISTS idx_notes_triage   ON notes(held_for_human) WHERE held_for_human = 1;
-CREATE INDEX IF NOT EXISTS idx_notes_hash     ON notes(content_hash);
-CREATE INDEX IF NOT EXISTS idx_notes_embedder ON notes(embedder_id) WHERE status = 'active';
-
-CREATE VIRTUAL TABLE IF NOT EXISTS note_fts USING fts5(
-  content, keywords, tags,
-  content='notes', content_rowid='rowid'
-);
-
-CREATE TABLE IF NOT EXISTS note_vec (
-  note_id     TEXT PRIMARY KEY REFERENCES notes(id) ON DELETE CASCADE,
-  embedder_id TEXT NOT NULL,
-  dim         INTEGER NOT NULL,
-  embedding   BLOB NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_vec_embedder ON note_vec(embedder_id);
-
-CREATE TABLE IF NOT EXISTS edges (
-  src_id     TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
-  dst_id     TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
-  relation   TEXT NOT NULL,
-  weight     REAL NOT NULL DEFAULT 1.0,
-  created_at TEXT NOT NULL,
-  valid_at   TEXT,
-  invalid_at TEXT,
-  PRIMARY KEY (src_id, dst_id, relation)
-);
-CREATE INDEX IF NOT EXISTS idx_edges_src ON edges(src_id);
-CREATE INDEX IF NOT EXISTS idx_edges_dst ON edges(dst_id);
-
-CREATE TABLE IF NOT EXISTS note_history (
-  id          TEXT NOT NULL,
-  version     INTEGER NOT NULL,
-  snapshot    TEXT NOT NULL,
-  update_type TEXT NOT NULL,
-  changed_at  TEXT NOT NULL,
-  PRIMARY KEY (id, version)
-);
-
-CREATE TABLE IF NOT EXISTS sources (
-  note_id      TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
-  kind         TEXT NOT NULL,
-  ref          TEXT NOT NULL,
-  role         TEXT,
-  content_hash TEXT NOT NULL,
-  extractor    TEXT NOT NULL,
-  extracted_at TEXT NOT NULL,
-  observed_at  TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_sources_note ON sources(note_id);
-CREATE INDEX IF NOT EXISTS idx_sources_hash ON sources(content_hash);
-
-CREATE TABLE IF NOT EXISTS access_log (
-  note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
-  ts      TEXT NOT NULL,
-  kind    TEXT NOT NULL DEFAULT 'search'
-);
-CREATE INDEX IF NOT EXISTS idx_access_note_ts ON access_log(note_id, ts);
-
-CREATE TABLE IF NOT EXISTS events (
-  seq          INTEGER PRIMARY KEY AUTOINCREMENT,
-  event_id     TEXT NOT NULL UNIQUE,
-  device_id    TEXT NOT NULL,
-  hlc          TEXT NOT NULL,
-  entity       TEXT NOT NULL,
-  entity_id    TEXT NOT NULL,
-  op           TEXT NOT NULL,
-  content_hash TEXT,
-  payload      TEXT NOT NULL,
-  ts           TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_events_entity ON events(entity, entity_id);
-CREATE INDEX IF NOT EXISTS idx_events_hlc    ON events(hlc);
-
-CREATE TABLE IF NOT EXISTS jobs (
-  id           TEXT PRIMARY KEY,
-  kind         TEXT NOT NULL,
-  payload      TEXT NOT NULL,
-  status       TEXT NOT NULL DEFAULT 'pending',
-  attempts     INTEGER NOT NULL DEFAULT 0,
-  max_attempts INTEGER NOT NULL DEFAULT 5,
-  dedup_key    TEXT,
-  run_after    TEXT NOT NULL,
-  locked_by    TEXT,
-  locked_at    TEXT,
-  last_error   TEXT,
-  created_at   TEXT NOT NULL,
-  updated_at   TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_jobs_claim ON jobs(status, run_after);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_dedup
-  ON jobs(dedup_key) WHERE status = 'pending' AND dedup_key IS NOT NULL;
-
--- provenance invariant (I14): an active high-confidence note needs >=1 source.
--- Fires on the self-edit/UPDATE path; the normal add_note INSERT writes sources first.
-CREATE TRIGGER IF NOT EXISTS trg_provenance_active
-BEFORE UPDATE OF status ON notes
-WHEN NEW.status = 'active' AND NEW.confidence >= 0.4
-     AND NEW.redaction IS NOT 'secret_tombstone'
-     AND (SELECT COUNT(*) FROM sources WHERE note_id = NEW.id) = 0
-BEGIN
-  SELECT RAISE(ABORT, 'provenance invariant: active high-confidence note needs >=1 source');
-END;
-"""
-
-# (target_version, ddl), append-only + in order; each step is idempotent.
-_MIGRATIONS: list[tuple[int, str]] = [(1, _DDL_V1)]
+# (target_version, ddl), append-only + in order; each step is idempotent. DDL lives in _ddl.py.
+_MIGRATIONS: list[tuple[int, str]] = [(1, DDL_V1)]
 # Tie the migration list to the frozen schema version (constants.py is the SoT):
 # bumping SCHEMA_VERSION without appending a migration fails fast here.
 assert _MIGRATIONS[-1][0] == SCHEMA_VERSION, "migrations must reach SCHEMA_VERSION"
@@ -609,8 +479,8 @@ class SQLiteStore(Store):
             )
             cur = self._conn.execute(
                 "UPDATE notes SET content=?, keywords=?, tags=?, context=?, confidence=?, "
-                "importance=?, status=?, version=?, valid_at=?, invalid_at=?, content_hash=? "
-                "WHERE id=? AND version=?",  # optimistic lock: expect the read-time version
+                "importance=?, pinned=?, status=?, version=?, valid_at=?, invalid_at=?, "
+                "content_hash=? WHERE id=? AND version=?",  # optimistic lock: read-time version
                 (
                     note.content,
                     json.dumps(note.keywords),
@@ -618,6 +488,7 @@ class SQLiteStore(Store):
                     note.context,
                     note.confidence,
                     note.importance,
+                    int(note.pinned),  # lifecycle flag carried through metadata patch (update())
                     note.status,
                     note.version,
                     _opt_iso(note.valid_at),
@@ -987,14 +858,8 @@ class SQLiteStore(Store):
 
     # ── triage / quarantine reads ───────────────────────────────────────────
     def held_for_human(self, *, scope: Scope, limit: int) -> list[Note]:
-        clauses = ["user_id = ?", "status = 'active'", "held_for_human = 1"]
-        params: list[Any] = [scope.user_id]
-        if scope.agent_id is not None:
-            clauses.append("agent_id = ?")
-            params.append(scope.agent_id)
-        if scope.session_id is not None:
-            clauses.append("session_id = ?")
-            params.append(scope.session_id)
+        clauses, params = _scope_predicate(scope)
+        clauses += ["status = 'active'", "held_for_human = 1"]  # active held notes only
         rows = self._conn.execute(
             f"SELECT * FROM notes WHERE {' AND '.join(clauses)} "
             "ORDER BY importance DESC, id LIMIT ?",
@@ -1026,14 +891,9 @@ class SQLiteStore(Store):
             "importance": "importance DESC",
             "decay": "decay_S ASC",  # least-stable (most-decayed) first
         }[sort]
-        clauses = ["user_id = ?", "status = ?"]
-        params: list[Any] = [scope.user_id, status]
-        if scope.agent_id is not None:
-            clauses.append("agent_id = ?")
-            params.append(scope.agent_id)
-        if scope.session_id is not None:
-            clauses.append("session_id = ?")
-            params.append(scope.session_id)
+        clauses, params = _scope_predicate(scope)
+        clauses.append("status = ?")
+        params.append(status)
         rows = self._conn.execute(
             f"SELECT * FROM notes WHERE {' AND '.join(clauses)} "
             f"ORDER BY {order}, id LIMIT ? OFFSET ?",
@@ -1050,15 +910,18 @@ class SQLiteStore(Store):
         return [Note.model_validate_json(r["snapshot"]) for r in rows]
 
     def as_of(self, ids: list[str], *, at: datetime) -> list[Note]:
-        # the version of each note that had taken effect by `at` (highest version with
-        # valid_at <= at); a note not yet valid at `at` is omitted. Order preserved.
+        # Bi-temporal valid-time read (ABC: valid_at<=at<invalid_at). Pick the highest version
+        # whose valid_at<=at (the latest correction that had taken effect by `at`), then include
+        # it only if it is still valid then. The invalid_at gate MUST apply to the chosen version,
+        # not each snapshot: an early snapshot was frozen with invalid_at=None before a later
+        # supersede set it, so per-snapshot gating would wrongly resurrect an invalidated note.
         out: list[Note] = []
         for nid in ids:
             chosen: Note | None = None
-            for snap in self.get_history(nid):  # version-ascending → keep the latest in effect
+            for snap in self.get_history(nid):  # version-ascending → latest effective wins
                 if snap.valid_at is not None and snap.valid_at <= at:
                     chosen = snap
-            if chosen is not None:
+            if chosen is not None and (chosen.invalid_at is None or at < chosen.invalid_at):
                 out.append(chosen)
         return out
 
