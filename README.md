@@ -13,14 +13,16 @@ what was true *when*). It runs offline, needs no API key, and plugs straight int
 
 ## Install
 
+From a source checkout (a PyPI release is pending name clearance — see Status):
+
 ```bash
-pip install "cold-frame[mcp]"     # core + the Claude Code / MCP server
+git clone <this repo> && cd cold-frame
+uv sync --extra mcp        # core + the Claude Code / MCP server
+# then prefix the commands below with `uv run`, e.g. `uv run cold-frame search "coffee"`
 ```
 
 The core depends only on `pydantic` + `numpy`. Everything heavier (the MCP SDK, cloud LLMs,
 the web UI) is an opt-in extra, so a plain install stays tiny.
-
-*(From a source checkout: `uv sync --extra mcp`, then prefix the commands below with `uv run`.)*
 
 ---
 
@@ -121,15 +123,21 @@ offline embedder works out of the box; for sharper recall, plug in a **local** m
 
 - Everything is in **one file**: `~/.cold-frame/memory.db`. Copy it to back up, move it between
   machines, or delete it to start fresh. (`cold-frame doctor` shows its exact path.)
-- Nothing is ever silently lost — forgetting/superseding **archives** (revivable); only an
-  explicit secret/PII purge deletes.
-- Secrets are blocked before they ever touch disk, and note content is never written to logs.
+- Nothing is ever silently lost — forgetting/superseding **archives** facts (revivable, not deleted).
+- Logs are content-free by design (ids and counters only, never your note text).
+- It's a **private local file** — treat it like one. v1 does **not** scan for or block secrets, so
+  don't store anything you wouldn't keep in a plain text file; you own the file and can delete it
+  anytime. (Automatic secret-blocking / one-note hard-purge is planned — see Status.)
 
 ---
 
 ## Status
 
-The full engine is built and tested (skeleton → correctness → read-quality + UI → forgetting →
-self-improving procedural memory → agentic self-edit). The design notes and the analysis of
-mem0 / Letta / Zep-Graphiti / Cognee / MemOS / A-MEM / LangMem that informed it live in
-[`docs/`](docs/).
+The memory **engine** is built and tested (skeleton → correctness → read-quality + UI → forgetting
+→ self-improving procedural memory → agentic self-edit), ~190 tests green.
+
+Not in this version yet (planned): automatic secret/PII detection + block + one-note hard-purge
+(today it's a local single-user file — you manage its contents); a PyPI release (the `cold-frame`
+name is pending trademark/registry clearance); event-log export/import for backup; and the richer
+web UI. The design notes and the analysis of mem0 / Letta / Zep-Graphiti / Cognee / MemOS / A-MEM /
+LangMem that informed it live in [`docs/`](docs/).
