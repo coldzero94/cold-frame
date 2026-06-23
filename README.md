@@ -125,9 +125,11 @@ offline embedder works out of the box; for sharper recall, plug in a **local** m
   machines, or delete it to start fresh. (`cold-frame doctor` shows its exact path.)
 - Nothing is ever silently lost — forgetting/superseding **archives** facts (revivable, not deleted).
 - Logs are content-free by design (ids and counters only, never your note text).
-- It's a **private local file** — treat it like one. v1 does **not** scan for or block secrets, so
-  don't store anything you wouldn't keep in a plain text file; you own the file and can delete it
-  anytime. (Automatic secret-blocking / one-note hard-purge is planned — see Status.)
+- **Obvious secrets are blocked before they touch disk** — a deterministic scan (API keys, tokens,
+  private keys, high-entropy blobs) drops them pre-write and reports a content-free placeholder; a
+  blocked secret is never embedded, stored, or sent to the host model. It's still a private local
+  file you own (delete a note with `force`, or the whole file, anytime). Full PII redaction and a
+  crypto-shred purge are planned — see Status.
 
 ---
 
@@ -136,8 +138,7 @@ offline embedder works out of the box; for sharper recall, plug in a **local** m
 The memory **engine** is built and tested (skeleton → correctness → read-quality + UI → forgetting
 → self-improving procedural memory → agentic self-edit), ~190 tests green.
 
-Not in this version yet (planned): automatic secret/PII detection + block + one-note hard-purge
-(today it's a local single-user file — you manage its contents); a PyPI release (the `cold-frame`
-name is pending trademark/registry clearance); event-log export/import for backup; and the richer
-web UI. The design notes and the analysis of mem0 / Letta / Zep-Graphiti / Cognee / MemOS / A-MEM /
+Not in this version yet (planned): PII redaction + a crypto-shred hard-purge (v1 blocks obvious
+secrets but does not redact PII or scrub the event log); a PyPI release (the `cold-frame` name is
+pending trademark/registry clearance); event-log export/import for backup; and the richer web UI. The design notes and the analysis of mem0 / Letta / Zep-Graphiti / Cognee / MemOS / A-MEM /
 LangMem that informed it live in [`docs/`](docs/).

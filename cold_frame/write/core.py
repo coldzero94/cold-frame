@@ -16,8 +16,9 @@ from datetime import datetime
 import numpy as np
 
 from cold_frame.constants import CONFLICT_CANDIDATE_FLOOR, DEDUP_AUTO_MERGE, DEDUP_NEAR_DUP
+from cold_frame.exceptions import SecretBlocked
 from cold_frame.llm.base import LLM, Clock, Embedder, TaskTag
-from cold_frame.models import AddResult, ConflictVerdict, Note, Scope, Source
+from cold_frame.models import AddResult, BlockedSpan, ConflictVerdict, Note, Scope, Source
 from cold_frame.prompts.conflict import (
     CONFLICT_SYSTEM,
     DEDUP_SYSTEM,
@@ -25,6 +26,7 @@ from cold_frame.prompts.conflict import (
     build_dedup_user,
 )
 from cold_frame.store.base import Store
+from cold_frame.write.admission import scan_secret
 
 
 def _iso_or_unknown(dt: datetime | None) -> str:
@@ -56,17 +58,24 @@ class WriteCore:
     ) -> AddResult:
         """ADMISSION → DEDUP → CONFLICT → PERSIST for new candidate facts (SPEC §4).
 
-        ADMISSION is pass-through for P2 (no secret classifier yet). Each candidate is
-        classified against the nearest active note: DEDUP (cosine≥0.93 auto-merge,
-        [0.82,0.93) ambiguous → DEDUP LLM) → CONFLICT (CONFLICT LLM proposes
-        contradiction) → deterministic freshness (valid_at comparison, NEVER the LLM —
-        I1) → supersede / stale-mark / triage. Quarantined/held candidates route to ``held``.
+        ADMISSION (v1, D25) = a deterministic secret scan: an obvious secret/credential is
+        BLOCKed pre-disk (never embedded, never persisted, never sent to the host) and reported
+        in ``blocked`` as a content-free placeholder (I6). REDACT/CONSENT + local tiebreak (I7)
+        are deferred. Each surviving candidate is then classified against the nearest active
+        note: DEDUP (cosine≥0.93 auto-merge, [0.82,0.93) ambiguous → DEDUP LLM) → CONFLICT
+        (LLM proposes contradiction) → deterministic freshness (valid_at, NEVER the LLM — I1) →
+        supersede / stale-mark / triage. Quarantined/held candidates route to ``held``.
         """
         added: list[Note] = []
         held: list[Note] = []
         deduped: list[str] = []
         superseded: list[str] = []
+        blocked: list[BlockedSpan] = []
         for cand in candidates:
+            verdict = scan_secret(cand.content)
+            if verdict is not None:  # I6: a secret never touches disk (no embed, no host call)
+                blocked.append(BlockedSpan(reason=verdict[0], placeholder=verdict[1]))
+                continue
             emb = self._embedder.embed_one(cand.content)
             kind, payload = self._classify(cand, emb, scope)
             if kind == "dedup":
@@ -94,7 +103,9 @@ class WriteCore:
             else:  # "add"
                 self._store.add_note(cand, emb)
                 (held if cand.held_for_human or cand.quarantined else added).append(cand)
-        return AddResult(added=added, superseded=superseded, deduped=deduped, blocked=[], held=held)
+        return AddResult(
+            added=added, superseded=superseded, deduped=deduped, blocked=blocked, held=held
+        )
 
     def _classify(self, cand: Note, emb: np.ndarray, scope: Scope) -> tuple[str, object]:
         """Decide a candidate's fate vs its active neighbors (SPEC §4 DEDUP→CONFLICT).
@@ -179,8 +190,12 @@ class WriteCore:
         invalid_at=new.valid_at + ``supersedes`` edge new→old + note_history, ONE txn (I3).
 
         Keyed by an EXPLICIT id (NOT a similarity search) — the same Store.supersede commit
-        the conflict path uses (I15). ADMISSION on ``new`` is pass-through for P2.
+        the conflict path uses (I15). ADMISSION (v1): a secret in ``new`` raises ``SecretBlocked``
+        (strict path — this returns a single Note, so there is no ``blocked`` list to report in).
         """
+        verdict = scan_secret(new.content)
+        if verdict is not None:  # I6: never persist a secret, even via an explicit self-edit
+            raise SecretBlocked(verdict[1])
         emb = self._embedder.embed_one(new.content)
         self._store.supersede(old_id, new, emb)
         return new
