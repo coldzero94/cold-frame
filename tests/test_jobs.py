@@ -58,7 +58,7 @@ def test_dedup_debounces_pending(store_clock: tuple[SQLiteStore, _Clock]) -> Non
     pending = store._conn.execute("SELECT count(*) FROM jobs WHERE status='pending'").fetchone()[0]
     assert pending == 1
     store.lease_job(worker="w", now=clock.now())
-    store.finish_job(a)
+    store.finish_job(a, worker="w")
     c = store.enqueue("consolidate", {}, dedup_key="consolidate:u")  # key free again once done
     assert c != a
 
@@ -67,8 +67,24 @@ def test_finish_job_is_not_released(store_clock: tuple[SQLiteStore, _Clock]) -> 
     store, clock = store_clock
     jid = store.enqueue("consolidate", {})
     store.lease_job(worker="w", now=clock.now())
-    store.finish_job(jid)
+    store.finish_job(jid, worker="w")
     assert store.lease_job(worker="w", now=clock.now()) is None
+
+
+def test_finish_fail_fenced_on_locked_by(store_clock: tuple[SQLiteStore, _Clock]) -> None:
+    # a resurrected zombie worker must NOT finalize a job another worker now owns (I12)
+    store, clock = store_clock
+    jid = store.enqueue("consolidate", {})
+    store.lease_job(worker="w1", now=clock.now())  # w1 owns it
+    store.finish_job(jid, worker="w2")  # w2 is not the owner → no-op
+    assert store._conn.execute("SELECT status FROM jobs WHERE id=?", (jid,)).fetchone()[0] == (
+        "running"
+    )
+    store.fail_job(jid, error="x", retry_after=None, worker="w2")  # also a no-op
+    row = store._conn.execute("SELECT status, attempts FROM jobs WHERE id=?", (jid,)).fetchone()
+    assert row["status"] == "running"  # untouched by the foreign worker
+    store.finish_job(jid, worker="w1")  # the real owner can finalize
+    assert store._conn.execute("SELECT status FROM jobs WHERE id=?", (jid,)).fetchone()[0] == "done"
 
 
 def test_fail_backs_off_then_dead_letters(store_clock: tuple[SQLiteStore, _Clock]) -> None:
@@ -76,7 +92,7 @@ def test_fail_backs_off_then_dead_letters(store_clock: tuple[SQLiteStore, _Clock
     jid = store.enqueue("consolidate", {})
     for _ in range(MAX_ATTEMPTS):
         assert store.lease_job(worker="w", now=clock.now()) is not None
-        store.fail_job(jid, error="boom", retry_after=None)
+        store.fail_job(jid, error="boom", retry_after=None, worker="w")
         clock.t = clock.t + timedelta(hours=1)  # past any backoff
     row = store._conn.execute("SELECT status, attempts FROM jobs WHERE id=?", (jid,)).fetchone()
     assert row["status"] == "dead" and row["attempts"] == MAX_ATTEMPTS  # never silently dropped

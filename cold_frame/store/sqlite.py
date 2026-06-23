@@ -51,7 +51,10 @@ from cold_frame.models import (
     StatusLiteral,
     UpdateType,
 )
+from cold_frame.observability import get_logger
 from cold_frame.store.base import Event, Job, PurgeReport, Store
+
+_log = get_logger(__name__)
 
 # Default provenance stamp for the DB ``sources.extractor`` column (data-layer §1).
 # The pydantic ``Source`` model carries no ``extractor`` field (code wins), so the
@@ -576,10 +579,10 @@ class SQLiteStore(Store):
                     "VALUES ('delete', ?, ?, ?, ?)",
                     (rowid, old.content, json.dumps(old.keywords), json.dumps(old.tags)),
                 )
-                self._conn.execute(
+                cur = self._conn.execute(
                     "UPDATE notes SET content=?, keywords=?, tags=?, context=?, confidence=?, "
                     "importance=?, status=?, version=?, valid_at=?, invalid_at=?, content_hash=? "
-                    "WHERE id=?",
+                    "WHERE id=? AND version=?",  # optimistic lock: expect the read-time version
                     (
                         note.content,
                         json.dumps(note.keywords),
@@ -593,8 +596,13 @@ class SQLiteStore(Store):
                         _opt_iso(note.invalid_at),
                         _content_hash(note.content),
                         note.id,
+                        note.version - 1,  # the version the caller read and intends to supersede
                     ),
                 )
+                if cur.rowcount == 0:  # DB version moved under us → a concurrent write won
+                    raise StoreError(
+                        f"update_note({note.id}): version conflict (expected {note.version - 1})"
+                    )
                 self._insert_fts(rowid, note)
                 if emb is not None:  # replace the vector (content may have changed)
                     self._conn.execute("DELETE FROM note_vec WHERE note_id=?", (note.id,))
@@ -1097,25 +1105,30 @@ class SQLiteStore(Store):
         except sqlite3.Error as exc:
             raise StoreError(f"lease_job failed: {exc}") from exc
 
-    def finish_job(self, id: str) -> None:
+    def finish_job(self, id: str, *, worker: str) -> None:
         try:
             with self.in_transaction():
-                self._conn.execute(
-                    "UPDATE jobs SET status='done', updated_at=? WHERE id=?",
-                    (_to_iso(self._clock.now()), id),
+                cur = self._conn.execute(
+                    "UPDATE jobs SET status='done', updated_at=? WHERE id=? AND locked_by=?",
+                    (_to_iso(self._clock.now()), id, worker),
                 )
+                if cur.rowcount == 0:  # lease stolen (stale-reclaimed) → no-op, don't clobber
+                    _log.warning("finish_job_lost_lease", extra={"job_id": id, "worker": worker})
         except sqlite3.Error as exc:
             raise StoreError(f"finish_job({id}) failed: {exc}") from exc
 
-    def fail_job(self, id: str, *, error: str, retry_after: datetime | None) -> None:
+    def fail_job(self, id: str, *, error: str, retry_after: datetime | None, worker: str) -> None:
         now = self._clock.now()
         try:
             with self.in_transaction():
                 row = self._conn.execute(
-                    "SELECT attempts, max_attempts FROM jobs WHERE id=?", (id,)
+                    "SELECT attempts, max_attempts, locked_by FROM jobs WHERE id=?", (id,)
                 ).fetchone()
                 if row is None:
                     raise StoreError(f"fail_job: job {id} not found")
+                if row["locked_by"] != worker:  # lease stolen → another worker owns it now
+                    _log.warning("fail_job_lost_lease", extra={"job_id": id, "worker": worker})
+                    return
                 if (
                     row["attempts"] >= row["max_attempts"]
                 ):  # exhausted → dead-letter (never dropped)
@@ -1169,6 +1182,20 @@ class SQLiteStore(Store):
         vec = int(self._conn.execute("SELECT count(*) FROM note_vec").fetchone()[0])
         integrity = str(self._conn.execute("PRAGMA integrity_check").fetchone()[0])
         meta = self.embedder_meta()
+        # real FTS5 integrity (the external-content row count above can't detect index drift)
+        try:
+            self._conn.execute("INSERT INTO note_fts(note_fts) VALUES ('integrity-check')")
+            fts_integrity = "ok"
+        except sqlite3.Error as exc:
+            fts_integrity = f"corrupt: {exc}"
+        # vectors written by a different embedder than the current one (KNN excludes them, I10)
+        stale_vectors = 0
+        if meta is not None:
+            stale_vectors = int(
+                self._conn.execute(
+                    "SELECT count(*) FROM note_vec WHERE embedder_id != ?", (meta.embedder_id,)
+                ).fetchone()[0]
+            )
         return {
             "db_path": self._db_path,
             "notes": notes,
@@ -1176,6 +1203,8 @@ class SQLiteStore(Store):
             "vec": vec,
             "counts_match": notes == fts == vec,  # I10: notes==fts==vec
             "integrity": integrity,
+            "fts_integrity": fts_integrity,
+            "stale_vectors": stale_vectors,
             "embedder_id": meta.embedder_id if meta else None,
             "dim": meta.dim if meta else None,
         }
