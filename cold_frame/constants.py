@@ -45,6 +45,8 @@ ARCHIVE_PROTECT_IMPORTANCE: Final[float] = 0.80
 CONSOLIDATE_CLUSTER_COSINE: Final[float] = 0.50
 # cold-demote: a consolidated source's decay_S is multiplied by this (faster future forgetting).
 CONSOLIDATE_DEMOTE_FACTOR: Final[float] = 0.5
+# auto-maintenance: after this many new-fact writes, enqueue a (debounced) consolidate job (I13).
+CONSOLIDATE_EVERY_N_WRITES: Final[int] = 20
 
 # ── decay / reinforcement ──
 REINFORCE_DECAY_INC: Final[float] = 0.5  # decay_S += 0.5 on recall (touch)

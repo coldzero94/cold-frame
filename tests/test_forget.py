@@ -161,3 +161,35 @@ def test_consolidate_is_convergent_no_remerge(db_path: str, frozen_clock: Frozen
     r2 = m.consolidate(caps={"episodic": 1000, "semantic": 1000})
     assert len(r1.merged) == 1
     assert r2.merged == []  # sources already consumed (incoming derived_from) → no re-merge
+
+
+# ── auto-maintenance: debounced consolidate every N writes (I13, G1) ──────────
+def test_auto_consolidate_triggers_every_n_writes(db_path: str, frozen_clock: FrozenClock) -> None:
+    m = Memory(db_path, embedder=HashEmbedder(), llm=None, clock=frozen_clock, consolidate_every=3)
+    for i in range(3):
+        m.add(f"distinct fact number {i} about a topic", raw=True)
+    # the 3rd new-fact write crossed the threshold → a consolidate job ran to completion
+    done = m._store._conn.execute(
+        "SELECT count(*) FROM jobs WHERE kind='consolidate' AND status='done'"
+    ).fetchone()[0]
+    assert done >= 1
+
+
+def test_no_auto_consolidate_before_threshold(db_path: str, frozen_clock: FrozenClock) -> None:
+    m = Memory(db_path, embedder=HashEmbedder(), llm=None, clock=frozen_clock, consolidate_every=5)
+    m.add("a single fact", raw=True)
+    jobs = m._store._conn.execute("SELECT count(*) FROM jobs WHERE kind='consolidate'").fetchone()[
+        0
+    ]
+    assert jobs == 0  # below threshold → no maintenance scheduled
+
+
+def test_auto_consolidate_retriggers_each_window(db_path: str, frozen_clock: FrozenClock) -> None:
+    # crossing the threshold twice (8 writes / window 4) runs maintenance twice, fully automatic
+    m = Memory(db_path, embedder=HashEmbedder(), llm=None, clock=frozen_clock, consolidate_every=4)
+    for i in range(8):
+        m.add(f"unrelated fact {i} xyz{i}", raw=True)
+    done = m._store._conn.execute(
+        "SELECT count(*) FROM jobs WHERE kind='consolidate' AND status='done'"
+    ).fetchone()[0]
+    assert done >= 2  # two windows → two consolidate cycles, no manual call

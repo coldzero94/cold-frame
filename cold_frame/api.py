@@ -14,8 +14,10 @@ from datetime import datetime
 from typing import Literal, TypedDict, cast, get_args
 
 from cold_frame.branding import DB_PATH
+from cold_frame.constants import CONSOLIDATE_EVERY_N_WRITES
 from cold_frame.exceptions import EmbedderMismatchError, NoteNotFound, ToolError
 from cold_frame.forget.consolidate import Consolidator
+from cold_frame.forget.worker import Worker
 from cold_frame.llm.base import LLM, Clock, Embedder, HashEmbedder, SystemClock
 from cold_frame.models import (
     AddResult,
@@ -37,6 +39,7 @@ from cold_frame.models import (
 from cold_frame.procedural.optimize import ProceduralOptimizer
 from cold_frame.read.retrieve import RetrievePipeline
 from cold_frame.read.strength import compute_strength
+from cold_frame.store.base import Job
 from cold_frame.store.sqlite import SQLiteStore
 from cold_frame.write.core import WriteCore
 from cold_frame.write.extract import extract
@@ -66,6 +69,7 @@ class Memory:
         clock: Clock | None = None,
         id_factory: Callable[[], str] | None = None,
         config: object | None = None,
+        consolidate_every: int | None = None,
     ) -> None:
         # Open Store, run migrate() (idempotent), assert the configured embedder's dim
         # matches DB meta else raise EmbedderMismatchError. Clock + id-factory injected (G6):
@@ -108,6 +112,15 @@ class Memory:
             new_id=self._new_id,
             scope=self._default_scope,
         )
+        # auto-maintenance (I13): every N new-fact writes, a debounced consolidate job runs —
+        # episodic roll-up + decay/cap archive — so the active set stays bounded without the
+        # user ever calling consolidate. Durable queue (survives a crash mid-roll-up).
+        self._consolidate_every = consolidate_every or CONSOLIDATE_EVERY_N_WRITES
+        self._writes_since_consolidate = 0
+        self._worker = Worker(self._store, clock=self._clock)
+        self._job_handlers: dict[str, Callable[[Job], None]] = {
+            "consolidate": self._run_consolidate_job
+        }
 
     # ── write ────────────────────────────────────────────────────────────
     def add(
@@ -133,7 +146,31 @@ class Memory:
             infer=infer,
             raw=raw,
         )
-        return self._write.commit(candidates, scope=scope, source=source)
+        result = self._write.commit(candidates, scope=scope, source=source)
+        self._after_write(scope, len(result.added))
+        return result
+
+    # ── auto-maintenance: debounced consolidate every N new-fact writes (I13) ──
+    def _after_write(self, scope: Scope, n_added: int) -> None:
+        if n_added <= 0:
+            return
+        self._writes_since_consolidate += n_added
+        if self._writes_since_consolidate < self._consolidate_every:
+            return
+        self._writes_since_consolidate = 0
+        # debounced (one pending consolidate per scope) → drain it now (amortized over N writes)
+        self._store.enqueue(
+            "consolidate",
+            {"scope": scope.model_dump()},
+            dedup_key=f"consolidate:{scope.user_id}:{scope.agent_id}:{scope.session_id}",
+        )
+        for _ in range(5):  # bounded drain; consolidate is convergent + debounced
+            if not self._worker.run_once(self._job_handlers):
+                break
+
+    def _run_consolidate_job(self, job: Job) -> None:
+        scope = Scope(**job.payload.get("scope", {}))
+        self._consolidator.consolidate(scope=scope)  # idempotent/convergent (at-least-once safe)
 
     def _supersede_text(
         self,
@@ -364,7 +401,9 @@ class Memory:
                 )
             ],
         )
-        return self._write.commit([cand], scope=scope, source=None)
+        result = self._write.commit([cand], scope=scope, source=None)
+        self._after_write(scope, len(result.added))
+        return result
 
     def update_fact(self, id: str, new_text: str, *, scope: Scope | None = None) -> CorrectResult:
         return self._supersede_text(
