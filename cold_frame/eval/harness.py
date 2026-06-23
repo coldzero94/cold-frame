@@ -45,7 +45,18 @@ class LlmScriptEntry(BaseModel):
 class Step(BaseModel):
     """One action in a case timeline. ``at`` advances the injected clock (G6)."""
 
-    op: Literal["add", "search", "consolidate", "correct", "tick", "forget", "revive", "pin"]
+    op: Literal[
+        "add",
+        "search",
+        "consolidate",
+        "correct",
+        "supersede",
+        "update_fact",
+        "tick",
+        "forget",
+        "revive",
+        "pin",
+    ]
     at: datetime | None = None
     scope: Scope | None = None
     text: str | None = None
@@ -247,9 +258,10 @@ def _match_where(note: Note, where: dict[str, Any]) -> bool:
 def run_case(case: Case, *, via_tool: bool = False) -> CaseReport:
     """Run one golden case against a fresh in-memory Memory; collect assertion failures.
 
-    ``via_tool`` routes every ``add`` op through the ``create_fact`` self-edit tool instead of
-    ``Memory.add`` — same WriteCore, so dedup/freshness suites must produce identical outcomes
-    (the P6 I15 gate).
+    ``via_tool`` routes each ``add`` through the ``create_fact`` self-edit tool. create_fact
+    skips extraction and asserts the step text as one fact, so this matches ``add`` only for
+    raw-style suites (dedup/freshness); both reach the SAME WriteCore.commit, so the dedup/
+    conflict/freshness outcomes are identical (the P6 I15 gate).
     """
     failures: list[str] = []
     clock = _EvalClock(_first_instant(case))
@@ -295,6 +307,19 @@ def run_case(case: Case, *, via_tool: bool = False) -> CaseReport:
                     failures.append(f"{step.op} step: no created note matches {step.extra!r}")
                 else:
                     getattr(mem, step.op)(target)
+            elif step.op in ("correct", "supersede", "update_fact"):
+                # explicit-id replace through the self-edit tool path (I15 commit_supersede half)
+                target = _find_created(mem, created, step)
+                if target is None or step.text is None:
+                    failures.append(f"{step.op} step: no target / missing text ({step.extra!r})")
+                elif step.op == "correct":
+                    new = mem.correct_memory(target, step.text, scope=step.scope or Scope())
+                    created.append(new.new.id)
+                else:
+                    out = mem.apply_tool(
+                        step.op, {"id": target, "text": step.text}, scope=step.scope or Scope()
+                    )
+                    created.append(str(out["new"]))
             else:
                 failures.append(f"op {step.op!r} not supported")
 

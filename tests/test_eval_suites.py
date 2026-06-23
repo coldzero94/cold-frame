@@ -28,7 +28,8 @@ _CASES = _all_cases()
 
 def test_gate_suites_exist() -> None:
     suites = {cid.split(":", 1)[0] for cid, _ in _CASES}
-    # P1 extraction/precision/cross_scope · P2 dedup/freshness · P3 token_budget · P4 forgetting
+    # P1 extraction/precision/cross_scope · P2 dedup/freshness · P3 token_budget ·
+    # P4 forgetting · P6 self_edit (commit_supersede through the tool, I15)
     assert {
         "extraction",
         "precision_at_k",
@@ -37,6 +38,7 @@ def test_gate_suites_exist() -> None:
         "freshness",
         "token_budget",
         "forgetting",
+        "self_edit",
     } <= suites
 
 

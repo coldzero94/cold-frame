@@ -65,6 +65,21 @@ def test_error_response_maps_not_found() -> None:
     assert resp["error"]["code"] == "not_found"
 
 
+def test_mcp_self_edit_error_maps_to_stable_code(db_path: str) -> None:
+    import anyio
+
+    mcpmod._MEMORY = Memory(db_path)
+    try:
+        # NoteNotFound (update/supersede/forget on a ghost id) → not_found through the async seam
+        for handler in (mcpmod.update_fact, mcpmod.supersede):
+            resp = anyio.run(handler, "ghost-id", "new text")
+            assert resp["error"]["code"] == "not_found"
+        forget_resp = anyio.run(mcpmod.forget, "ghost-id")
+        assert forget_resp["error"]["code"] == "not_found"
+    finally:
+        mcpmod._MEMORY = None
+
+
 @pytest.mark.skipif(_HAS_SDK, reason="mcp SDK installed → import-guard path not exercised")
 def test_main_reports_install_hint_without_sdk(capsys: pytest.CaptureFixture[str]) -> None:
     rc = mcpmod.main()

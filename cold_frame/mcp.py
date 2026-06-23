@@ -107,7 +107,7 @@ async def _run_self_edit(name: str, args: dict[str, object]) -> dict[str, Any]:
 
 
 async def create_fact(text: str, memory_type: str = "semantic") -> dict[str, Any]:
-    """MCP self-edit tool: assert a new fact (dedup + conflict run); returns {added,deduped,...}."""
+    """MCP self-edit tool: assert a new fact (dedup; conflict when an LLM is set)."""
     return await _run_self_edit("create_fact", {"text": text, "memory_type": memory_type})
 
 

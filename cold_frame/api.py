@@ -11,10 +11,10 @@ import hashlib
 import uuid
 from collections.abc import Callable
 from datetime import datetime
-from typing import Literal, TypedDict, cast
+from typing import Literal, TypedDict, cast, get_args
 
 from cold_frame.branding import DB_PATH
-from cold_frame.exceptions import EmbedderMismatchError, NoteNotFound
+from cold_frame.exceptions import EmbedderMismatchError, NoteNotFound, ToolError
 from cold_frame.forget.consolidate import Consolidator
 from cold_frame.llm.base import LLM, Clock, Embedder, HashEmbedder, SystemClock
 from cold_frame.models import (
@@ -42,6 +42,8 @@ from cold_frame.write.core import WriteCore
 from cold_frame.write.extract import extract
 
 __all__ = ["Memory", "Msg"]
+
+_MEMORY_TYPES: frozenset[str] = frozenset(get_args(MemoryTypeLiteral))  # single source for the enum
 
 
 class Msg(TypedDict):
@@ -288,22 +290,21 @@ class Memory:
         return [
             ToolSpec(
                 name="create_fact",
-                description="Assert a new fact (runs dedup + deterministic conflict resolution).",
+                description="Assert a new fact (runs dedup; conflict resolution + freshness "
+                "when an LLM is configured).",
                 input_schema={
                     "type": "object",
                     "properties": {
                         "text": {"type": "string"},
-                        "memory_type": {
-                            "type": "string",
-                            "enum": ["semantic", "episodic", "procedural"],
-                        },
+                        "memory_type": {"type": "string", "enum": sorted(_MEMORY_TYPES)},
                     },
                     "required": ["text"],
                 },
             ),
             ToolSpec(
                 name="update_fact",
-                description="Replace the fact at id with new text (supersedes the old).",
+                description="Correct the fact at id with new text; the old version is archived "
+                "(revivable) and the new one supersedes it.",
                 input_schema={
                     "type": "object",
                     "properties": {"id": {"type": "string"}, "text": {"type": "string"}},
@@ -338,7 +339,12 @@ class Memory:
         memory_type: MemoryTypeLiteral = "semantic",
         importance: float = 0.5,
     ) -> AddResult:
-        """Agent asserts a fact → the SAME WriteCore.commit as add (dedup + conflict, I15)."""
+        """Agent asserts a fact → the SAME WriteCore.commit as add (dedup + conflict, I15).
+
+        ``confidence`` is intentionally left at the model default (1.0): an agent self-asserting
+        a fact is high-confidence, distinct from passive extraction's 0.5 — so confidence/
+        quarantine-gated cases are out of scope for the via_tool gate.
+        """
         scope = scope or self._default_scope
         now = self._clock.now()
         cand = Note(
@@ -373,29 +379,44 @@ class Memory:
     def apply_tool(
         self, name: str, args: dict[str, object], *, scope: Scope | None = None
     ) -> dict[str, object]:
-        """Execute one self-edit tool by name (the MCP/agent entry); routes via WriteCore (I15)."""
+        """Execute one self-edit tool by name (the MCP/agent entry); routes via WriteCore (I15).
+
+        Every argument-boundary failure raises ``ToolError`` (a ColdFrameError) so the MCP
+        layer maps it to a stable error code — never a bare KeyError/ValueError.
+        """
+
+        def _require(key: str) -> str:
+            val = args.get(key)
+            if not isinstance(val, str) or not val:
+                raise ToolError(f"self-edit tool {name!r} requires a non-empty {key!r}")
+            return val
+
         if name == "create_fact":
             mt = args.get("memory_type", "semantic")
-            if mt not in ("semantic", "episodic", "procedural"):
-                mt = "semantic"
+            if mt not in _MEMORY_TYPES:
+                raise ToolError(
+                    f"invalid memory_type {mt!r} (expected one of {sorted(_MEMORY_TYPES)})"
+                )
             res = self.create_fact(
-                str(args["text"]), scope=scope, memory_type=cast(MemoryTypeLiteral, mt)
+                _require("text"), scope=scope, memory_type=cast(MemoryTypeLiteral, mt)
             )
             return {
                 "added": [n.id for n in res.added],
                 "deduped": res.deduped,
                 "superseded": res.superseded,
+                "held": [n.id for n in res.held],  # durability-gated, agent must see it
+                "blocked": [b.reason for b in res.blocked],  # secret BLOCKed pre-disk (I6)
             }
         if name == "update_fact":
-            r = self.update_fact(str(args["id"]), str(args["text"]), scope=scope)
+            r = self.update_fact(_require("id"), _require("text"), scope=scope)
             return {"archived": r.archived, "new": r.new.id}
         if name == "supersede":
-            r = self.supersede(str(args["id"]), str(args["text"]), scope=scope)
+            r = self.supersede(_require("id"), _require("text"), scope=scope)
             return {"archived": r.archived, "new": r.new.id}
         if name == "forget":
-            note = self.forget(str(args["id"]))
+            note = self.forget(_require("id"))
             return {"archived": note.id, "status": note.status}
-        raise ValueError(f"unknown self-edit tool {name!r}")
+        raise ToolError(f"unknown self-edit tool {name!r}")
 
     def optimize_prompt(self, name: str, trajectory: list[Msg], feedback: str) -> ProceduralResult:
         return self._procedural.optimize_prompt(name, trajectory, feedback)

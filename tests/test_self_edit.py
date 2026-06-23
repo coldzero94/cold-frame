@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 from cold_frame.api import Memory
 from cold_frame.eval.harness import load_suite, run_case
-from cold_frame.exceptions import NoteNotFound
+from cold_frame.exceptions import NoteNotFound, ToolError
 from cold_frame.llm.base import HashEmbedder
 
 from tests.conftest import FrozenClock
@@ -75,16 +75,44 @@ def test_apply_tool_dispatch(db_path: str, frozen_clock: FrozenClock) -> None:
     assert forgotten["status"] == "archived"
 
 
+def test_apply_tool_create_fact_returns_admission_fields(
+    db_path: str, frozen_clock: FrozenClock
+) -> None:
+    m = _mem(db_path, frozen_clock)
+    out = m.apply_tool("create_fact", {"text": "I like tea"})
+    assert "held" in out and "blocked" in out  # the agent sees durability-gate/secret outcomes (I6)
+
+
 def test_apply_tool_unknown_raises(db_path: str, frozen_clock: FrozenClock) -> None:
     m = _mem(db_path, frozen_clock)
-    with pytest.raises(ValueError, match="unknown self-edit tool"):
+    with pytest.raises(ToolError, match="unknown self-edit tool"):  # ColdFrameError → MCP envelope
         m.apply_tool("delete_everything", {})
+
+
+def test_apply_tool_missing_arg_raises_tool_error(db_path: str, frozen_clock: FrozenClock) -> None:
+    m = _mem(db_path, frozen_clock)
+    with pytest.raises(ToolError, match="requires a non-empty"):
+        m.apply_tool("create_fact", {})  # missing text
+    with pytest.raises(ToolError, match="requires a non-empty"):
+        m.apply_tool("update_fact", {"id": "x"})  # missing text
+
+
+def test_apply_tool_memory_type_passthrough_and_validation(
+    db_path: str, frozen_clock: FrozenClock
+) -> None:
+    m = _mem(db_path, frozen_clock)
+    out = m.apply_tool("create_fact", {"text": "deploy via ship.sh", "memory_type": "procedural"})
+    assert m.get(out["added"][0]).memory_type == "procedural"  # type: ignore[index]
+    with pytest.raises(ToolError, match="invalid memory_type"):
+        m.apply_tool("create_fact", {"text": "x", "memory_type": "bogus"})
 
 
 def test_update_fact_unknown_id_raises(db_path: str, frozen_clock: FrozenClock) -> None:
     m = _mem(db_path, frozen_clock)
     with pytest.raises(NoteNotFound):
         m.update_fact("nope", "x")
+    with pytest.raises(NoteNotFound):  # forget tool on an unknown id surfaces not_found too
+        m.apply_tool("forget", {"id": "ghost"})
 
 
 # ── P6 GATE: dedup + freshness suites THROUGH the create_fact tool path (I15) ──
