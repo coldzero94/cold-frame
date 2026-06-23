@@ -1209,7 +1209,37 @@ class SQLiteStore(Store):
         )
 
     def iter_events(self, *, since_hlc: str | None = None) -> Iterator[Event]:
-        raise NotImplementedError
+        sql = (
+            "SELECT event_id, device_id, hlc, entity, entity_id, op, content_hash, payload, ts "
+            "FROM events"
+        )
+        params: list[Any] = []
+        if since_hlc is not None:
+            sql += " WHERE hlc > ?"
+            params.append(since_hlc)
+        sql += " ORDER BY hlc, seq"  # hlc-ordered, append order as tiebreak (deterministic)
+        rows = self._conn.execute(sql, params).fetchall()  # materialize: frees the shared cursor
+        for row in rows:
+            yield Event(
+                event_id=row["event_id"],
+                device_id=row["device_id"],
+                hlc=row["hlc"],
+                entity=row["entity"],
+                entity_id=row["entity_id"],
+                op=row["op"],
+                content_hash=row["content_hash"],
+                payload=row["payload"],
+                ts=_from_iso(row["ts"]),
+            )
+
+    def snapshot(self, dst: str) -> None:
+        """Consistent checkpointed copy of the WHOLE DB to ``dst`` (I17: a snapshot, never the
+        live WAL). Single-file, WAL-free — restorable by copying it back into place."""
+        out = sqlite3.connect(dst)
+        try:
+            self._conn.backup(out)
+        finally:
+            out.close()
 
     # ── secret hard-purge ───────────────────────────────────────────────────
     def purge(self, id: str, *, cascade: bool = False) -> PurgeReport:

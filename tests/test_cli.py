@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -91,3 +92,34 @@ def test_cli_stats(cli_db: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["stats"]) == 0
     out = capsys.readouterr().out
     assert "active=" in out and "by type:" in out
+
+
+def test_cli_export_import_roundtrip(
+    cli_db: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    main(["add", "I prefer dark roast coffee"])
+    capsys.readouterr()
+    snap = tmp_path / "backup.db"
+    assert main(["export", str(snap)]) == 0
+    assert snap.exists() and "snapshot" in capsys.readouterr().out
+
+    # mutate the live DB, then restore the snapshot → the mutation is gone, the original is back
+    main(["add", "I also drive a Ferrari"])
+    capsys.readouterr()
+    assert main(["import", str(snap)]) == 0
+    capsys.readouterr()
+    assert main(["search", "Ferrari"]) == 0
+    assert "no matches" in capsys.readouterr().out.lower()  # the post-snapshot add is gone
+    assert main(["search", "coffee"]) == 0
+    assert "dark roast" in capsys.readouterr().out  # the snapshot content is restored
+
+
+def test_cli_export_events_ndjson(
+    cli_db: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    main(["add", "a fact for the log"])
+    capsys.readouterr()
+    out = tmp_path / "events.ndjson"
+    assert main(["export", str(out), "--events"]) == 0
+    lines = [json.loads(line) for line in out.read_text().splitlines()]
+    assert lines and lines[0]["op"] == "create" and "event_id" in lines[0]

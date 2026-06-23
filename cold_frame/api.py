@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from datetime import datetime
 from typing import Literal, TypedDict, cast, get_args
 
@@ -280,9 +280,23 @@ class Memory:
             raise NoteNotFound(id)
         return notes[0]
 
+    def close(self) -> None:
+        """Release the underlying Store connection(s)."""
+        self._store.close()
+
     def health(self) -> dict[str, object]:
         """Doctor/health snapshot: invariant counts + integrity + embedder (eval §C.8)."""
         return self._store.doctor()
+
+    # ── backup / portability (I17: snapshot or event-log dump; never the live WAL) ──
+    def snapshot(self, dst: str) -> None:
+        """Write a complete consistent backup of the whole memory DB to ``dst``."""
+        self._store.snapshot(dst)
+
+    def export_events(self) -> Iterator[str]:
+        """Yield the append-only event log as NDJSON lines (portable, inspectable)."""
+        for ev in self._store.iter_events():
+            yield ev.model_dump_json()
 
     def get_many(self, ids: list[str]) -> list[Note]:
         return self._store.get_notes(ids)
