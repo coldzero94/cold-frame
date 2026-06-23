@@ -14,6 +14,7 @@ from typing import Any
 from cold_frame.api import Memory
 from cold_frame.branding import MCP_ID, PKG, fact_deeplink
 from cold_frame.exceptions import ColdFrameError, StoreError, mcp_code_for
+from cold_frame.llm.sampling import SamplingLLM
 
 _INSTALL_HINT = (
     f"{MCP_ID}: the MCP server needs an optional dependency — "
@@ -22,12 +23,49 @@ _INSTALL_HINT = (
 
 # One Memory per server process, set by build_server() at serve time.
 _MEMORY: Memory | None = None
+_SERVER: Any = None  # the FastMCP server (for get_context()); set in build_server()
 
 
 def _require_memory() -> Memory:
     if _MEMORY is None:
         raise StoreError("MCP server memory is not initialized")
     return _MEMORY
+
+
+def _host_sample(system: str, user: str) -> str:
+    """Sync sampler bridging cold-frame's LLM seam to HOST MCP sampling (the parasitic LLM).
+
+    cold-frame's internal judges (dedup/conflict) ride on the host agent's model — no own key.
+    Runs inside a worker thread (the sync core, I4); ``anyio.from_thread.run`` bridges the one
+    completion back to the event loop. ANY failure (no active request, host doesn't support
+    sampling, error) returns ``""`` → ``SamplingLLM`` yields ``parsed=None`` → the deterministic
+    engine decides, exactly as offline.
+    """
+    if _SERVER is None:
+        return ""
+    import anyio
+
+    try:
+        ctx = _SERVER.get_context()  # current request's Context (anyio copies it into this thread)
+    except Exception:
+        return ""
+
+    async def _ask() -> str:
+        from mcp.types import SamplingMessage, TextContent
+
+        result = await ctx.session.create_message(
+            messages=[SamplingMessage(role="user", content=TextContent(type="text", text=user))],
+            system_prompt=system or None,
+            max_tokens=1024,
+            temperature=0.0,
+        )
+        content = result.content
+        return content.text if getattr(content, "type", "") == "text" else ""
+
+    try:
+        return anyio.from_thread.run(_ask)
+    except Exception:
+        return ""
 
 
 # ── sync tool logic (the single implementation; fully testable offline) ───────
@@ -48,7 +86,10 @@ def _search_impl(mem: Memory, query: str, k: int = 10) -> dict[str, Any]:
 
 
 def _add_impl(mem: Memory, text: str) -> dict[str, Any]:
-    res = mem.add(text)
+    # raw=True: the agent's text IS the fact (naive). Smart dedup/conflict still rides on the
+    # host via sampling inside commit; if extraction were LLM-driven, a sampling miss would drop
+    # the fact entirely — naive keeps it, and the judges degrade safely.
+    res = mem.add(text, raw=True)
     return {
         "added": [
             {"id": n.id, "content": n.content, "deeplink": fact_deeplink(n.id)} for n in res.added
@@ -138,9 +179,11 @@ def build_server(memory: Memory | None = None) -> Any:  # noqa: ANN401 - FastMCP
     except ImportError as exc:
         raise ColdFrameError(_INSTALL_HINT) from exc
 
-    global _MEMORY
-    _MEMORY = memory if memory is not None else Memory()
+    global _MEMORY, _SERVER
     server = FastMCP(MCP_ID)
+    _SERVER = server
+    # default: ride on the host's model via MCP sampling (no own key/endpoint) — degrade-safe
+    _MEMORY = memory if memory is not None else Memory(llm=SamplingLLM(_host_sample))
     server.tool()(search_memory)
     server.tool()(add_memory)
     for tool in (create_fact, update_fact, supersede, forget):  # self-edit tools (one WriteCore)

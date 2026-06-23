@@ -15,6 +15,7 @@ from cold_frame.llm.base import (
     Usage,
     assert_local_for,
 )
+from cold_frame.llm.sampling import Sampler, SamplingLLM
 
 __all__ = [
     "LLM",
@@ -24,6 +25,8 @@ __all__ = [
     "EmbedderMeta",
     "HashEmbedder",
     "LLMResult",
+    "Sampler",
+    "SamplingLLM",
     "SystemClock",
     "TaskTag",
     "Usage",
