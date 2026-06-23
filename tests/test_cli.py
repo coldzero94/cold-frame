@@ -66,3 +66,28 @@ def test_cli_consolidate_dispatches(cli_db: Path, capsys: pytest.CaptureFixture[
     capsys.readouterr()
     assert main(["consolidate"]) == 0
     assert "consolidate:" in capsys.readouterr().out
+
+
+def test_cli_list_shows_active(cli_db: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    main(["add", "I prefer dark roast coffee"])
+    capsys.readouterr()
+    assert main(["list"]) == 0
+    assert "dark roast" in capsys.readouterr().out
+
+
+def test_cli_show_by_id(cli_db: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    main(["add", "I drive a Ferrari"])
+    out = capsys.readouterr().out
+    nid = out.split()[1]  # "+ <id>  <content>"
+    assert main(["show", nid]) == 0
+    shown = capsys.readouterr().out
+    assert "Ferrari" in shown and "content:" in shown
+    assert main(["show", "nope-ghost-id"]) == 1  # unknown id → exit 1
+
+
+def test_cli_stats(cli_db: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    main(["add", "a fact one"])
+    capsys.readouterr()
+    assert main(["stats"]) == 0
+    out = capsys.readouterr().out
+    assert "active=" in out and "by type:" in out

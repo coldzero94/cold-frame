@@ -165,6 +165,8 @@ main{padding:16px 24px;max-width:760px}
 </style></head><body>
 <header><h1>COLD-FRAME · what I know about you now</h1></header>
 <main id="app"><p class="empty">loading…</p></main><script>
+const esc=s=>String(s).replace(/[&<>"']/g,c=>(
+  {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 fetch('/api/notes').then(r=>r.json()).then(d=>{
   const a=document.getElementById('app');
   if(!d.notes.length){a.innerHTML='<p class="empty">No memories yet.</p>';return}
@@ -174,10 +176,10 @@ fetch('/api/notes').then(r=>r.json()).then(d=>{
     const risk=s.at_risk?'<span class="risk">\\u25CB at risk</span>':'';
     const w=Math.round(s.value*100);
     return '<div class="card"><div class="c"><span class="g">'+g+'</span><span>'+
-      n.content+'</span>'+risk+'</div>'+
+      esc(n.content)+'</span>'+risk+'</div>'+
       '<div class="bar" style="width:'+w+'%"></div>'+
-      '<div class="m">'+n.memory_type+' \\u00B7 S='+s.value+' \\u00B7 conf='+n.confidence+
-      '</div></div>';
+      '<div class="m">'+esc(n.memory_type)+' \\u00B7 S='+esc(s.value)+
+      ' \\u00B7 conf='+esc(n.confidence)+'</div></div>';
   }).join('');
-}).catch(e=>{document.getElementById('app').innerHTML='<p class="empty">error: '+e+'</p>'});
+}).catch(e=>{document.getElementById('app').innerHTML='<p class="empty">error: '+esc(e)+'</p>'});
 </script></body></html>"""

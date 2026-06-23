@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import argparse
 import os
+from collections import Counter
 from collections.abc import Sequence
 
 from cold_frame import __version__, branding
 from cold_frame.api import Memory
 from cold_frame.branding import PKG
+from cold_frame.exceptions import NoteNotFound
 
 _SUBCOMMANDS: tuple[str, ...] = (
     "add",
@@ -70,6 +72,49 @@ def _cmd_search(args: argparse.Namespace) -> int:
         return 0
     for hit in res.hits:
         print(f"{hit.score:.4f}  {hit.note.id[:8]}  {hit.note.content}")
+    return 0
+
+
+def _cmd_list(args: argparse.Namespace) -> int:
+    mem = _memory(args)
+    notes = mem.list_active(limit=args.limit)
+    if not notes:
+        print("no active memories")
+        return 0
+    for n in notes:
+        band = mem.strength(n.id).band
+        print(f"{n.id[:8]}  [{band:9}] {n.content[:80]}")
+    return 0
+
+
+def _cmd_show(args: argparse.Namespace) -> int:
+    if not args.id:
+        print("show: provide a note id")
+        return 1
+    mem = _memory(args)
+    try:
+        n = mem.get(args.id)
+    except NoteNotFound:  # list/add show truncated ids → resolve a unique prefix
+        matches = [x for x in mem.list_active(limit=1_000_000) if x.id.startswith(args.id)]
+        if len(matches) != 1:
+            print(f"not found: {args.id}" if not matches else f"ambiguous prefix: {args.id}")
+            return 1
+        n = matches[0]
+    print(f"id:       {n.id}")
+    print(f"status:   {n.status}  type: {n.memory_type}  v{n.version}")
+    print(f"content:  {n.content}")
+    print(f"created:  {n.created_at}  valid_at: {n.valid_at}")
+    print(f"conf={n.confidence}  importance={n.importance}  pinned={n.pinned}")
+    return 0
+
+
+def _cmd_stats(args: argparse.Namespace) -> int:
+    mem = _memory(args)
+    h = mem.health()
+    active = mem.list_active(limit=1_000_000)
+    by_type = Counter(n.memory_type for n in active)
+    print(f"notes={h['notes']}  active={len(active)}  fts={h['fts']}  vec={h['vec']}")
+    print("by type: " + (", ".join(f"{k}={v}" for k, v in sorted(by_type.items())) or "(none)"))
     return 0
 
 
@@ -153,10 +198,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_search.add_argument("-k", type=int, default=10, help="number of hits")
     p_search.set_defaults(func=_cmd_search)
 
-    sub.add_parser("list", help="list active notes")
+    p_list = sub.add_parser("list", help="list active notes")
+    p_list.add_argument("--limit", type=int, default=50, help="max notes to list")
+    p_list.set_defaults(func=_cmd_list)
     p_show = sub.add_parser("show", help="show one note by id")
     p_show.add_argument("id", nargs="?", help="note id")
-    sub.add_parser("stats", help="show store statistics")
+    p_show.set_defaults(func=_cmd_show)
+    sub.add_parser("stats", help="show store statistics").set_defaults(func=_cmd_stats)
     sub.add_parser("timeline", help="show the belief/consolidation timeline")
     sub.add_parser("path", help="show edge path between notes")
     sub.add_parser("doctor", help="run install/DB/embedder/invariant checks").set_defaults(

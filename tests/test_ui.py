@@ -94,3 +94,11 @@ def test_cli_ui_dispatches_to_serve(monkeypatch: pytest.MonkeyPatch, tmp_path: P
     monkeypatch.setattr(ui, "serve", lambda *a, **k: calls.append(1))
     assert cli_main(["ui", "--port", "0"]) == 0
     assert calls == [1]
+
+
+def test_index_html_escapes_note_content_xss() -> None:
+    # the inspector renders note content via an esc() helper, never raw innerHTML (stored XSS)
+    html = ui._INDEX_HTML
+    assert "esc(n.content)" in html  # user content is HTML-escaped before injection
+    assert "+n.content+" not in html  # the raw-injection footgun is gone
+    assert "const esc=" in html  # the escaper is defined
