@@ -36,6 +36,7 @@ from cold_frame.models import (
     ToolSpec,
     TriageItem,
 )
+from cold_frame.observability import get_logger
 from cold_frame.procedural.optimize import ProceduralOptimizer
 from cold_frame.read.retrieve import RetrievePipeline
 from cold_frame.read.strength import compute_strength
@@ -47,6 +48,7 @@ from cold_frame.write.extract import extract
 __all__ = ["Memory", "Msg"]
 
 _MEMORY_TYPES: frozenset[str] = frozenset(get_args(MemoryTypeLiteral))  # single source for the enum
+_log = get_logger(__name__)
 
 
 class Msg(TypedDict):
@@ -117,7 +119,11 @@ class Memory:
         # user ever calling consolidate. Durable queue (survives a crash mid-roll-up).
         self._consolidate_every = consolidate_every or CONSOLIDATE_EVERY_N_WRITES
         self._writes_since_consolidate = 0
-        self._worker = Worker(self._store, clock=self._clock)
+        # instance-unique worker id (via the injected id-factory, deterministic in tests) so the
+        # jobs locked_by fence actually distinguishes workers across processes (I12)
+        self._worker = Worker(
+            self._store, clock=self._clock, worker_id=f"worker-{self._new_id()[:8]}"
+        )
         self._job_handlers: dict[str, Callable[[Job], None]] = {
             "consolidate": self._run_consolidate_job
         }
@@ -158,13 +164,17 @@ class Memory:
         if self._writes_since_consolidate < self._consolidate_every:
             return
         self._writes_since_consolidate = 0
-        # debounced (one pending consolidate per scope) → drain it now (amortized over N writes)
-        self._store.enqueue(
-            "consolidate",
-            {"scope": scope.model_dump()},
-            dedup_key=f"consolidate:{scope.user_id}:{scope.agent_id}:{scope.session_id}",
-        )
-        self.run_pending_jobs(max_jobs=5)  # bounded inline drain; consolidate is convergent
+        # Best-effort: the fact is ALREADY committed — a maintenance hiccup (enqueue/drain) must
+        # never surface as a failed write. Swallow + log content-free; the durable queue retries.
+        try:
+            self._store.enqueue(
+                "consolidate",
+                {"scope": scope.model_dump()},
+                dedup_key=f"consolidate:{scope.user_id}:{scope.agent_id}:{scope.session_id}",
+            )
+            self.run_pending_jobs(max_jobs=5)  # bounded inline drain; consolidate is convergent
+        except Exception as exc:
+            _log.warning("auto_consolidate_failed", extra={"exc_type": type(exc).__name__})
 
     def run_pending_jobs(self, *, max_jobs: int = 50) -> int:
         """Lease + run up to ``max_jobs`` due jobs; returns how many ran. Recovers backed-off/

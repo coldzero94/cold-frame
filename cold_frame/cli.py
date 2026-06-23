@@ -173,6 +173,20 @@ def _cmd_export(args: argparse.Namespace) -> int:
     return 0
 
 
+def _db_is_busy(path: Path) -> bool:
+    """True if another process holds ``path`` open (can't take an exclusive lock immediately)."""
+    try:
+        conn = sqlite3.connect(str(path), timeout=0.0)
+        try:
+            conn.execute("BEGIN EXCLUSIVE")
+            conn.execute("ROLLBACK")
+            return False
+        finally:
+            conn.close()
+    except sqlite3.OperationalError:
+        return True
+
+
 def _cmd_import(args: argparse.Namespace) -> int:
     """Restore the memory DB from a snapshot (replaces the current DB; current is backed up)."""
     import shutil
@@ -182,24 +196,41 @@ def _cmd_import(args: argparse.Namespace) -> int:
     if not src.exists():
         print(f"import: source not found: {src}")
         return 1
-    try:  # validate it is a cold-frame snapshot (a migrated SQLite db)
+    try:  # validate it is a cold-frame snapshot: valid SQLite + migrated + the notes table
         ro = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
-        version = int(ro.execute("PRAGMA user_version").fetchone()[0])
-        ro.close()
+        try:
+            version = int(ro.execute("PRAGMA user_version").fetchone()[0])
+            has_notes = (
+                ro.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='notes'"
+                ).fetchone()
+                is not None
+            )
+        finally:
+            ro.close()
     except sqlite3.Error:
         print(f"import: {src} is not a valid SQLite snapshot")
         return 1
-    if version < 1:
+    if version < 1 or not has_notes:
         print(f"import: {src} is not a cold-frame snapshot")
         return 1
-    if dst.exists():  # safety-backup the current DB, then drop its stale WAL/SHM
-        shutil.copy2(dst, f"{dst}.pre-import.bak")
-        for ext in ("-wal", "-shm"):
-            stale = Path(f"{dst}{ext}")
-            if stale.exists():
-                stale.unlink()
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(src, dst)
+    if dst.exists() and _db_is_busy(dst):  # I17: never replace a DB another process has open
+        print(f"import: {dst} is in use — stop cold-frame (ui/mcp/worker) first, then retry")
+        return 1
+    try:
+        if dst.exists():  # safety-backup the current DB, then drop its stale WAL/SHM
+            shutil.copy2(dst, f"{dst}.pre-import.bak")
+            for ext in ("-wal", "-shm"):
+                stale = Path(f"{dst}{ext}")
+                if stale.exists():
+                    stale.unlink()
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
+    except OSError as exc:
+        bak = Path(f"{dst}.pre-import.bak")
+        hint = f"; previous DB preserved at {bak}" if bak.exists() else ""
+        print(f"import failed: {exc}{hint}")
+        return 1
     note = (
         f" (previous DB backed up to {dst}.pre-import.bak)"
         if Path(f"{dst}.pre-import.bak").exists()

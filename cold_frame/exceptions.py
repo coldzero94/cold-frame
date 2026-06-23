@@ -47,7 +47,7 @@ class ToolError(ColdFrameError):
 MCP_ERROR_CODES: Final[dict[type[ColdFrameError], str]] = {
     NoteNotFound: "not_found",
     EmbedderMismatchError: "internal",
-    SecretBlocked: "internal",
+    SecretBlocked: "invalid_scope",  # user-actionable (a secret was blocked), not an internal error
     VarHealerError: "internal",
     StoreError: "internal",
     PolicyError: "invalid_scope",

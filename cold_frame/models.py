@@ -140,7 +140,7 @@ class BlockedSpan(BaseModel):
     """A secret/credential BLOCKed pre-disk (D15). NEVER carries the original content."""
 
     reason: Literal["secret", "credential"]
-    placeholder: str  # e.g. "[REDACTED:api_key]" — original span is discarded
+    placeholder: str  # e.g. "[BLOCKED:aws_access_key]" — a label only; original span discarded
 
 
 class AddResult(BaseModel):

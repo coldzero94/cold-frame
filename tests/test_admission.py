@@ -52,6 +52,19 @@ def test_scan_passes_normal_text(text: str) -> None:
     assert scan_secret(text) is None
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "the commit sha is a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",  # 40-hex git sha
+        "session 550e8400-e29b-41d4-a716-446655440000 expired",  # a UUID
+        "class ThisIsAVeryLongCamelCaseClassNameForTestingThings",  # long camelCase identifier
+        "file src/components/widgets/forms/inputs/text_field_helper",  # path-like token
+    ],
+)
+def test_scan_no_false_positive_on_ordinary_long_tokens(text: str) -> None:
+    assert scan_secret(text) is None  # hashes / UUIDs / identifiers / paths are not secrets
+
+
 def _mem(db_path: str, clock: FrozenClock) -> Memory:
     return Memory(db_path, embedder=HashEmbedder(), llm=None, clock=clock)
 

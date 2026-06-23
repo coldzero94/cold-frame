@@ -211,6 +211,27 @@ def test_delete_unknown_raises(store: SQLiteStore) -> None:
         store.delete("ghost")
 
 
+def test_delete_cascades_sources_and_edges(store: SQLiteStore) -> None:
+    a = _note("a1", "I work at Vessl")
+    store.add_note(a, HashEmbedder().embed_one(a.content))
+    new = _note("a2", "I work at Anthropic")  # supersede → 'supersedes' edge a2→a1 + archives a1
+    store.supersede("a1", new, HashEmbedder().embed_one(new.content))
+    assert _row_count(store, "sources", "note_id", "a1") >= 1
+    assert _row_count(store, "edges", "dst_id", "a1") >= 1
+
+    store.delete("a1")
+    assert store.get_notes(["a1"]) == []
+    assert _row_count(store, "sources", "note_id", "a1") == 0  # FK cascade
+    assert _row_count(store, "edges", "dst_id", "a1") == 0  # FK cascade
+    assert _row_count(store, "edges", "src_id", "a1") == 0
+
+
+def _row_count(store: SQLiteStore, table: str, col: str, val: str) -> int:
+    return int(
+        store._conn.execute(f"SELECT count(*) FROM {table} WHERE {col}=?", (val,)).fetchone()[0]
+    )
+
+
 def test_backup_before_upgrade_snapshots_the_db(db_path: str) -> None:
     store = SQLiteStore(db_path, embedder=HashEmbedder())
     store.migrate()

@@ -122,7 +122,9 @@ class Store(ABC):
     def update_note(
         self, note: Note, *, update_type: UpdateType, emb: np.ndarray | None = None
     ) -> None:
-        """version++ handled by caller; writes note_history snapshot + event row."""
+        """In-place edit + note_history snapshot + ``update`` event, ONE txn. Optimistically
+        version-locked (compare-and-swap): ``note.version`` MUST be the persisted version + 1;
+        a stale version (a concurrent write won) raises ``StoreError``. NoteNotFound if absent."""
         ...
 
     @abstractmethod
