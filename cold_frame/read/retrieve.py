@@ -1,7 +1,6 @@
 """RetrievePipeline — search fan-out → RRF → rerank → token-budget pack (SPEC §5).
 
-Leaf stub. ``search`` body raises ``NotImplementedError``; P1 (hybrid+RRF) and P3
-(packer/rerank/meta boost) fill it in without changing the signature.
+Implemented across P1 (hybrid retrieve + RRF) and P3 (packer / rerank / meta boost).
 """
 
 from __future__ import annotations

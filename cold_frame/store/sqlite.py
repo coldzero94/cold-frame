@@ -987,12 +987,30 @@ class SQLiteStore(Store):
 
     # ── triage / quarantine reads ───────────────────────────────────────────
     def held_for_human(self, *, scope: Scope, limit: int) -> list[Note]:
-        raise NotImplementedError
+        clauses = ["user_id = ?", "status = 'active'", "held_for_human = 1"]
+        params: list[Any] = [scope.user_id]
+        if scope.agent_id is not None:
+            clauses.append("agent_id = ?")
+            params.append(scope.agent_id)
+        if scope.session_id is not None:
+            clauses.append("session_id = ?")
+            params.append(scope.session_id)
+        rows = self._conn.execute(
+            f"SELECT * FROM notes WHERE {' AND '.join(clauses)} "
+            "ORDER BY importance DESC, id LIMIT ?",
+            [*params, limit],
+        ).fetchall()
+        sources = self._load_sources([str(r["id"]) for r in rows])
+        return [self._row_to_note(r, sources.get(str(r["id"]), [])) for r in rows]
 
     def set_held_for_human(
         self, id: str, *, held: bool, quarantined: bool, reason: str | None
     ) -> None:
-        raise NotImplementedError
+        with self._txn(f"set_held_for_human({id})"):
+            self._conn.execute(
+                "UPDATE notes SET held_for_human=?, quarantined=?, triage_reason=? WHERE id=?",
+                (int(held), int(quarantined), reason, id),
+            )
 
     def by_status(
         self,
@@ -1024,8 +1042,25 @@ class SQLiteStore(Store):
         sources = self._load_sources([str(r["id"]) for r in rows])
         return [self._row_to_note(r, sources.get(str(r["id"]), [])) for r in rows]
 
+    def get_history(self, id: str) -> list[Note]:
+        """All persisted versions of ``id`` (oldest→newest), reconstructed from note_history."""
+        rows = self._conn.execute(
+            "SELECT snapshot FROM note_history WHERE id=? ORDER BY version", (id,)
+        ).fetchall()
+        return [Note.model_validate_json(r["snapshot"]) for r in rows]
+
     def as_of(self, ids: list[str], *, at: datetime) -> list[Note]:
-        raise NotImplementedError
+        # the version of each note that had taken effect by `at` (highest version with
+        # valid_at <= at); a note not yet valid at `at` is omitted. Order preserved.
+        out: list[Note] = []
+        for nid in ids:
+            chosen: Note | None = None
+            for snap in self.get_history(nid):  # version-ascending → keep the latest in effect
+                if snap.valid_at is not None and snap.valid_at <= at:
+                    chosen = snap
+            if chosen is not None:
+                out.append(chosen)
+        return out
 
     # ── jobs (durable queue, I12) ───────────────────────────────────────────
     def _row_to_job(self, row: sqlite3.Row) -> Job:

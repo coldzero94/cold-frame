@@ -137,3 +137,34 @@ def test_self_edit_path_matches_suite(suite_name: str) -> None:
         assert report.passed, f"{suite_name}:{case.id} via tool failed:\n  " + "\n  ".join(
             report.failures
         )
+
+
+# ── A1/A2/A3: fork_history, update, as_of ─────────────────────────────────────
+def test_fork_history_returns_versions(db_path: str, frozen_clock: FrozenClock) -> None:
+    m = _mem(db_path, frozen_clock)
+    fid = m.create_fact("I work at Vessl").added[0].id
+    m.update_fact(fid, "I work at Anthropic")  # supersede → fid archived (v2 snapshot)
+    hist = m.fork_history(fid)
+    assert [h.version for h in hist] == [1, 2]  # original + the archived version
+    assert hist[0].content == "I work at Vessl" and hist[0].status == "active"
+    assert hist[-1].status == "archived"
+
+
+def test_fork_history_unknown_raises(db_path: str, frozen_clock: FrozenClock) -> None:
+    with pytest.raises(NoteNotFound):
+        _mem(db_path, frozen_clock).fork_history("ghost")
+
+
+def test_update_patches_metadata(db_path: str, frozen_clock: FrozenClock) -> None:
+    m = _mem(db_path, frozen_clock)
+    fid = m.create_fact("dark roast coffee").added[0].id
+    updated = m.update(fid, importance=0.9, keywords=["coffee"])
+    assert updated.importance == 0.9 and updated.keywords == ["coffee"]
+    assert updated.version == 2 and updated.content == "dark roast coffee"  # content unchanged
+
+
+def test_update_rejects_content_field(db_path: str, frozen_clock: FrozenClock) -> None:
+    m = _mem(db_path, frozen_clock)
+    fid = m.create_fact("a fact").added[0].id
+    with pytest.raises(ValueError, match="unsupported field"):
+        m.update(fid, content="changed")  # content edits must go through update_fact

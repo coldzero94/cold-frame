@@ -232,6 +232,32 @@ def _row_count(store: SQLiteStore, table: str, col: str, val: str) -> int:
     )
 
 
+def test_get_history_and_as_of(store: SQLiteStore) -> None:
+    t1 = datetime(2026, 1, 1, tzinfo=UTC)
+    t2 = datetime(2026, 6, 1, tzinfo=UTC)
+    emb = HashEmbedder()
+    old = Note(
+        id="h1",
+        content="I work at Vessl",
+        memory_type="episodic",
+        scope=Scope(),
+        created_at=t1,
+        valid_at=t1,
+        sources=[Source(kind="message", ref="m", content_hash="h", observed_at=t1)],
+    )
+    store.add_note(old, emb.embed_one(old.content))
+    new = old.model_copy(update={"id": "h2", "content": "I work at Anthropic", "valid_at": t2})
+    store.supersede("h1", new, emb.embed_one(new.content))
+
+    hist = store.get_history("h1")  # v1 (added) + v2 (archived at supersede)
+    assert [h.version for h in hist] == [1, 2]
+    assert hist[0].content == "I work at Vessl"
+
+    mid = datetime(2026, 3, 1, tzinfo=UTC)
+    assert [n.content for n in store.as_of(["h1"], at=mid)] == ["I work at Vessl"]  # belief then
+    assert store.as_of(["h1"], at=datetime(2025, 1, 1, tzinfo=UTC)) == []  # not yet present
+
+
 def test_backup_before_upgrade_snapshots_the_db(db_path: str) -> None:
     store = SQLiteStore(db_path, embedder=HashEmbedder())
     store.migrate()

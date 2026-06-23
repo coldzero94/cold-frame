@@ -281,6 +281,11 @@ class Store(ABC):
         ...
 
     @abstractmethod
+    def get_history(self, id: str) -> list[Note]:
+        """All persisted versions of ``id`` (oldest→newest) from note_history."""
+        ...
+
+    @abstractmethod
     def iter_events(self, *, since_hlc: str | None = None) -> Iterator[Event]: ...
 
     @abstractmethod
