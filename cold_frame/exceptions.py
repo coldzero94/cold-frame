@@ -38,6 +38,10 @@ class PolicyError(ColdFrameError):
     """An invariant policy was violated (e.g. non-local LLM for admission_tiebreak, I7)."""
 
 
+class ToolError(ColdFrameError):
+    """A self-edit tool call was malformed (unknown tool, missing/empty required arg)."""
+
+
 # ── MCP error→code map (api-contract §7): 1:1 with the classes above ──
 # Unmapped ColdFrameError subclasses → "internal"; unexpected exceptions → "internal".
 MCP_ERROR_CODES: Final[dict[type[ColdFrameError], str]] = {
@@ -47,6 +51,7 @@ MCP_ERROR_CODES: Final[dict[type[ColdFrameError], str]] = {
     VarHealerError: "internal",
     StoreError: "internal",
     PolicyError: "invalid_scope",
+    ToolError: "invalid_scope",
     ColdFrameError: "internal",
 }
 
