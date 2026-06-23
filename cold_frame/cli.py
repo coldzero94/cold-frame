@@ -57,6 +57,19 @@ def _not_implemented(args: argparse.Namespace) -> int:
     return 1
 
 
+def _resolve_id(mem: Memory, prefix: str) -> str | None:
+    """Resolve a (possibly 8-char-truncated) id to a full id, or None if absent/ambiguous.
+
+    ``list``/``add`` print 8-char ids, so the CLI accepts a unique prefix. Exact ids
+    resolve regardless of status (incl. archived); prefix-matching scans the active set.
+    """
+    try:
+        return mem.get(prefix).id  # exact hit (any status)
+    except NoteNotFound:
+        matches = [n.id for n in mem.list_active(limit=1_000_000) if n.id.startswith(prefix)]
+        return matches[0] if len(matches) == 1 else None
+
+
 def _cmd_add(args: argparse.Namespace) -> int:
     if not args.text:
         print(f'{PKG}: add requires text (usage: {PKG} add "...")')
@@ -101,14 +114,11 @@ def _cmd_show(args: argparse.Namespace) -> int:
         print("show: provide a note id")
         return 1
     mem = _memory(args)
-    try:
-        n = mem.get(args.id)
-    except NoteNotFound:  # list/add show truncated ids → resolve a unique prefix
-        matches = [x for x in mem.list_active(limit=1_000_000) if x.id.startswith(args.id)]
-        if len(matches) != 1:
-            print(f"not found: {args.id}" if not matches else f"ambiguous prefix: {args.id}")
-            return 1
-        n = matches[0]
+    resolved = _resolve_id(mem, args.id)
+    if resolved is None:
+        print(f"not found (or ambiguous prefix): {args.id}")
+        return 1
+    n = mem.get(resolved)
     print(f"id:       {n.id}")
     print(f"status:   {n.status}  type: {n.memory_type}  v{n.version}")
     print(f"content:  {n.content}")
@@ -124,6 +134,83 @@ def _cmd_stats(args: argparse.Namespace) -> int:
     by_type = Counter(n.memory_type for n in active)
     print(f"notes={h['notes']}  active={len(active)}  fts={h['fts']}  vec={h['vec']}")
     print("by type: " + (", ".join(f"{k}={v}" for k, v in sorted(by_type.items())) or "(none)"))
+    return 0
+
+
+def _cmd_timeline(args: argparse.Namespace) -> int:
+    """Belief timeline of one note: every persisted version, oldest→newest (fork_history)."""
+    if not args.id:
+        print("timeline: provide a note id")
+        return 1
+    mem = _memory(args)
+    resolved = _resolve_id(mem, args.id)
+    if resolved is None:
+        print(f"not found (or ambiguous prefix): {args.id}")
+        return 1
+    versions = mem.fork_history(resolved)
+    if not versions:
+        print(f"no history for {resolved[:8]}")
+        return 0
+    print(f"timeline of {resolved[:8]}  ({len(versions)} version(s)):")
+    for v in versions:
+        mark = "▶" if v.status == "active" else "·"
+        print(f"  {mark} v{v.version}  [{v.status:8}]  valid_at={v.valid_at}  {v.content[:60]}")
+    return 0
+
+
+def _cmd_path(args: argparse.Namespace) -> int:
+    """Shortest edge path between two notes (bounded ego-lens BFS, undirected, ≤max-hops)."""
+    mem = _memory(args)
+    src = _resolve_id(mem, args.src)
+    dst = _resolve_id(mem, args.dst)
+    if src is None:
+        print(f"not found (or ambiguous prefix): {args.src}")
+        return 1
+    if dst is None:
+        print(f"not found (or ambiguous prefix): {args.dst}")
+        return 1
+    if src == dst:
+        print(f"{src[:8]} (same note)")
+        return 0
+    # BFS over edges treated as undirected; each frontier item carries its edge trail.
+    visited: set[str] = {src}
+    frontier: list[tuple[str, list[str]]] = [(src, [])]
+    for _hop in range(args.max_hops):
+        nxt: list[tuple[str, list[str]]] = []
+        for node, trail in frontier:
+            for edge in mem.neighbors(node):
+                other = edge.dst_id if edge.src_id == node else edge.src_id
+                if other in visited:
+                    continue
+                arrow = "->" if edge.src_id == node else "<-"
+                step = f"{arrow}[{edge.relation}] {other[:8]}"
+                if other == dst:
+                    print(f"{src[:8]} " + " ".join([*trail, step]))
+                    return 0
+                visited.add(other)
+                nxt.append((other, [*trail, step]))
+        if not nxt:
+            break
+        frontier = nxt
+    print(f"no path within {args.max_hops} hop(s): {src[:8]} … {dst[:8]}")
+    return 1
+
+
+def _cmd_setup(args: argparse.Namespace) -> int:
+    """First-run setup: create/migrate the DB and print the Claude Code wiring steps."""
+    mem = _memory(args)  # constructing a Memory runs migrate() (idempotent)
+    h = mem.health()
+    print(f"{PKG}: ready.")
+    print(f"  db:       {h['db_path']}")
+    print(f"  embedder: {h['embedder_id']} (dim={h['dim']}, offline — no key, no network)")
+    print()
+    print("Connect to Claude Code (local MCP, stdio — no server, no OAuth):")
+    print(f"  claude mcp add {branding.MCP_ID} -- {PKG} mcp")
+    print()
+    print("Try it:")
+    print(f'  {PKG} add "I prefer dark roast coffee"')
+    print(f'  {PKG} search "coffee"')
+    print(f"  {PKG} ui        # browse your memory at {branding.ui_base_url()}")
     return 0
 
 
@@ -298,8 +385,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_show.add_argument("id", nargs="?", help="note id")
     p_show.set_defaults(func=_cmd_show)
     sub.add_parser("stats", help="show store statistics").set_defaults(func=_cmd_stats)
-    sub.add_parser("timeline", help="show the belief/consolidation timeline")
-    sub.add_parser("path", help="show edge path between notes")
+    p_timeline = sub.add_parser("timeline", help="show a note's belief/version timeline")
+    p_timeline.add_argument("id", nargs="?", help="note id (or unique prefix)")
+    p_timeline.set_defaults(func=_cmd_timeline)
+    p_path = sub.add_parser("path", help="show edge path between two notes")
+    p_path.add_argument("src", help="source note id (or unique prefix)")
+    p_path.add_argument("dst", help="destination note id (or unique prefix)")
+    p_path.add_argument("--max-hops", type=int, default=4, help="max edges to traverse")
+    p_path.set_defaults(func=_cmd_path)
     sub.add_parser("doctor", help="run install/DB/embedder/invariant checks").set_defaults(
         func=_cmd_doctor
     )
@@ -321,7 +414,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_ui.add_argument("--port", type=int, default=None, help="UI port (else 27182 + auto-fallback)")
     p_ui.set_defaults(func=_cmd_ui)
     sub.add_parser("mcp", help="run the MCP stdio server").set_defaults(func=_cmd_mcp)
-    sub.add_parser("setup", help="first-run setup")
+    sub.add_parser("setup", help="first-run setup").set_defaults(func=_cmd_setup)
 
     for name in _SUBCOMMANDS:  # default any not-yet-wired subcommand to the stub handler
         if not callable(sub.choices[name].get_default("func")):

@@ -1,8 +1,8 @@
 """``Memory`` facade (api-contract §2) — the single public Python entrypoint.
 
 This is the canonical SIGNATURE surface (G6 bakes the Clock/id-factory into __init__).
-Method bodies are scaffold stubs raising ``NotImplementedError``; downstream phases
-(P1+) fill them in WITHOUT changing these signatures.
+All P1-P6 + the local v1 read surface (history/triage/timeline) are implemented; the
+one remaining deferred body is secret/PII hard-purge (Tier B, D25).
 """
 
 from __future__ import annotations
@@ -237,8 +237,20 @@ class Memory:
             id, new_text, reason="manual correction", ref="correct_memory", scope=scope
         )
 
+    _UPDATABLE: frozenset[str] = frozenset({"importance", "keywords", "tags", "context", "pinned"})
+
     def update(self, id: str, **fields: object) -> Note:
-        raise NotImplementedError
+        """Patch metadata fields (importance/keywords/tags/context/pinned). Content edits go
+        through ``update_fact``/``correct_memory`` (bi-temporal supersede); status via forget."""
+        bad = set(fields) - self._UPDATABLE
+        if bad:
+            raise ValueError(
+                f"update: unsupported field(s) {sorted(bad)} — use update_fact/forget for those"
+            )
+        old = self.get(id)  # raises NoteNotFound
+        updated = old.model_copy(update={**fields, "version": old.version + 1})
+        self._store.update_note(updated, update_type="manual")  # CAS on version; content unchanged
+        return self.get(id)
 
     def delete(self, id: str, *, force: bool = False) -> None:
         """Permanently remove a note + its searchable grains (NOT revivable). Requires
@@ -332,7 +344,11 @@ class Memory:
         return self._store.neighbors([id], relations=relations)  # 1-hop (multi-hop later)
 
     def fork_history(self, id: str) -> list[Note]:
-        raise NotImplementedError
+        """Every persisted version of ``id`` (oldest→newest) — the rewindable belief trail."""
+        history = self._store.get_history(id)
+        if not history and not self._store.get_notes([id]):
+            raise NoteNotFound(id)
+        return history
 
     # ── maintenance / forgetting ─────────────────────────────────────────
     def consolidate(
@@ -347,7 +363,17 @@ class Memory:
         )
 
     def triage_queue(self, *, scope: Scope | None = None, limit: int = 50) -> list[TriageItem]:
-        raise NotImplementedError
+        """Notes held for human review (low-confidence / true-conflict), ranked by importance."""
+        held = self._store.held_for_human(scope=scope or self._default_scope, limit=limit)
+        return [
+            TriageItem(
+                note=n,
+                reason=n.triage_reason or "low_confidence",
+                candidates=[],
+                impact=n.importance,
+            )
+            for n in held
+        ]
 
     def resolve_triage(
         self,
@@ -356,7 +382,21 @@ class Memory:
         *,
         target: str | None = None,
     ) -> None:
-        raise NotImplementedError
+        if action in ("merge", "supersede") and target is None:
+            raise ValueError(f"resolve_triage: action {action!r} requires a target")
+        if action == "pin":  # accept + pin (exempt from decay/archive)
+            self._store.set_pinned(id, True)
+            self._store.set_held_for_human(id, held=False, quarantined=False, reason=None)
+        elif action == "keep":  # accept into active memory
+            self._store.set_held_for_human(id, held=False, quarantined=False, reason=None)
+        elif action in ("let_go", "merge"):
+            # let_go: not worth keeping. merge: a duplicate of `target` (validated above).
+            # Either way the held note is archived (revivable, I2); v1 keeps merge
+            # lightweight — no provenance graft into `target` yet.
+            self.forget(id)
+        elif action == "supersede":  # the held note wins over `target`
+            self._store.set_held_for_human(id, held=False, quarantined=False, reason=None)
+            self.forget(target)  # type: ignore[arg-type]  # guarded above
 
     # ── self-edit / procedural ───────────────────────────────────────────
     def memory_tools(self, scope: Scope) -> list[ToolSpec]:

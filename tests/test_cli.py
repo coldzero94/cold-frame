@@ -114,6 +114,48 @@ def test_cli_export_import_roundtrip(
     assert "dark roast" in capsys.readouterr().out  # the snapshot content is restored
 
 
+def test_cli_setup_prints_wiring(cli_db: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["setup"]) == 0
+    out = capsys.readouterr().out
+    assert "claude mcp add" in out and "cold-frame mcp" in out  # the Claude Code wiring step
+    assert "offline" in out  # reassures: no key, no network
+
+
+def test_cli_timeline_shows_versions(cli_db: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    from cold_frame.api import Memory
+
+    m = Memory(str(cli_db))
+    old = m.create_fact("I work at Vessl").added[0].id
+    m.update_fact(old, "I work at Anthropic")  # supersede → old archived (v2 snapshot)
+    m.close()
+    assert main(["timeline", old]) == 0
+    out = capsys.readouterr().out
+    assert "v1" in out and "v2" in out and "archived" in out  # the belief trail
+    assert main(["timeline", "ghost-id"]) == 1
+    assert main(["timeline"]) == 1  # missing id
+
+
+def test_cli_path_finds_and_misses(cli_db: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    from cold_frame.api import Memory
+
+    m = Memory(str(cli_db))
+    old = m.create_fact("I work at Vessl").added[0].id
+    new = m.update_fact(old, "I work at Anthropic").new.id  # supersedes edge new→old
+    lone = m.create_fact("unrelated island fact").added[0].id
+    m.close()
+
+    assert main(["path", new, old]) == 0
+    assert "supersedes" in capsys.readouterr().out  # the edge is on the path
+
+    assert main(["path", new, lone]) == 1  # no edge connects them
+    assert "no path" in capsys.readouterr().out
+
+    assert main(["path", new, new]) == 0  # same note
+    assert "same note" in capsys.readouterr().out
+
+    assert main(["path", "ghost", lone]) == 1  # unknown src
+
+
 def test_cli_export_events_ndjson(
     cli_db: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
