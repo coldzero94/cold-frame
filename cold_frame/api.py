@@ -32,6 +32,7 @@ from cold_frame.models import (
     ToolSpec,
     TriageItem,
 )
+from cold_frame.procedural.optimize import ProceduralOptimizer
 from cold_frame.read.retrieve import RetrievePipeline
 from cold_frame.read.strength import compute_strength
 from cold_frame.store.sqlite import SQLiteStore
@@ -94,6 +95,14 @@ class Memory:
             llm=self._llm,
             clock=self._clock,
             new_id=self._new_id,
+        )
+        self._procedural = ProceduralOptimizer(
+            self._store,
+            embedder=self._embedder,
+            llm=self._llm,
+            clock=self._clock,
+            new_id=self._new_id,
+            scope=self._default_scope,
         )
 
     # ── write ────────────────────────────────────────────────────────────
@@ -256,7 +265,11 @@ class Memory:
         raise NotImplementedError
 
     def optimize_prompt(self, name: str, trajectory: list[Msg], feedback: str) -> ProceduralResult:
-        raise NotImplementedError
+        return self._procedural.optimize_prompt(name, trajectory, feedback)
 
     def get_procedural(self, name: str) -> str:
-        raise NotImplementedError
+        return self._procedural.get_procedural(name)
+
+    def set_procedural(self, name: str, text: str) -> Note:
+        """Register/replace a behavior directive (procedural memory, SPEC §7)."""
+        return self._procedural.set_procedural(name, text)
