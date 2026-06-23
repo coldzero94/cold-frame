@@ -422,6 +422,19 @@ class SQLiteStore(Store):
         else:
             conn.execute("COMMIT")
 
+    @contextmanager
+    def _txn(self, op: str) -> Iterator[None]:
+        """BEGIN IMMEDIATE…COMMIT (I3) with uniform error translation: any failure inside rolls
+        back; a DB/logic error surfaces as ``StoreError(f"{op} failed: …")`` while a StoreError or
+        NoteNotFound raised inside passes through unchanged. Replaces the per-method try/except."""
+        try:
+            with self.in_transaction():
+                yield
+        except (StoreError, NoteNotFound):
+            raise
+        except Exception as exc:
+            raise StoreError(f"{op} failed: {exc}") from exc
+
     def _current_embedder_id(self) -> str:
         if self._embedder is not None:
             return self._embedder.meta.embedder_id
@@ -457,19 +470,14 @@ class SQLiteStore(Store):
                 f"provenance invariant (I14): active note {note.id} "
                 f"(confidence {note.confidence}) needs >=1 source"
             )
-        try:
-            with self.in_transaction():
-                rowid = self._insert_note_row(note)
-                self._insert_fts(rowid, note)
-                if emb is not None:
-                    self._insert_vec(note.id, emb)
-                self._insert_sources(note)
-                self._insert_history(note, update_type="extract")
-                self._co_write_event(note, op="create")
-        except StoreError:
-            raise
-        except Exception as exc:  # any mid-txn failure → rolled back by in_transaction
-            raise StoreError(f"add_note({note.id}) failed: {exc}") from exc
+        with self._txn(f"add_note({note.id})"):  # ONE txn: notes+fts+vec+sources+history+event (I3)
+            rowid = self._insert_note_row(note)
+            self._insert_fts(rowid, note)
+            if emb is not None:
+                self._insert_vec(note.id, emb)
+            self._insert_sources(note)
+            self._insert_history(note, update_type="extract")
+            self._co_write_event(note, op="create")
 
     def _insert_note_row(self, note: Note) -> int:
         cur = self._conn.execute(
@@ -545,11 +553,19 @@ class SQLiteStore(Store):
             ],
         )
 
-    def _insert_history(self, note: Note, *, update_type: UpdateType) -> None:
+    def _insert_history(
+        self, note: Note, *, update_type: UpdateType, changed_at: datetime | None = None
+    ) -> None:
         self._conn.execute(
             "INSERT INTO note_history(id, version, snapshot, update_type, changed_at) "
             "VALUES (?,?,?,?,?)",
-            (note.id, note.version, note.model_dump_json(), update_type, _to_iso(note.created_at)),
+            (
+                note.id,
+                note.version,
+                note.model_dump_json(),
+                update_type,
+                _to_iso(changed_at or note.created_at),
+            ),
         )
 
     def _co_write_event(
@@ -580,117 +596,91 @@ class SQLiteStore(Store):
         if not existing:
             raise NoteNotFound(note.id)
         old = existing[0]
-        try:
-            with self.in_transaction():  # ONE txn: notes + fts + vec + history + event (I3)
-                rowid = int(
-                    self._conn.execute("SELECT rowid FROM notes WHERE id=?", (note.id,)).fetchone()[
-                        0
-                    ]
+        with self._txn(f"update_note({note.id})"):  # ONE txn: notes+fts+vec+history+event (I3)
+            rowid = int(
+                self._conn.execute("SELECT rowid FROM notes WHERE id=?", (note.id,)).fetchone()[0]
+            )
+            now = self._clock.now()
+            # external-content FTS5 has no auto-sync: delete the OLD index row, insert the NEW
+            self._conn.execute(
+                "INSERT INTO note_fts(note_fts, rowid, content, keywords, tags) "
+                "VALUES ('delete', ?, ?, ?, ?)",
+                (rowid, old.content, json.dumps(old.keywords), json.dumps(old.tags)),
+            )
+            cur = self._conn.execute(
+                "UPDATE notes SET content=?, keywords=?, tags=?, context=?, confidence=?, "
+                "importance=?, status=?, version=?, valid_at=?, invalid_at=?, content_hash=? "
+                "WHERE id=? AND version=?",  # optimistic lock: expect the read-time version
+                (
+                    note.content,
+                    json.dumps(note.keywords),
+                    json.dumps(note.tags),
+                    note.context,
+                    note.confidence,
+                    note.importance,
+                    note.status,
+                    note.version,
+                    _opt_iso(note.valid_at),
+                    _opt_iso(note.invalid_at),
+                    _content_hash(note.content),
+                    note.id,
+                    note.version - 1,  # the version the caller read and intends to supersede
+                ),
+            )
+            if cur.rowcount == 0:  # DB version moved under us → a concurrent write won
+                raise StoreError(
+                    f"update_note({note.id}): version conflict (expected {note.version - 1})"
                 )
-                now = self._clock.now()
-                # external-content FTS5 has no auto-sync: delete the OLD index row, insert the NEW
-                self._conn.execute(
-                    "INSERT INTO note_fts(note_fts, rowid, content, keywords, tags) "
-                    "VALUES ('delete', ?, ?, ?, ?)",
-                    (rowid, old.content, json.dumps(old.keywords), json.dumps(old.tags)),
-                )
-                cur = self._conn.execute(
-                    "UPDATE notes SET content=?, keywords=?, tags=?, context=?, confidence=?, "
-                    "importance=?, status=?, version=?, valid_at=?, invalid_at=?, content_hash=? "
-                    "WHERE id=? AND version=?",  # optimistic lock: expect the read-time version
-                    (
-                        note.content,
-                        json.dumps(note.keywords),
-                        json.dumps(note.tags),
-                        note.context,
-                        note.confidence,
-                        note.importance,
-                        note.status,
-                        note.version,
-                        _opt_iso(note.valid_at),
-                        _opt_iso(note.invalid_at),
-                        _content_hash(note.content),
-                        note.id,
-                        note.version - 1,  # the version the caller read and intends to supersede
-                    ),
-                )
-                if cur.rowcount == 0:  # DB version moved under us → a concurrent write won
-                    raise StoreError(
-                        f"update_note({note.id}): version conflict (expected {note.version - 1})"
-                    )
-                self._insert_fts(rowid, note)
-                if emb is not None:  # replace the vector (content may have changed)
-                    self._conn.execute("DELETE FROM note_vec WHERE note_id=?", (note.id,))
-                    self._insert_vec(note.id, emb)
-                self._conn.execute(
-                    "INSERT INTO note_history(id, version, snapshot, update_type, changed_at) "
-                    "VALUES (?,?,?,?,?)",
-                    (note.id, note.version, note.model_dump_json(), update_type, _to_iso(now)),
-                )
-                self._co_write_event(note, op="update", ts=now)
-        except StoreError:
-            raise
-        except Exception as exc:
-            raise StoreError(f"update_note({note.id}) failed: {exc}") from exc
+            self._insert_fts(rowid, note)
+            if emb is not None:  # replace the vector (content may have changed)
+                self._conn.execute("DELETE FROM note_vec WHERE note_id=?", (note.id,))
+                self._insert_vec(note.id, emb)
+            self._insert_history(note, update_type=update_type, changed_at=now)
+            self._co_write_event(note, op="update", ts=now)
 
     def supersede(self, old_id: str, new: Note, emb: np.ndarray | None) -> None:
         existing = self.get_notes([old_id])
         if not existing:
             raise NoteNotFound(old_id)
         old = existing[0]
-        try:
-            with self.in_transaction():
-                now = self._clock.now()
-                # archive old: valid-time end = new.valid_at, transaction-time end = now (C3);
-                # version++ (the archival is a new version of old). status='archived' so the
-                # provenance trigger (fires only on →active) does not block this.
-                self._conn.execute(
-                    "UPDATE notes SET status='archived', invalid_at=?, expired_at=?, "
-                    "version=version+1 WHERE id=?",
-                    (_opt_iso(new.valid_at), _to_iso(now), old_id),
+        with self._txn(f"supersede({old_id})"):
+            now = self._clock.now()
+            # archive old: valid-time end = new.valid_at, transaction-time end = now (C3);
+            # version++ (the archival is a new version of old). status='archived' so the
+            # provenance trigger (fires only on →active) does not block this.
+            self._conn.execute(
+                "UPDATE notes SET status='archived', invalid_at=?, expired_at=?, "
+                "version=version+1 WHERE id=?",
+                (_opt_iso(new.valid_at), _to_iso(now), old_id),
+            )
+            archived = old.model_copy(
+                update={
+                    "status": "archived",
+                    "invalid_at": new.valid_at,
+                    "expired_at": now,
+                    "version": old.version + 1,
+                }
+            )
+            self._insert_history(archived, update_type="conflict", changed_at=now)
+            # insert the new active note (same grains as add_note)
+            rowid = self._insert_note_row(new)
+            self._insert_fts(rowid, new)
+            if emb is not None:
+                self._insert_vec(new.id, emb)
+            self._insert_sources(new)
+            self._insert_history(new, update_type="conflict")
+            # supersedes edge new -> old + co-written events (archive old, create new)
+            self._insert_edge(
+                Edge(
+                    src_id=new.id,
+                    dst_id=old_id,
+                    relation="supersedes",
+                    created_at=now,
+                    valid_at=new.valid_at,
                 )
-                archived = old.model_copy(
-                    update={
-                        "status": "archived",
-                        "invalid_at": new.valid_at,
-                        "expired_at": now,
-                        "version": old.version + 1,
-                    }
-                )
-                self._conn.execute(
-                    "INSERT INTO note_history(id, version, snapshot, update_type, changed_at) "
-                    "VALUES (?,?,?,?,?)",
-                    (
-                        old_id,
-                        archived.version,
-                        archived.model_dump_json(),
-                        "conflict",
-                        _to_iso(now),
-                    ),
-                )
-                # insert the new active note (same grains as add_note)
-                rowid = self._insert_note_row(new)
-                self._insert_fts(rowid, new)
-                if emb is not None:
-                    self._insert_vec(new.id, emb)
-                self._insert_sources(new)
-                self._insert_history(new, update_type="conflict")
-                # supersedes edge new -> old + co-written events (archive old, create new)
-                self._insert_edge(
-                    Edge(
-                        src_id=new.id,
-                        dst_id=old_id,
-                        relation="supersedes",
-                        created_at=now,
-                        valid_at=new.valid_at,
-                    )
-                )
-                self._co_write_event(archived, op="archive", ts=now)
-                self._co_write_event(new, op="create")
-        except StoreError:
-            raise
-        except Exception as exc:
-            raise StoreError(f"supersede({old_id}) failed: {exc}") from exc
+            )
+            self._co_write_event(archived, op="archive", ts=now)
+            self._co_write_event(new, op="create")
 
     def get_notes(self, ids: list[str]) -> list[Note]:
         if not ids:
@@ -763,66 +753,47 @@ class SQLiteStore(Store):
     def set_status(
         self, id: str, status: StatusLiteral, *, invalid_at: datetime | None = None
     ) -> None:
-        try:
-            with self.in_transaction():
-                if invalid_at is not None:
-                    self._conn.execute(
-                        "UPDATE notes SET status=?, invalid_at=? WHERE id=?",
-                        (status, _to_iso(invalid_at), id),
-                    )
-                else:
-                    self._conn.execute("UPDATE notes SET status=? WHERE id=?", (status, id))
-        except sqlite3.Error as exc:
-            raise StoreError(f"set_status({id}) failed: {exc}") from exc
+        with self._txn(f"set_status({id})"):
+            if invalid_at is not None:
+                self._conn.execute(
+                    "UPDATE notes SET status=?, invalid_at=? WHERE id=?",
+                    (status, _to_iso(invalid_at), id),
+                )
+            else:
+                self._conn.execute("UPDATE notes SET status=? WHERE id=?", (status, id))
 
     def set_pinned(self, id: str, pinned: bool) -> None:
         """Set the pin flag (pinned notes are exempt from decay/archive, I13)."""
-        try:
-            with self.in_transaction():
-                self._conn.execute("UPDATE notes SET pinned=? WHERE id=?", (int(pinned), id))
-        except sqlite3.Error as exc:
-            raise StoreError(f"set_pinned({id}) failed: {exc}") from exc
+        with self._txn(f"set_pinned({id})"):
+            self._conn.execute("UPDATE notes SET pinned=? WHERE id=?", (int(pinned), id))
 
     def cold_demote(self, ids: list[str], *, factor: float) -> None:
         if not ids:
             return
         placeholders = ",".join("?" * len(ids))
-        try:
-            with self.in_transaction():
-                self._conn.execute(
-                    f"UPDATE notes SET decay_S = decay_S * ? WHERE id IN ({placeholders})",
-                    [factor, *ids],
-                )
-        except sqlite3.Error as exc:
-            raise StoreError(f"cold_demote failed: {exc}") from exc
+        with self._txn("cold_demote"):
+            self._conn.execute(
+                f"UPDATE notes SET decay_S = decay_S * ? WHERE id IN ({placeholders})",
+                [factor, *ids],
+            )
 
     def archive(self, id: str, *, now: datetime) -> None:
         existing = self.get_notes([id])
         if not existing:
             raise NoteNotFound(id)
         old = existing[0]
-        try:
-            with self.in_transaction():
-                # transaction-time end only (expired_at=now); valid-time is unchanged — the
-                # fact isn't false, we just stopped keeping it (distinct from supersede).
-                self._conn.execute(
-                    "UPDATE notes SET status='archived', expired_at=?, version=version+1 "
-                    "WHERE id=?",
-                    (_to_iso(now), id),
-                )
-                snap = old.model_copy(
-                    update={"status": "archived", "expired_at": now, "version": old.version + 1}
-                )
-                self._conn.execute(
-                    "INSERT INTO note_history(id, version, snapshot, update_type, changed_at) "
-                    "VALUES (?,?,?,?,?)",
-                    (id, snap.version, snap.model_dump_json(), "consolidate", _to_iso(now)),
-                )
-                self._co_write_event(snap, op="archive", ts=now)  # I3/I17: archive grain
-        except StoreError:
-            raise
-        except Exception as exc:
-            raise StoreError(f"archive({id}) failed: {exc}") from exc
+        with self._txn(f"archive({id})"):
+            # transaction-time end only (expired_at=now); valid-time is unchanged — the
+            # fact isn't false, we just stopped keeping it (distinct from supersede).
+            self._conn.execute(
+                "UPDATE notes SET status='archived', expired_at=?, version=version+1 WHERE id=?",
+                (_to_iso(now), id),
+            )
+            snap = old.model_copy(
+                update={"status": "archived", "expired_at": now, "version": old.version + 1}
+            )
+            self._insert_history(snap, update_type="consolidate", changed_at=now)
+            self._co_write_event(snap, op="archive", ts=now)  # I3/I17: archive grain
 
     def revive(self, id: str) -> None:
         existing = self.get_notes([id])
@@ -830,32 +801,23 @@ class SQLiteStore(Store):
             raise NoteNotFound(id)
         old = existing[0]
         now = self._clock.now()
-        try:
-            with self.in_transaction():
-                # un-archive: clear both temporal ends so a revived note is current again (I2)
-                self._conn.execute(
-                    "UPDATE notes SET status='active', invalid_at=NULL, expired_at=NULL, "
-                    "version=version+1 WHERE id=?",
-                    (id,),
-                )
-                snap = old.model_copy(
-                    update={
-                        "status": "active",
-                        "invalid_at": None,
-                        "expired_at": None,
-                        "version": old.version + 1,
-                    }
-                )
-                self._conn.execute(
-                    "INSERT INTO note_history(id, version, snapshot, update_type, changed_at) "
-                    "VALUES (?,?,?,?,?)",
-                    (id, snap.version, snap.model_dump_json(), "manual", _to_iso(now)),
-                )
-                self._co_write_event(snap, op="update", ts=now)
-        except StoreError:
-            raise
-        except Exception as exc:
-            raise StoreError(f"revive({id}) failed: {exc}") from exc
+        with self._txn(f"revive({id})"):
+            # un-archive: clear both temporal ends so a revived note is current again (I2)
+            self._conn.execute(
+                "UPDATE notes SET status='active', invalid_at=NULL, expired_at=NULL, "
+                "version=version+1 WHERE id=?",
+                (id,),
+            )
+            snap = old.model_copy(
+                update={
+                    "status": "active",
+                    "invalid_at": None,
+                    "expired_at": None,
+                    "version": old.version + 1,
+                }
+            )
+            self._insert_history(snap, update_type="manual", changed_at=now)
+            self._co_write_event(snap, op="update", ts=now)
 
     def delete(self, id: str) -> None:
         existing = self.get_notes([id])
@@ -863,25 +825,20 @@ class SQLiteStore(Store):
             raise NoteNotFound(id)
         old = existing[0]
         now = self._clock.now()
-        try:
-            with self.in_transaction():
-                rowid = int(
-                    self._conn.execute("SELECT rowid FROM notes WHERE id=?", (id,)).fetchone()[0]
-                )
-                # external-content FTS5 has no FK cascade: drop the index entry explicitly
-                self._conn.execute(
-                    "INSERT INTO note_fts(note_fts, rowid, content, keywords, tags) "
-                    "VALUES ('delete', ?, ?, ?, ?)",
-                    (rowid, old.content, json.dumps(old.keywords), json.dumps(old.tags)),
-                )
-                self._co_write_event(old, op="delete", ts=now)  # audit the removal (payload kept)
-                self._conn.execute("DELETE FROM note_history WHERE id=?", (id,))  # no FK cascade
-                # DELETE notes cascades note_vec / edges / sources / access_log (ON DELETE CASCADE)
-                self._conn.execute("DELETE FROM notes WHERE id=?", (id,))
-        except StoreError:
-            raise
-        except Exception as exc:
-            raise StoreError(f"delete({id}) failed: {exc}") from exc
+        with self._txn(f"delete({id})"):
+            rowid = int(
+                self._conn.execute("SELECT rowid FROM notes WHERE id=?", (id,)).fetchone()[0]
+            )
+            # external-content FTS5 has no FK cascade: drop the index entry explicitly
+            self._conn.execute(
+                "INSERT INTO note_fts(note_fts, rowid, content, keywords, tags) "
+                "VALUES ('delete', ?, ?, ?, ?)",
+                (rowid, old.content, json.dumps(old.keywords), json.dumps(old.tags)),
+            )
+            self._co_write_event(old, op="delete", ts=now)  # audit the removal (payload kept)
+            self._conn.execute("DELETE FROM note_history WHERE id=?", (id,))  # no FK cascade
+            # DELETE notes cascades note_vec / edges / sources / access_log (ON DELETE CASCADE)
+            self._conn.execute("DELETE FROM notes WHERE id=?", (id,))
 
     # ── retrieval ───────────────────────────────────────────────────────────
     def knn(
@@ -1099,94 +1056,80 @@ class SQLiteStore(Store):
         now = self._clock.now()
         ra = _to_iso(run_after or now)
         now_iso = _to_iso(now)
-        try:
-            with self.in_transaction():
-                if dedup_key is not None:  # debounce: one pending job per dedup_key
-                    row = self._conn.execute(
-                        "SELECT id FROM jobs WHERE dedup_key=? AND status='pending'", (dedup_key,)
-                    ).fetchone()
-                    if row is not None:
-                        existing = str(row["id"])
-                        self._conn.execute(
-                            "UPDATE jobs SET run_after=MIN(run_after, ?), updated_at=? WHERE id=?",
-                            (ra, now_iso, existing),
-                        )
-                        return existing
-                jid = self._new_id()
-                self._conn.execute(
-                    "INSERT INTO jobs(id, kind, payload, status, attempts, max_attempts, "
-                    "dedup_key, run_after, created_at, updated_at) "
-                    "VALUES (?,?,?,'pending',0,?,?,?,?,?)",
-                    (jid, kind, json.dumps(payload), MAX_ATTEMPTS, dedup_key, ra, now_iso, now_iso),
-                )
-                return jid
-        except sqlite3.Error as exc:
-            raise StoreError(f"enqueue({kind}) failed: {exc}") from exc
+        with self._txn(f"enqueue({kind})"):
+            if dedup_key is not None:  # debounce: one pending job per dedup_key
+                row = self._conn.execute(
+                    "SELECT id FROM jobs WHERE dedup_key=? AND status='pending'", (dedup_key,)
+                ).fetchone()
+                if row is not None:
+                    existing = str(row["id"])
+                    self._conn.execute(
+                        "UPDATE jobs SET run_after=MIN(run_after, ?), updated_at=? WHERE id=?",
+                        (ra, now_iso, existing),
+                    )
+                    return existing
+            jid = self._new_id()
+            self._conn.execute(
+                "INSERT INTO jobs(id, kind, payload, status, attempts, max_attempts, "
+                "dedup_key, run_after, created_at, updated_at) "
+                "VALUES (?,?,?,'pending',0,?,?,?,?,?)",
+                (jid, kind, json.dumps(payload), MAX_ATTEMPTS, dedup_key, ra, now_iso, now_iso),
+            )
+            return jid
 
     def lease_job(self, *, worker: str, now: datetime) -> Job | None:
         now_iso = _to_iso(now)
         stale = _to_iso(now - timedelta(seconds=LEASE_TTL))  # crashed-worker reclaim
-        try:
-            with self.in_transaction():
-                row = self._conn.execute(
-                    "SELECT id FROM jobs WHERE (status='pending' AND run_after<=?) "
-                    "OR (status='running' AND locked_at<?) ORDER BY run_after LIMIT 1",
-                    (now_iso, stale),
-                ).fetchone()
-                if row is None:
-                    return None
-                jid = str(row["id"])
-                self._conn.execute(
-                    "UPDATE jobs SET status='running', locked_by=?, locked_at=?, "
-                    "attempts=attempts+1, updated_at=? WHERE id=?",
-                    (worker, now_iso, now_iso, jid),
-                )
-                leased = self._conn.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone()
-                return self._row_to_job(leased)
-        except sqlite3.Error as exc:
-            raise StoreError(f"lease_job failed: {exc}") from exc
+        with self._txn("lease_job"):
+            row = self._conn.execute(
+                "SELECT id FROM jobs WHERE (status='pending' AND run_after<=?) "
+                "OR (status='running' AND locked_at<?) ORDER BY run_after LIMIT 1",
+                (now_iso, stale),
+            ).fetchone()
+            if row is None:
+                return None
+            jid = str(row["id"])
+            self._conn.execute(
+                "UPDATE jobs SET status='running', locked_by=?, locked_at=?, "
+                "attempts=attempts+1, updated_at=? WHERE id=?",
+                (worker, now_iso, now_iso, jid),
+            )
+            leased = self._conn.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone()
+            return self._row_to_job(leased)
 
     def finish_job(self, id: str, *, worker: str) -> None:
-        try:
-            with self.in_transaction():
-                cur = self._conn.execute(
-                    "UPDATE jobs SET status='done', updated_at=? WHERE id=? AND locked_by=?",
-                    (_to_iso(self._clock.now()), id, worker),
-                )
-                if cur.rowcount == 0:  # lease stolen (stale-reclaimed) → no-op, don't clobber
-                    _log.warning("finish_job_lost_lease", extra={"job_id": id, "worker": worker})
-        except sqlite3.Error as exc:
-            raise StoreError(f"finish_job({id}) failed: {exc}") from exc
+        with self._txn(f"finish_job({id})"):
+            cur = self._conn.execute(
+                "UPDATE jobs SET status='done', updated_at=? WHERE id=? AND locked_by=?",
+                (_to_iso(self._clock.now()), id, worker),
+            )
+            if cur.rowcount == 0:  # lease stolen (stale-reclaimed) → no-op, don't clobber
+                _log.warning("finish_job_lost_lease", extra={"job_id": id, "worker": worker})
 
     def fail_job(self, id: str, *, error: str, retry_after: datetime | None, worker: str) -> None:
         now = self._clock.now()
-        try:
-            with self.in_transaction():
-                row = self._conn.execute(
-                    "SELECT attempts, max_attempts, locked_by FROM jobs WHERE id=?", (id,)
-                ).fetchone()
-                if row is None:
-                    raise StoreError(f"fail_job: job {id} not found")
-                if row["locked_by"] != worker:  # lease stolen → another worker owns it now
-                    _log.warning("fail_job_lost_lease", extra={"job_id": id, "worker": worker})
-                    return
-                if (
-                    row["attempts"] >= row["max_attempts"]
-                ):  # exhausted → dead-letter (never dropped)
-                    self._conn.execute(
-                        "UPDATE jobs SET status='dead', last_error=?, updated_at=? WHERE id=?",
-                        (error, _to_iso(now), id),
-                    )
-                else:  # reschedule with exponential backoff
-                    backoff = RETRY_BACKOFF_BASE * (2 ** row["attempts"])
-                    ra = retry_after or (now + timedelta(seconds=backoff))
-                    self._conn.execute(
-                        "UPDATE jobs SET status='pending', run_after=?, last_error=?, "
-                        "updated_at=? WHERE id=?",
-                        (_to_iso(ra), error, _to_iso(now), id),
-                    )
-        except sqlite3.Error as exc:
-            raise StoreError(f"fail_job({id}) failed: {exc}") from exc
+        with self._txn(f"fail_job({id})"):
+            row = self._conn.execute(
+                "SELECT attempts, max_attempts, locked_by FROM jobs WHERE id=?", (id,)
+            ).fetchone()
+            if row is None:
+                raise StoreError(f"fail_job: job {id} not found")
+            if row["locked_by"] != worker:  # lease stolen → another worker owns it now
+                _log.warning("fail_job_lost_lease", extra={"job_id": id, "worker": worker})
+                return
+            if row["attempts"] >= row["max_attempts"]:  # exhausted → dead-letter (never dropped)
+                self._conn.execute(
+                    "UPDATE jobs SET status='dead', last_error=?, updated_at=? WHERE id=?",
+                    (error, _to_iso(now), id),
+                )
+            else:  # reschedule with exponential backoff
+                backoff = RETRY_BACKOFF_BASE * (2 ** row["attempts"])
+                ra = retry_after or (now + timedelta(seconds=backoff))
+                self._conn.execute(
+                    "UPDATE jobs SET status='pending', run_after=?, last_error=?, "
+                    "updated_at=? WHERE id=?",
+                    (_to_iso(ra), error, _to_iso(now), id),
+                )
 
     # ── event log / export ──────────────────────────────────────────────────
     def append_event(self, ev: Event) -> None:
