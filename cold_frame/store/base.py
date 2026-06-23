@@ -256,13 +256,13 @@ class Store(ABC):
         ...
 
     @abstractmethod
-    def finish_job(self, id: str) -> None:
-        """Mark a leased job done. (api-contract: ``complete_job``)."""
+    def finish_job(self, id: str, *, worker: str) -> None:
+        """Mark a leased job done — fenced on ``locked_by==worker`` (zombie-worker guard, I12)."""
         ...
 
     @abstractmethod
-    def fail_job(self, id: str, *, error: str, retry_after: datetime | None) -> None:
-        """Reschedule (attempts<max → pending+backoff) or dead-letter (→ dead)."""
+    def fail_job(self, id: str, *, error: str, retry_after: datetime | None, worker: str) -> None:
+        """Reschedule (attempts<max → pending+backoff) or dead-letter; fenced on ``worker``."""
         ...
 
     # ── event log / export (D17) ────────────────────────────────────────────

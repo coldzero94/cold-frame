@@ -133,6 +133,20 @@ def test_add_note_single_txn_roundtrip(store: SQLiteStore) -> None:
     )
 
 
+def test_doctor_reports_fts_integrity_and_stale_vectors(store: SQLiteStore) -> None:
+    note = _note("d1", "a healthy note")
+    store.add_note(note, HashEmbedder().embed_one(note.content))
+    h = store.doctor()
+    assert h["fts_integrity"] == "ok"  # real FTS5 integrity-check, not the vacuous row count
+    assert h["stale_vectors"] == 0  # all vectors written by the current embedder
+
+    # a vector from a different embedder is counted as stale (KNN would exclude it, I10)
+    store._conn.execute(
+        "UPDATE note_vec SET embedder_id = 'old-embedder-v0' WHERE note_id = ?", ("d1",)
+    )
+    assert store.doctor()["stale_vectors"] == 1
+
+
 def test_get_notes_preserves_order_and_skips_unknown(store: SQLiteStore) -> None:
     emb = HashEmbedder()
     store.add_note(_note("a", "first fact"), emb.embed_one("first fact"))
@@ -172,6 +186,19 @@ def test_update_note_in_place_resyncs_fts_and_versions(store: SQLiteStore) -> No
 def test_update_note_unknown_raises(store: SQLiteStore) -> None:
     with pytest.raises(NoteNotFound):
         store.update_note(_note("missing", "some text here"), update_type="manual")
+
+
+def test_update_note_optimistic_version_lock(store: SQLiteStore) -> None:
+    note = _note("v1", "original text here")  # version 1
+    store.add_note(note, HashEmbedder().embed_one(note.content))
+    first = note.model_copy(update={"content": "first edit", "version": 2})
+    store.update_note(first, update_type="manual", emb=HashEmbedder().embed_one("first edit"))
+
+    # a stale caller that also read version 1 and tries 1→2 after the DB already moved to 2
+    stale = note.model_copy(update={"content": "stale edit", "version": 2})
+    with pytest.raises(StoreError, match="version conflict"):
+        store.update_note(stale, update_type="manual", emb=HashEmbedder().embed_one("stale"))
+    assert store.get_notes(["v1"])[0].content == "first edit"  # stale write rejected
 
 
 def test_update_note_rollback_on_failure(

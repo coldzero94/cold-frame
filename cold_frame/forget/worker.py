@@ -39,10 +39,12 @@ class Worker:
             if handler is None:
                 raise KeyError(f"no handler for job kind {job.kind!r}")
             handler(job)
-            self._store.finish_job(job.id)
+            self._store.finish_job(job.id, worker=self._id)
         except Exception as exc:  # handler/config failure → reschedule or dead-letter
             try:
-                self._store.fail_job(job.id, error=f"{type(exc).__name__}: {exc}", retry_after=None)
+                self._store.fail_job(
+                    job.id, error=f"{type(exc).__name__}: {exc}", retry_after=None, worker=self._id
+                )
             except StoreError:  # even fail_job failed → leave running; stale-reclaim recovers it
                 _log.error("fail_job_failed", extra={"job_id": job.id, "kind": job.kind})
         return True

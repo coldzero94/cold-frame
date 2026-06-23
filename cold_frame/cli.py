@@ -76,10 +76,15 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     h = _memory(args).health()
     print(f"db: {h['db_path']}")
     print(f"notes={h['notes']} fts={h['fts']} vec={h['vec']}  (match={h['counts_match']})")
-    print(f"integrity_check={h['integrity']}")
-    print(f"embedder={h['embedder_id']} dim={h['dim']}")
+    print(f"integrity_check={h['integrity']}  fts_integrity={h['fts_integrity']}")
+    print(f"embedder={h['embedder_id']} dim={h['dim']}  stale_vectors={h['stale_vectors']}")
     print(f"ui_port={branding.UI_PORT}")
-    ok = bool(h["counts_match"]) and h["integrity"] == "ok"
+    ok = (
+        bool(h["counts_match"])
+        and h["integrity"] == "ok"
+        and h["fts_integrity"] == "ok"
+        and h["stale_vectors"] == 0
+    )
     print("ok" if ok else "PROBLEMS FOUND")
     return 0 if ok else 1
 
