@@ -65,6 +65,11 @@ def test_error_response_maps_not_found() -> None:
     assert resp["error"]["code"] == "not_found"
 
 
+def test_host_sample_degrades_outside_request() -> None:
+    # no active MCP request → get_context() raises → degrade to "" (offline), never crash
+    assert mcpmod._host_sample("system", "user") == ""
+
+
 def test_mcp_self_edit_error_maps_to_stable_code(db_path: str) -> None:
     import anyio
 

@@ -51,7 +51,7 @@ Now the agent has six memory tools:
 | tool | what it does |
 |------|--------------|
 | `search_memory` | recall relevant facts for a query |
-| `add_memory` | remember a message/fact (extracts + de-duplicates) |
+| `add_memory` | remember a fact (de-duplicated against what you already know) |
 | `create_fact` | assert a single fact directly |
 | `update_fact` | correct a fact (the old version is archived, still revivable) |
 | `supersede` | replace a fact with a newer truth |
@@ -100,14 +100,20 @@ freshness, and how beliefs changed over time. Binds to localhost only.
 
 ---
 
-## Quality: offline first, upgrade when you want
+## Quality: it rides on Claude Code, it doesn't call out
 
-Out of the box cold-frame uses a built-in offline embedder and a naive "one message = one fact"
-extractor — good enough to be useful with **no key and no network**. For sharper extraction and
-semantic recall, pass a stronger embedder/LLM to `Memory(embedder=..., llm=...)`; the
-`[openai]` (cloud) and `[local-llm]` (fully offline, `sentence-transformers`) extras provide the
-adapters. Everything else — dedup, conflict resolution, forgetting — is deterministic code, so
-behavior never depends on a model being "smart".
+cold-frame's design choice: **don't run a separate LLM — borrow the host's.** The deterministic
+engine (dedup bands, freshness, forgetting, the token-budget packer) does the heavy lifting with
+**no key and no network**. When a write hits a genuinely *ambiguous* near-duplicate or possible
+contradiction, cold-frame asks **the model Claude Code is already using** to judge it, via MCP
+**sampling** — no second API key, no separate call you pay for twice. If the host doesn't support
+sampling, those judgments simply fall back to the deterministic rules. So memory gets smarter when
+embedded in a capable agent, and stays correct everywhere else.
+
+The one thing that can't be borrowed this way is **embeddings** (semantic vectors). The built-in
+offline embedder works out of the box; for sharper recall, plug in a **local** model
+(`[local-llm]`, `sentence-transformers`) — still local, still no key. A cloud embedder
+(`[openai]`) is the only option that needs a key, and it's entirely optional.
 
 ---
 
