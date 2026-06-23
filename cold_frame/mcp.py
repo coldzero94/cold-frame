@@ -58,6 +58,11 @@ def _add_impl(mem: Memory, text: str) -> dict[str, Any]:
     }
 
 
+def _self_edit_impl(mem: Memory, name: str, args: dict[str, object]) -> dict[str, Any]:
+    """Single sync impl for every self-edit tool — routes through the one WriteCore (I15)."""
+    return mem.apply_tool(name, args)
+
+
 def _error_response(exc: ColdFrameError) -> dict[str, Any]:
     """Map an internal error to a stable MCP error code (exceptions.mcp_code_for)."""
     return {"error": {"code": mcp_code_for(exc), "message": str(exc)}}
@@ -88,6 +93,39 @@ async def add_memory(text: str) -> dict[str, Any]:
         return _error_response(exc)
 
 
+async def _run_self_edit(name: str, args: dict[str, object]) -> dict[str, Any]:
+    import anyio
+
+    mem = _require_memory()
+    try:
+        result: dict[str, Any] = await anyio.to_thread.run_sync(
+            lambda: _self_edit_impl(mem, name, args)
+        )
+        return result
+    except ColdFrameError as exc:
+        return _error_response(exc)
+
+
+async def create_fact(text: str, memory_type: str = "semantic") -> dict[str, Any]:
+    """MCP self-edit tool: assert a new fact (dedup + conflict run); returns {added,deduped,...}."""
+    return await _run_self_edit("create_fact", {"text": text, "memory_type": memory_type})
+
+
+async def update_fact(id: str, text: str) -> dict[str, Any]:
+    """MCP self-edit tool: replace the fact at `id` with `text`; returns {archived, new}."""
+    return await _run_self_edit("update_fact", {"id": id, "text": text})
+
+
+async def supersede(id: str, text: str) -> dict[str, Any]:
+    """MCP self-edit tool: supersede the fact at `id` with a new fact; returns {archived,new}."""
+    return await _run_self_edit("supersede", {"id": id, "text": text})
+
+
+async def forget(id: str) -> dict[str, Any]:
+    """MCP self-edit tool: archive the fact at `id` (revivable); returns {archived,status}."""
+    return await _run_self_edit("forget", {"id": id})
+
+
 # ── server wiring (lazy SDK import, I9) ───────────────────────────────────────
 def build_server(memory: Memory | None = None) -> Any:  # noqa: ANN401 - FastMCP type optional
     """Construct the FastMCP stdio server with the two tools registered.
@@ -105,6 +143,8 @@ def build_server(memory: Memory | None = None) -> Any:  # noqa: ANN401 - FastMCP
     server = FastMCP(MCP_ID)
     server.tool()(search_memory)
     server.tool()(add_memory)
+    for tool in (create_fact, update_fact, supersede, forget):  # self-edit tools (one WriteCore)
+        server.tool()(tool)
     return server
 
 

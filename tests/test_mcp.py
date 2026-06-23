@@ -31,6 +31,18 @@ def test_async_def_only_in_mcp_module() -> None:
 def test_tool_handlers_are_async() -> None:
     assert inspect.iscoroutinefunction(mcpmod.search_memory)
     assert inspect.iscoroutinefunction(mcpmod.add_memory)
+    for tool in (mcpmod.create_fact, mcpmod.update_fact, mcpmod.supersede, mcpmod.forget):
+        assert inspect.iscoroutinefunction(tool)
+
+
+def test_self_edit_impl_routes_through_writecore(db_path: str) -> None:
+    mem = Memory(db_path)
+    created = mcpmod._self_edit_impl(mem, "create_fact", {"text": "I work at Vessl"})
+    fid = created["added"][0]
+    updated = mcpmod._self_edit_impl(mem, "update_fact", {"id": fid, "text": "I work at Anthropic"})
+    assert updated["archived"] == fid and updated["new"]
+    assert mem.get(fid).status == "archived"  # superseded via the same WriteCore path (I15)
+    assert mem.search("Anthropic").hits[0].note.id == updated["new"]
 
 
 def test_search_impl_empty_is_success(db_path: str) -> None:

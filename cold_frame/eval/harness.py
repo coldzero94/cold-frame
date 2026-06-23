@@ -244,8 +244,13 @@ def _match_where(note: Note, where: dict[str, Any]) -> bool:
     return False
 
 
-def run_case(case: Case) -> CaseReport:
-    """Run one golden case against a fresh in-memory Memory; collect assertion failures."""
+def run_case(case: Case, *, via_tool: bool = False) -> CaseReport:
+    """Run one golden case against a fresh in-memory Memory; collect assertion failures.
+
+    ``via_tool`` routes every ``add`` op through the ``create_fact`` self-edit tool instead of
+    ``Memory.add`` — same WriteCore, so dedup/freshness suites must produce identical outcomes
+    (the P6 I15 gate).
+    """
     failures: list[str] = []
     clock = _EvalClock(_first_instant(case))
     llm = ScriptedLLM(case.llm_script) if case.llm_script else None
@@ -265,14 +270,17 @@ def run_case(case: Case) -> CaseReport:
                 if step.text is None:
                     failures.append("add step missing text")
                     continue
-                res = mem.add(
-                    step.text,
-                    scope=step.scope or Scope(),
-                    observed_at=clock.now(),
-                    raw=bool(
-                        step.extra.get("raw", False)
-                    ),  # raw → naive extract (script only dedup/conflict)
-                )
+                if via_tool:  # I15 gate: the agent asserts the fact via the self-edit tool
+                    res = mem.create_fact(step.text, scope=step.scope or Scope())
+                else:
+                    res = mem.add(
+                        step.text,
+                        scope=step.scope or Scope(),
+                        observed_at=clock.now(),
+                        raw=bool(
+                            step.extra.get("raw", False)
+                        ),  # raw → naive extract (script only dedup/conflict)
+                    )
                 created.extend(n.id for n in res.added)
                 created.extend(n.id for n in res.held)
             elif step.op == "search":
