@@ -156,6 +156,66 @@ def test_cli_path_finds_and_misses(cli_db: Path, capsys: pytest.CaptureFixture[s
     assert main(["path", "ghost", lone]) == 1  # unknown src
 
 
+def test_cli_path_multi_hop_and_max_hops(cli_db: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    from datetime import UTC, datetime
+
+    from cold_frame.api import Memory
+    from cold_frame.models import Edge
+
+    m = Memory(str(cli_db))
+    a = m.create_fact("node A").added[0].id
+    b = m.create_fact("node B").added[0].id
+    c = m.create_fact("node C").added[0].id
+    t = datetime(2026, 1, 1, tzinfo=UTC)
+    m._store.add_edge(Edge(src_id=a, dst_id=b, relation="relates_to", created_at=t))
+    m._store.add_edge(Edge(src_id=b, dst_id=c, relation="relates_to", created_at=t))
+    m.close()
+
+    # 2-hop chain A→B→C is found and prints BOTH edge steps (exercises the frontier expansion)
+    assert main(["path", a, c]) == 0
+    out = capsys.readouterr().out
+    assert out.count("relates_to") == 2 and b[:8] in out
+
+    # --max-hops boundary: reachable at 2 hops, NOT at 1 (guards the range(max_hops) bound)
+    assert main(["path", a, c, "--max-hops", "2"]) == 0
+    capsys.readouterr()
+    assert main(["path", a, c, "--max-hops", "1"]) == 1
+    assert "no path" in capsys.readouterr().out
+
+    # reverse-direction traversal renders the "<-" arrow (edge is a→b, we walk b→a)
+    assert main(["path", b, a]) == 0
+    assert "<-[relates_to]" in capsys.readouterr().out
+
+
+def test_cli_show_ambiguous_prefix(cli_db: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    from cold_frame.api import Memory
+    from cold_frame.llm.base import HashEmbedder
+    from cold_frame.models import Note, Scope, Source
+
+    m = Memory(str(cli_db))
+    emb = HashEmbedder()
+    # two notes whose ids share an 8-char prefix → a short prefix can't disambiguate
+    for suffix in ("aaaa", "bbbb"):
+        nid = "deadbeef-0000-0000-0000-00000000" + suffix
+        note = Note(
+            id=nid,
+            content=f"fact {suffix}",
+            memory_type="semantic",
+            scope=Scope(),
+            created_at=m._clock.now(),
+            valid_at=m._clock.now(),
+            sources=[Source(kind="message", ref="m", content_hash="h", observed_at=m._clock.now())],
+        )
+        m._store.add_note(note, emb.embed_one(note.content))
+    m.close()
+
+    assert main(["show", "deadbeef"]) == 1  # ambiguous prefix → refuse, don't act on the wrong one
+    assert "ambiguous" in capsys.readouterr().out.lower()
+    # the full id still resolves unambiguously
+    assert main(["show", "deadbeef-0000-0000-0000-00000000aaaa"]) == 0
+    assert "fact aaaa" in capsys.readouterr().out
+
+
 def test_cli_export_events_ndjson(
     cli_db: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

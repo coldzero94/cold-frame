@@ -363,7 +363,8 @@ class Memory:
         )
 
     def triage_queue(self, *, scope: Scope | None = None, limit: int = 50) -> list[TriageItem]:
-        """Notes held for human review (low-confidence / true-conflict), ranked by importance."""
+        """Notes held for human review (low-confidence / true-conflict / ambiguous-merge),
+        ranked by importance. A null ``triage_reason`` is surfaced as ``low_confidence``."""
         held = self._store.held_for_human(scope=scope or self._default_scope, limit=limit)
         return [
             TriageItem(
@@ -384,19 +385,20 @@ class Memory:
     ) -> None:
         if action in ("merge", "supersede") and target is None:
             raise ValueError(f"resolve_triage: action {action!r} requires a target")
-        if action == "pin":  # accept + pin (exempt from decay/archive)
+        if action == "supersede":  # the held note wins over `target` — do the failure-prone
+            self.forget(target)  # type: ignore[arg-type]  # archive FIRST: a bad target raises
+            # before we clear the hold, so no partial resolve (held note stays held).
+        # the precondition (if any) passed → accept the held note off the queue. The lifecycle
+        # flags held/quarantined/triage_reason live ONLY on the notes row (no fts/vec grain), so
+        # this single setter is the whole "clear" — see set_held_for_human.
+        self._store.set_held_for_human(id, held=False, quarantined=False, reason=None)
+        if action == "pin":  # accept + pin (exempt from decay/archive, I13)
             self._store.set_pinned(id, True)
-            self._store.set_held_for_human(id, held=False, quarantined=False, reason=None)
-        elif action == "keep":  # accept into active memory
-            self._store.set_held_for_human(id, held=False, quarantined=False, reason=None)
         elif action in ("let_go", "merge"):
-            # let_go: not worth keeping. merge: a duplicate of `target` (validated above).
-            # Either way the held note is archived (revivable, I2); v1 keeps merge
-            # lightweight — no provenance graft into `target` yet.
+            # let_go: not worth keeping. merge: a duplicate of `target` (presence-checked only).
+            # Either way archive the held note (revivable, I2); v1 keeps merge lightweight —
+            # no provenance graft into `target` yet. (keep/supersede: the clear above is all.)
             self.forget(id)
-        elif action == "supersede":  # the held note wins over `target`
-            self._store.set_held_for_human(id, held=False, quarantined=False, reason=None)
-            self.forget(target)  # type: ignore[arg-type]  # guarded above
 
     # ── self-edit / procedural ───────────────────────────────────────────
     def memory_tools(self, scope: Scope) -> list[ToolSpec]:

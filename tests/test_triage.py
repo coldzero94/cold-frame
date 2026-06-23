@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import pytest
 from cold_frame.api import Memory
+from cold_frame.exceptions import NoteNotFound
 from cold_frame.llm.base import HashEmbedder
 
 from tests.conftest import FrozenClock
@@ -71,7 +72,30 @@ def test_resolve_let_go_archives(db_path: str, frozen_clock: FrozenClock) -> Non
     fid = _held_fact(m, "a passing thought")
     m.resolve_triage(fid, "let_go")
     assert m.triage_queue() == []
-    assert m.get(fid).status == "archived"  # revivable (I2), not deleted
+    archived = m.get(fid)
+    assert archived.status == "archived"  # revivable (I2), not deleted
+    # the hold is CLEARED (not just masked by status): a later revive must not resurface it
+    assert archived.held_for_human is False and archived.quarantined is False
+
+
+def test_resolve_let_go_does_not_resurface_on_revive(
+    db_path: str, frozen_clock: FrozenClock
+) -> None:
+    m = _mem(db_path, frozen_clock)
+    fid = _held_fact(m, "a resolved-then-revived thought")
+    m.resolve_triage(fid, "let_go")
+    m.revive(fid)  # status→active again; the human's let_go decision must still hold
+    assert m.triage_queue() == []  # NOT back in the queue (hold was cleared, not just masked)
+
+
+def test_resolve_supersede_bad_target_keeps_held(db_path: str, frozen_clock: FrozenClock) -> None:
+    m = _mem(db_path, frozen_clock)
+    held = _held_fact(m, "I work at Anthropic", reason="true_conflict")
+    with pytest.raises(NoteNotFound):
+        m.resolve_triage(held, "supersede", target="ghost")  # forget(target) first → raises
+    # no partial resolve: the held note is untouched, still held, still queued
+    assert [item.note.id for item in m.triage_queue()] == [held]
+    assert m.get(held).held_for_human is True
 
 
 def test_resolve_merge_archives_held_note(db_path: str, frozen_clock: FrozenClock) -> None:

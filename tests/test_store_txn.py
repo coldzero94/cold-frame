@@ -256,6 +256,10 @@ def test_get_history_and_as_of(store: SQLiteStore) -> None:
     mid = datetime(2026, 3, 1, tzinfo=UTC)
     assert [n.content for n in store.as_of(["h1"], at=mid)] == ["I work at Vessl"]  # belief then
     assert store.as_of(["h1"], at=datetime(2025, 1, 1, tzinfo=UTC)) == []  # not yet present
+    # after h1's valid-time end (invalid_at=t2) it is no longer in effect → ABC contract
+    # valid_at<=at<invalid_at. (The v1 history snapshot still carries invalid_at=None, so the
+    # gate must apply to the chosen highest-effective version, not each snapshot.)
+    assert store.as_of(["h1"], at=datetime(2026, 9, 1, tzinfo=UTC)) == []  # invalidated by then
 
 
 def test_backup_before_upgrade_snapshots_the_db(db_path: str) -> None:
