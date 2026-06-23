@@ -281,6 +281,11 @@ class Store(ABC):
     @abstractmethod
     def iter_events(self, *, since_hlc: str | None = None) -> Iterator[Event]: ...
 
+    @abstractmethod
+    def snapshot(self, dst: str) -> None:
+        """Consistent whole-DB backup to ``dst`` (I17: a checkpointed snapshot, never live WAL)."""
+        ...
+
     # ── secret hard-purge (the ONLY append-only carve-out, I2/§7) ───────────
     @abstractmethod
     def purge(self, id: str, *, cascade: bool = False) -> PurgeReport:

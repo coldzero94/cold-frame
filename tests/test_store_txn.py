@@ -231,6 +231,26 @@ def test_fresh_migrate_creates_no_backup(db_path: str) -> None:
     assert not list(Path(db_path).parent.glob("*.bak.*"))  # nothing to protect yet
 
 
+def test_iter_events_yields_in_hlc_order(store: SQLiteStore) -> None:
+    for i in range(3):
+        store.add_note(_note(f"e{i}", f"fact {i} here"), HashEmbedder().embed_one(f"fact {i}"))
+    events = list(store.iter_events())
+    assert [e.op for e in events] == ["create", "create", "create"]
+    assert [e.hlc for e in events] == sorted(e.hlc for e in events)  # hlc-ordered
+    assert {e.entity_id for e in events} == {"e0", "e1", "e2"}
+
+
+def test_snapshot_is_a_complete_restorable_copy(store: SQLiteStore, db_path: str) -> None:
+    store.add_note(_note("s1", "snapshot me"), HashEmbedder().embed_one("snapshot me"))
+    snap = f"{db_path}.snap"
+    store.snapshot(snap)
+    assert Path(snap).exists()
+    copy = SQLiteStore(snap, embedder=HashEmbedder())  # open the snapshot as a db
+    assert len(copy.get_notes(["s1"])) == 1  # consistent, complete
+    assert copy.doctor()["integrity"] == "ok"
+    copy.close()
+
+
 def test_update_note_optimistic_version_lock(store: SQLiteStore) -> None:
     note = _note("v1", "original text here")  # version 1
     store.add_note(note, HashEmbedder().embed_one(note.content))

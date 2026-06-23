@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import argparse
 import os
+import sqlite3
 from collections import Counter
 from collections.abc import Sequence
+from pathlib import Path
 
 from cold_frame import __version__, branding
 from cold_frame.api import Memory
@@ -29,6 +31,8 @@ _SUBCOMMANDS: tuple[str, ...] = (
     "doctor",
     "consolidate",
     "worker",
+    "export",
+    "import",
     "ui",
     "mcp",
     "setup",
@@ -39,8 +43,13 @@ def _resolve_db(args: argparse.Namespace) -> str:
     return args.db or os.environ.get("COLD_FRAME_DB") or str(branding.DB_PATH)
 
 
+_OPENED: list[Memory] = []  # memories opened this invocation, closed in main()'s finally
+
+
 def _memory(args: argparse.Namespace) -> Memory:
-    return Memory(_resolve_db(args))  # offline default: HashEmbedder + llm=None
+    mem = Memory(_resolve_db(args))  # offline default: HashEmbedder + llm=None
+    _OPENED.append(mem)  # tracked so the connection is closed before the process/command ends
+    return mem
 
 
 def _not_implemented(args: argparse.Namespace) -> int:
@@ -147,6 +156,59 @@ def _cmd_consolidate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_export(args: argparse.Namespace) -> int:
+    out = Path(args.path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    mem = _memory(args)
+    if args.events:  # portable append-only event-log dump (I17)
+        n = 0
+        with out.open("w", encoding="utf-8") as f:
+            for line in mem.export_events():
+                f.write(line + "\n")
+                n += 1
+        print(f"exported {n} events → {out}")
+    else:  # complete consistent snapshot of the whole DB (I17)
+        mem.snapshot(str(out))
+        print(f"exported snapshot → {out}")
+    return 0
+
+
+def _cmd_import(args: argparse.Namespace) -> int:
+    """Restore the memory DB from a snapshot (replaces the current DB; current is backed up)."""
+    import shutil
+
+    src = Path(args.path)
+    dst = Path(_resolve_db(args))
+    if not src.exists():
+        print(f"import: source not found: {src}")
+        return 1
+    try:  # validate it is a cold-frame snapshot (a migrated SQLite db)
+        ro = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
+        version = int(ro.execute("PRAGMA user_version").fetchone()[0])
+        ro.close()
+    except sqlite3.Error:
+        print(f"import: {src} is not a valid SQLite snapshot")
+        return 1
+    if version < 1:
+        print(f"import: {src} is not a cold-frame snapshot")
+        return 1
+    if dst.exists():  # safety-backup the current DB, then drop its stale WAL/SHM
+        shutil.copy2(dst, f"{dst}.pre-import.bak")
+        for ext in ("-wal", "-shm"):
+            stale = Path(f"{dst}{ext}")
+            if stale.exists():
+                stale.unlink()
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dst)
+    note = (
+        f" (previous DB backed up to {dst}.pre-import.bak)"
+        if Path(f"{dst}.pre-import.bak").exists()
+        else ""
+    )
+    print(f"imported {src} → {dst}{note}")
+    return 0
+
+
 def _cmd_worker(args: argparse.Namespace) -> int:
     """Drain the durable jobs queue (consolidation + dead-letter recovery, I12)."""
     mem = _memory(args)
@@ -213,6 +275,13 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("consolidate", help="run forgetting/consolidation now").set_defaults(
         func=_cmd_consolidate
     )
+    p_export = sub.add_parser("export", help="back up memory (snapshot, or --events NDJSON)")
+    p_export.add_argument("path", help="output file path")
+    p_export.add_argument("--events", action="store_true", help="dump the event log as NDJSON")
+    p_export.set_defaults(func=_cmd_export)
+    p_import = sub.add_parser("import", help="restore memory from a snapshot (replaces current)")
+    p_import.add_argument("path", help="snapshot file to restore from")
+    p_import.set_defaults(func=_cmd_import)
     p_worker = sub.add_parser("worker", help="drain the background jobs queue (maintenance)")
     p_worker.add_argument("--once", action="store_true", help="run one drain pass and exit")
     p_worker.add_argument("--interval", type=float, default=5.0, help="poll interval seconds")
@@ -238,8 +307,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.print_help()
         return 1
     func = args.func
-    result: int = func(args)
-    return result
+    try:
+        result: int = func(args)
+        return result
+    finally:  # release DB connections (so e.g. `import`'s file-replace isn't held open)
+        for mem in _OPENED:
+            mem.close()
+        _OPENED.clear()
 
 
 if __name__ == "__main__":

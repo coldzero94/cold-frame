@@ -119,6 +119,18 @@ offline embedder works out of the box; for sharper recall, plug in a **local** m
 
 ---
 
+## Back up / move your memory
+
+```bash
+cold-frame export ~/cold-frame-backup.db     # a complete consistent snapshot
+cold-frame import ~/cold-frame-backup.db     # restore it (your current DB is backed up first)
+cold-frame export memory.ndjson --events     # or dump the append-only event log (portable)
+```
+
+A snapshot is a single self-contained file — copy it to another machine and `import` (or just
+point `--db` at it). Import never touches the live WAL; it replaces the DB and keeps a
+`.pre-import.bak` of what was there.
+
 ## Your data, your rules
 
 - Everything is in **one file**: `~/.cold-frame/memory.db`. Copy it to back up, move it between
