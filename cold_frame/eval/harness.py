@@ -272,6 +272,7 @@ def run_case(case: Case, *, via_tool: bool = False) -> CaseReport:
         llm=llm,
         clock=clock,
         id_factory=_id_factory(case.id),
+        consolidate_every=10**9,  # golden cases drive consolidate explicitly; no auto-maintenance
     )
     created: list[str] = []
     try:
