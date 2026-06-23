@@ -15,6 +15,9 @@ from cold_frame.api import Memory
 from cold_frame.branding import MCP_ID, PKG, fact_deeplink
 from cold_frame.exceptions import ColdFrameError, StoreError, mcp_code_for
 from cold_frame.llm.sampling import SamplingLLM
+from cold_frame.observability import get_logger
+
+_log = get_logger(__name__)
 
 _INSTALL_HINT = (
     f"{MCP_ID}: the MCP server needs an optional dependency — "
@@ -64,7 +67,8 @@ def _host_sample(system: str, user: str) -> str:
 
     try:
         return anyio.from_thread.run(_ask)
-    except Exception:
+    except Exception as exc:  # host declined / no sampling capability / bridge error → degrade
+        _log.warning("host_sample_failed", extra={"exc_type": type(exc).__name__})
         return ""
 
 

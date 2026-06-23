@@ -65,8 +65,11 @@ class SamplingLLM(LLM):
     ) -> LLMResult:
         try:
             text = self._sample(system, user)
-        except Exception:
-            _log.warning("sampling_failed", extra={"task": task.value})
+        # any host/sampling failure degrades to deterministic (parsed=None), never raises
+        except Exception as exc:
+            _log.warning(
+                "sampling_failed", extra={"task": task.value, "exc_type": type(exc).__name__}
+            )
             return LLMResult(text="", parsed=None, model=self.name)
         if not text:
             _log.info("sampling_empty", extra={"task": task.value})  # host declined/unsupported

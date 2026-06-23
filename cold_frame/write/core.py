@@ -1,8 +1,8 @@
 """WriteCore — the single persist path (I15, D8).
 
-Leaf stub. Every entry runs the SAME pipeline: ADMISSION (CLASSIFY → REDACT →
-CONFIDENCE-GATE → CONSENT) → DEDUP → CONFLICT → PERSIST, in ONE Store transaction (I3).
-Bodies raise ``NotImplementedError``; P1+ fill them in without changing signatures.
+Every entry runs the SAME pipeline: ADMISSION → DEDUP → CONFLICT → PERSIST, in ONE Store
+transaction (I3). ADMISSION in v1 (D25) is a deterministic secret-BLOCK (``scan_secret``);
+REDACT/CONFIDENCE-GATE/CONSENT are deferred (I6 PARTIAL).
 
 - ``commit`` is used by ``add()`` and ``create_fact``.
 - ``commit_supersede`` is used by ``correct_memory``, ``update_fact``, ``supersede`` —

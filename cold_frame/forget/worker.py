@@ -41,6 +41,11 @@ class Worker:
             handler(job)
             self._store.finish_job(job.id, worker=self._id)
         except Exception as exc:  # handler/config failure → reschedule or dead-letter
+            # content-free (I16): id/kind/exc_type only — never the error string (may echo content)
+            _log.warning(
+                "job_failed",
+                extra={"job_id": job.id, "kind": job.kind, "exc_type": type(exc).__name__},
+            )
             try:
                 self._store.fail_job(
                     job.id, error=f"{type(exc).__name__}: {exc}", retry_after=None, worker=self._id
