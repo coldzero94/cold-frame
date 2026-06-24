@@ -11,7 +11,7 @@ import threading
 import urllib.error
 import urllib.request
 from collections.abc import Iterator
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -625,3 +625,18 @@ def test_post_correct_with_secret_returns_422(memory: Memory) -> None:
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_search_as_of_time_travels(memory: Memory) -> None:
+    # bi-temporal time-travel: as_of far in the past → nothing was valid yet; else → current hit
+    memory.add("I work at Anthropic")
+    assert ui.search_payload(memory, "where do I work")["hits"]
+    old = ui.search_payload(memory, "where do I work", as_of=datetime(2000, 1, 1, tzinfo=UTC))
+    assert old["hits"] == []
+
+
+def test_fact_payload_includes_access_history(memory: Memory) -> None:
+    fid = memory.add("dark roast coffee").added[0].id
+    memory.search("coffee")  # an agent search reinforces → writes an access_log row
+    fact = ui.fact_payload(memory, fid)
+    assert fact is not None and len(fact["accesses"]) >= 1  # surfaced for the decay sparkline

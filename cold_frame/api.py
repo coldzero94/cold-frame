@@ -372,6 +372,11 @@ class Memory:
             raise NoteNotFound(id)
         return history
 
+    def access_history(self, id: str) -> list[datetime]:
+        """Recall timestamps for ``id`` (oldest→newest) from the capped access_log — the decay
+        signal made visible (each recall reinforces; gaps are where forgetting sets in)."""
+        return self._store.access_log(id)
+
     def reembed(self) -> ReembedResult:
         """Re-index every note whose vector was written by a different embedder than the one now
         configured (I8/I10). Run this after swapping the embedder (e.g. installing a local model)

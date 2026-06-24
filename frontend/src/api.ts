@@ -67,7 +67,8 @@ export const api = {
   notes: () => getJSON<NotesResponse>('/api/notes'),
   fact: (id: string) => getJSON<FactDetail>(`/api/fact/${enc(id)}`),
   factHistory: (id: string) => getJSON<FactHistoryResponse>(`/api/fact/${enc(id)}/history`),
-  search: (q: string) => getJSON<SearchResponse>(`/api/search?q=${enc(q)}`),
+  search: (q: string, asOf?: string) =>
+    getJSON<SearchResponse>(`/api/search?q=${enc(q)}${asOf ? `&as_of=${enc(asOf)}` : ''}`),
   triage: () => getJSON<TriageResponse>('/api/triage'),
   health: () => getJSON<Record<string, unknown>>('/api/health'),
   // mutations (CSRF-guarded)

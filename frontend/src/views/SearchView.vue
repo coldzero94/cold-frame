@@ -6,6 +6,7 @@ import { api, type Band, type SearchHit } from '@/api'
 
 const router = useRouter()
 const q = ref('')
+const asOf = ref('') // a YYYY-MM-DD date → time-travel: search the belief state as of then
 const hits = ref<SearchHit[]>([])
 const loading = ref(false)
 const error = ref('')
@@ -14,9 +15,9 @@ let seq = 0
 
 const GLYPH: Record<Band, string> = { evergreen: '🌳', budding: '🌿', fading: '🌱' }
 
-// debounce so we search as you pause typing, not on every keystroke
+// debounce so we search as you pause typing; re-run when the as-of date changes too
 let timer: ReturnType<typeof setTimeout> | undefined
-watch(q, (val) => {
+watch([q, asOf], ([val]) => {
   clearTimeout(timer)
   if (!val.trim()) {
     hits.value = []
@@ -31,7 +32,7 @@ async function run(query: string): Promise<void> {
   loading.value = true
   error.value = ''
   try {
-    const resp = await api.search(query)
+    const resp = await api.search(query, asOf.value || undefined)
     if (mine !== seq) return // a newer query superseded this one
     hits.value = resp.hits
     searched.value = true
@@ -57,6 +58,26 @@ function sig(v: number | null): string {
         aria-label="Search your memory"
         class="w-full bg-panel border border-line rounded-[10px] px-4 py-2.5 text-fg text-[14px] placeholder:text-dim focus:border-dim outline-none"
       />
+      <!-- time-travel: search the belief state as it was on a past date ("what did I believe in March") -->
+      <div class="flex items-center gap-2 mt-2.5 text-[12px] text-dim">
+        <span>as of</span>
+        <input
+          v-model="asOf"
+          type="date"
+          aria-label="Search as of a past date"
+          class="bg-panel border border-line rounded-[8px] px-2 py-1 text-fg text-[12px] focus:border-dim outline-none [color-scheme:dark]"
+        />
+        <button
+          v-if="asOf"
+          type="button"
+          class="text-dim hover:text-fg bg-transparent border-0 cursor-pointer"
+          title="Back to now"
+          @click="asOf = ''"
+        >
+          × now
+        </button>
+        <span v-if="asOf" class="text-ember">⏪ as you believed it then</span>
+      </div>
     </div>
 
     <div class="flex-1 overflow-auto p-4 sm:p-6">

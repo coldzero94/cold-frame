@@ -52,6 +52,7 @@ class FactDetailDict(NoteBriefDict):
     sources: list[SourceDict]
     valid_at: str | None
     edges: list[EdgeDict]
+    accesses: list[str]  # recall timestamps (ISO) for the decay sparkline — oldest→newest
 
 
 class SignalsDict(TypedDict):

@@ -934,6 +934,13 @@ class SQLiteStore(Store):
         ).fetchall()
         return [Note.model_validate_json(r["snapshot"]) for r in rows]
 
+    def access_log(self, id: str, *, limit: int = 50) -> list[datetime]:
+        """Recall timestamps for ``id`` (oldest→newest); table is capped at 50 rows/note (I13)."""
+        rows = self._conn.execute(
+            "SELECT ts FROM access_log WHERE note_id=? ORDER BY ts LIMIT ?", (id, limit)
+        ).fetchall()
+        return [_from_iso(r["ts"]) for r in rows]
+
     def as_of(self, ids: list[str], *, at: datetime) -> list[Note]:
         # Bi-temporal valid-time read (ABC: valid_at<=at<invalid_at). Pick the highest version
         # whose valid_at<=at (the latest correction that had taken effect by `at`), then include

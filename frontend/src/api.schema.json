@@ -70,6 +70,12 @@
             "$ref": "#/$defs/Edge"
           },
           "type": "array"
+        },
+        "accesses": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         }
       },
       "required": [
@@ -81,7 +87,8 @@
         "strength",
         "sources",
         "valid_at",
-        "edges"
+        "edges",
+        "accesses"
       ],
       "type": "object"
     },
