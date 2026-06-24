@@ -17,9 +17,31 @@ import type {
 // automatically; the only local export, `api`, can't collide with the generated interface names).
 export * from './api.generated'
 
+// Human messages for the server's stable error codes (so a deliberate refusal — e.g. a blocked
+// secret — reads as itself, not a generic "Failed to fetch" from a dropped/!ok response).
+const ERR_MESSAGE: Record<string, string> = {
+  secret_blocked: "That looked like a secret, so it wasn't stored.",
+  text_required: 'Please enter some text.',
+  not_found: 'That memory no longer exists.',
+  bad_memory_type: 'Unknown memory type.',
+  bad_action: 'Unknown action.',
+  csrf_failed: 'Security check failed — reload the page and try again.',
+  internal: 'Something went wrong on the server.',
+}
+
+async function apiError(url: string, r: Response): Promise<Error> {
+  let code = ''
+  try {
+    code = ((await r.json()) as { error?: string })?.error ?? ''
+  } catch {
+    /* non-JSON body — fall back to the status line */
+  }
+  return new Error(ERR_MESSAGE[code] ?? `${url} → ${r.status}`)
+}
+
 async function getJSON<T>(url: string): Promise<T> {
   const r = await fetch(url, { headers: { Accept: 'application/json' } })
-  if (!r.ok) throw new Error(`${url} → ${r.status}`)
+  if (!r.ok) throw await apiError(url, r)
   return r.json() as Promise<T>
 }
 
@@ -34,7 +56,7 @@ async function postJSON<T>(url: string, body: unknown = {}): Promise<T> {
     headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken() },
     body: JSON.stringify(body),
   })
-  if (!r.ok) throw new Error(`${url} → ${r.status}`)
+  if (!r.ok) throw await apiError(url, r)
   return r.json() as Promise<T>
 }
 
@@ -54,7 +76,10 @@ export const api = {
   revive: (id: string) => postJSON<NoteBrief>(`/api/fact/${enc(id)}/revive`),
   correct: (id: string, text: string) => postJSON<NoteBrief>(`/api/fact/${enc(id)}/correct`, { text }),
   create: (text: string, memory_type: MemoryType = 'semantic') =>
-    postJSON<{ added: NoteBrief | null; deduped: string[] }>('/api/fact', { text, memory_type }),
+    postJSON<{ added: NoteBrief | null; deduped: string[]; blocked: string[] }>('/api/fact', {
+      text,
+      memory_type,
+    }),
   resolveTriage: (id: string, action: string, target?: string) =>
     postJSON<{ ok: boolean }>(`/api/triage/${enc(id)}/resolve`, { action, target }),
 }

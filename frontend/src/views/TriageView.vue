@@ -23,7 +23,7 @@ async function load(): Promise<void> {
   try {
     items.value = (await api.triage()).items
   } catch (e) {
-    error.value = String(e)
+    error.value = e instanceof Error ? e.message : String(e)
   } finally {
     loading.value = false
   }
@@ -37,7 +37,7 @@ async function resolve(id: string, action: string): Promise<void> {
     await api.resolveTriage(id, action)
     items.value = items.value.filter((i) => i.id !== id) // drop the resolved item
   } catch (e) {
-    error.value = String(e)
+    error.value = e instanceof Error ? e.message : String(e)
   } finally {
     busy.value = ''
   }

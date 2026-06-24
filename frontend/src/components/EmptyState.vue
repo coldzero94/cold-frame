@@ -1,7 +1,8 @@
 <script setup lang="ts">
-// Cold-start / first-run guidance (ux-design §9.2). The UI is read-only, so the CTAs are copyable
-// commands (add a memory · connect Claude Code) rather than write forms — it updates live once a
-// memory lands. Used by both the empty Field and the empty Inspector.
+// Cold-start / first-run guidance (ux-design §9.2): when there's nothing to act on yet, point the
+// user at the two ways to plant a first memory — copyable `cold-frame add` and the Claude Code MCP
+// connect line — and note that the view updates live. Shown by both the empty Field and Inspector
+// (the Inspector also has its own inline "+ add" form once there's a list to sit beside).
 import { ref } from 'vue'
 
 const copied = ref('')

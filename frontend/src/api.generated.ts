@@ -17,6 +17,11 @@ export type MemoryType = 'semantic' | 'episodic' | 'procedural'
  * via the `definition` "Status".
  */
 export type Status = 'active' | 'archived' | 'deleted'
+/**
+ * This interface was referenced by `ColdframeApiContract`'s JSON-Schema
+ * via the `definition` "TriageReason".
+ */
+export type TriageReason = 'true_conflict' | 'ambiguous_merge' | 'low_confidence' | 'pin_adjacent_archive'
 
 export interface ColdframeApiContract {
   [k: string]: unknown
@@ -171,7 +176,7 @@ export interface TriageItem {
   status: Status
   confidence: number
   strength: Strength
-  reason: string
+  reason: TriageReason
   candidates: string[]
   impact: number
 }

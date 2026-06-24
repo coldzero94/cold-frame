@@ -477,7 +477,10 @@ def test_post_create_rejects_non_string_text(memory: Memory) -> None:
         for bad in (b'{"text": null}', b'{"text": 5}', b'{"text": "   "}'):
             with pytest.raises(urllib.error.HTTPError) as ei:
                 _post(
-                    port, "/api/fact", body=bad, origin=f"http://127.0.0.1:{port}",
+                    port,
+                    "/api/fact",
+                    body=bad,
+                    origin=f"http://127.0.0.1:{port}",
                     token=server.csrf_token,
                 )
             assert ei.value.code == 400
@@ -495,6 +498,130 @@ def test_post_without_origin_is_rejected(memory: Memory) -> None:
             _post(port, f"/api/fact/{fid}/pin", token=server.csrf_token)
         assert ei.value.code == 403
         assert memory.get(fid).pinned is False
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+# ── do_POST / route coverage (the action interior past the CSRF gate) ──
+_AWS = "AKIA1234567890ABCDEF"  # a secret the admission scan BLOCKs (mirrors test_admission)
+
+
+def _ok_post(port: int, server: ui._UIServer, path: str, body: bytes = b"{}"):
+    return _post(port, path, body=body, origin=f"http://127.0.0.1:{port}", token=server.csrf_token)
+
+
+def test_post_unknown_id_is_404(memory: Memory) -> None:
+    server, port = _run_server(memory)
+    try:
+        with pytest.raises(urllib.error.HTTPError) as ei:
+            _ok_post(port, server, "/api/fact/does-not-exist/pin")
+        assert ei.value.code == 404
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_post_forget_then_revive(memory: Memory) -> None:
+    fid = memory.add("a fact").added[0].id
+    server, port = _run_server(memory)
+    try:
+        _ok_post(port, server, f"/api/fact/{fid}/forget")
+        assert memory.get(fid).status == "archived"
+        _ok_post(port, server, f"/api/fact/{fid}/revive")
+        assert memory.get(fid).status == "active"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_post_correct_returns_new_version(memory: Memory) -> None:
+    fid = memory.add("deploy with deploy.sh").added[0].id
+    server, port = _run_server(memory)
+    try:
+        resp = _ok_post(
+            port, server, f"/api/fact/{fid}/correct", b'{"text": "deploy with ship.sh"}'
+        )
+        new = json.loads(resp.read())
+        assert new["content"] == "deploy with ship.sh" and new["id"] != fid
+        assert memory.get(fid).status == "archived"  # old superseded
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_post_create_bad_memory_type_is_400(memory: Memory) -> None:
+    server, port = _run_server(memory)
+    try:
+        with pytest.raises(urllib.error.HTTPError) as ei:
+            _ok_post(port, server, "/api/fact", b'{"text": "x", "memory_type": "bogus"}')
+        assert ei.value.code == 400
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_post_triage_bad_action_is_400(memory: Memory) -> None:
+    fid = memory.add("held").added[0].id
+    memory._store.set_held_for_human(fid, held=True, quarantined=True, reason="low_confidence")
+    server, port = _run_server(memory)
+    try:
+        with pytest.raises(urllib.error.HTTPError) as ei:
+            _ok_post(port, server, f"/api/triage/{fid}/resolve", b'{"action": "frobnicate"}')
+        assert ei.value.code == 400
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_get_search_empty_query_returns_empty(memory: Memory) -> None:
+    server, port = _run_server(memory)
+    try:
+        data = json.loads(urllib.request.urlopen(f"http://127.0.0.1:{port}/api/search?q=").read())
+        assert data == {"query": "", "hits": []}
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_get_history_route_200_and_404(memory: Memory) -> None:
+    fid = memory.add("a fact").added[0].id
+    server, port = _run_server(memory)
+    try:
+        ok = json.loads(
+            urllib.request.urlopen(f"http://127.0.0.1:{port}/api/fact/{fid}/history").read()
+        )
+        assert ok["versions"] and ok["versions"][0]["id"] == fid
+        with pytest.raises(urllib.error.HTTPError) as ei:
+            urllib.request.urlopen(f"http://127.0.0.1:{port}/api/fact/nope/history")
+        assert ei.value.code == 404
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_post_create_secret_is_blocked(memory: Memory) -> None:
+    server, port = _run_server(memory)
+    try:
+        body = json.dumps({"text": f"my aws key is {_AWS}"}).encode()
+        resp = _ok_post(port, server, "/api/fact", body)
+        out = json.loads(resp.read())
+        assert out["added"] is None and out["blocked"]  # surfaced, not silently stored
+        assert _AWS not in json.dumps(out)  # the secret never leaks into the response
+        assert not memory.list_active()
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_post_correct_with_secret_returns_422(memory: Memory) -> None:
+    fid = memory.add("a benign fact").added[0].id
+    server, port = _run_server(memory)
+    try:
+        body = json.dumps({"text": f"the key is {_AWS}"}).encode()
+        with pytest.raises(urllib.error.HTTPError) as ei:
+            _ok_post(port, server, f"/api/fact/{fid}/correct", body)
+        assert ei.value.code == 422  # SecretBlocked → user-actionable, not a dropped connection
     finally:
         server.shutdown()
         server.server_close()

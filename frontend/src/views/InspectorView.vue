@@ -45,7 +45,7 @@ onMounted(async () => {
     notes.value = resp.notes
     total.value = resp.total
   } catch (e) {
-    error.value = String(e)
+    error.value = e instanceof Error ? e.message : String(e)
   } finally {
     loading.value = false
   }
@@ -66,7 +66,7 @@ watch(
     } catch (e) {
       // surface it (mirrors the list path) — never swallow a 500/network error to a blank pane
       detail.value = null
-      detailError.value = String(e)
+      detailError.value = e instanceof Error ? e.message : String(e)
     }
   },
   { immediate: true },
@@ -91,7 +91,7 @@ async function act(fn: () => Promise<unknown>): Promise<void> {
     await fn()
     await refresh()
   } catch (e) {
-    detailError.value = String(e)
+    detailError.value = e instanceof Error ? e.message : String(e)
   } finally {
     busy.value = false
   }
@@ -103,12 +103,17 @@ async function submitAdd(): Promise<void> {
   busy.value = true
   addError.value = ''
   try {
-    await api.create(text)
-    addText.value = ''
-    adding.value = false
+    const res = await api.create(text)
+    if (res.blocked.length) {
+      // a secret was BLOCKed pre-disk (I6): 200, but nothing stored — tell the user why
+      addError.value = "That looked like a secret, so it wasn't stored."
+    } else {
+      addText.value = ''
+      adding.value = false
+    }
     await refresh()
   } catch (e) {
-    addError.value = String(e)
+    addError.value = e instanceof Error ? e.message : String(e)
   } finally {
     busy.value = false
   }
@@ -125,7 +130,7 @@ async function submitCorrect(): Promise<void> {
     correctText.value = ''
     await router.push(`/fact/${created.id}`) // follow the supersede to the new fact
   } catch (e) {
-    detailError.value = String(e)
+    detailError.value = e instanceof Error ? e.message : String(e)
   } finally {
     busy.value = false
   }
@@ -186,7 +191,7 @@ async function submitCorrect(): Promise<void> {
         <div class="text-[11px] text-dim mt-1.5">
           {{ n.memory_type }}
           <span :title="`confidence ${n.confidence}`" class="ml-1">{{ confGlyph(n.confidence) }}</span>
-          <span v-if="n.strength.at_risk" class="text-ember ml-1">○ at risk</span>
+          <span v-if="n.strength.at_risk" class="text-ember ml-1">❄ at risk</span>
         </div>
       </RouterLink>
     </div>
@@ -210,7 +215,7 @@ async function submitCorrect(): Promise<void> {
         <div class="text-[12px] text-dim mb-5">
           {{ detail.memory_type }} · {{ detail.status }} · S={{ detail.strength.value }} ({{ detail.strength.band }})
           · confidence {{ detail.confidence }}
-          <span v-if="detail.strength.at_risk" class="text-ember ml-1">· ○ at risk</span>
+          <span v-if="detail.strength.at_risk" class="text-ember ml-1">· ❄ at risk</span>
         </div>
 
         <!-- write actions (CSRF-guarded). Forget archives (revivable); Correct supersedes. -->

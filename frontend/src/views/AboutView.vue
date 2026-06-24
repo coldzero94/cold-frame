@@ -12,7 +12,7 @@ onMounted(async () => {
   try {
     health.value = await api.health()
   } catch (e) {
-    error.value = String(e)
+    error.value = e instanceof Error ? e.message : String(e)
   }
 })
 

@@ -78,7 +78,7 @@ onMounted(async () => {
     notes.value = resp.notes
     total.value = resp.total
   } catch (e) {
-    error.value = String(e)
+    error.value = e instanceof Error ? e.message : String(e)
   } finally {
     loading.value = false
   }

@@ -36,7 +36,7 @@ async function run(query: string): Promise<void> {
     hits.value = resp.hits
     searched.value = true
   } catch (e) {
-    error.value = String(e)
+    error.value = e instanceof Error ? e.message : String(e)
   } finally {
     if (mine === seq) loading.value = false
   }

@@ -1,4 +1,5 @@
-"""Local web UI server — stdlib ``http.server``, serving the built Vue SPA + a read-only JSON API.
+"""Local web UI server — stdlib ``http.server``, serving the built Vue SPA + a JSON API (read +
+CSRF-guarded mutations).
 
 Dep-free + core-only (no Node, no web framework at runtime, I9): serves the CI-built SPA bundle
 from ``_dist/`` (history-fallback for client routes) and degrades to a dependency-free inline
@@ -10,8 +11,8 @@ Security contract (security-spec §3 + §localhost): binds 127.0.0.1 only; a Hos
 defends DNS-rebinding; a strict same-origin CSP (``default-src 'self'``, no remote/inline script)
 ships with every response (the inline dev fallback uses a scoped relaxed CSP); the port auto-falls
 -back to the next free one (recorded in ``~/.cold-frame/ui.port``). Every mutating request requires
-BOTH a same-origin ``Origin``/``Referer`` and the per-process CSRF token (injected into the page,
-sent back as ``X-CSRF-Token``) — so a drive-by site can neither forge the origin nor read the token.
+BOTH a same-origin ``Origin`` (fail-closed if absent) and the per-process CSRF token (injected into
+the page, sent back as ``X-CSRF-Token``) — a drive-by site can neither forge the origin nor read it.
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ from urllib.parse import parse_qs, urlparse
 
 from cold_frame.api import Memory
 from cold_frame.branding import UI_HOST, UI_PORT, UI_PORTFILE
-from cold_frame.exceptions import NoteNotFound
+from cold_frame.exceptions import ColdFrameError, NoteNotFound, SecretBlocked
 from cold_frame.models import Note
 from cold_frame.observability import get_logger
 from cold_frame.read.strength import compute_strength
@@ -218,7 +219,7 @@ class _UIServer(ThreadingHTTPServer):
         super().__init__(addr, _Handler)
         self.memory = memory
         # per-process CSRF token (security-spec §localhost): injected into the served page, required
-        # on every mutating request alongside an Origin/Referer same-origin check. Unauthenticated,
+        # on every mutating request alongside a same-origin Origin check. Unauthenticated,
         # not defenceless — a drive-by site can neither read this token nor forge Origin.
         self.csrf_token = secrets.token_urlsafe(32)
 
@@ -242,10 +243,23 @@ class _Handler(BaseHTTPRequestHandler):
         hostname = host.rsplit(":", 1)[0] if ":" in host else host
         return hostname in _ALLOWED_HOSTS
 
+    def _failsafe(self, exc: BaseException) -> None:
+        # never drop the connection on an unhandled error: log the TYPE only (I16) + send a real 500
+        # so the client sees a structured error instead of "Failed to fetch" on a reset socket.
+        _log.warning("ui_unhandled", extra={"exc_type": type(exc).__name__})
+        with suppress(Exception):
+            self._json(500, {"error": "internal"})
+
     def do_GET(self) -> None:  # stdlib http.server hook name (camelCase by API)
         if not self._host_allowed():  # DNS-rebind guard
             self._json(403, {"error": "forbidden host"})
             return
+        try:
+            self._route_get()
+        except Exception as exc:  # a StoreError in a payload builder → 500, not a reset socket
+            self._failsafe(exc)
+
+    def _route_get(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
         memory = self._server().memory
@@ -275,7 +289,7 @@ class _Handler(BaseHTTPRequestHandler):
         else:  # the SPA (built bundle) or the inline inspector fallback
             self._serve_app(path)
 
-    # ── mutating requests (security-spec §localhost: Host + Origin/Referer + CSRF token) ──
+    # ── mutating requests (security-spec §localhost: Host + same-origin Origin + CSRF token) ──
     def _csrf_ok(self) -> bool:
         srv = self._server()
         # Require a same-origin Origin: browsers always send it on a POST (same- OR cross-origin),
@@ -302,8 +316,13 @@ class _Handler(BaseHTTPRequestHandler):
             note = fn()
         except NoteNotFound:
             self._json(404, {"error": "not_found"})
+        except SecretBlocked:  # user-actionable (a secret in the text) — NOT an internal error
+            self._json(422, {"error": "secret_blocked"})
         except ValueError:
             self._json(400, {"error": "invalid"})
+        except ColdFrameError as exc:  # StoreError / EmbedderMismatch / … → a real 500, not a drop
+            _log.warning("ui_write_failed", extra={"exc_type": type(exc).__name__})  # type only
+            self._json(500, {"error": "internal"})
         else:
             self._json(200, _note_brief(self._server().memory, note))
 
@@ -311,16 +330,20 @@ class _Handler(BaseHTTPRequestHandler):
         if not self._host_allowed():  # DNS-rebind guard (same as GET)
             self._json(403, {"error": "forbidden host"})
             return
-        if not self._csrf_ok():  # Origin/Referer + per-process token — blocks drive-by writes
+        if not self._csrf_ok():  # same-origin Origin + per-process token — blocks drive-by writes
             self._json(403, {"error": "csrf_failed"})
             return
-        path = urlparse(self.path).path
-        memory = self._server().memory
         try:
             body = self._read_json_body()
         except ValueError:
             self._json(400, {"error": "bad_request"})
             return
+        try:
+            self._route_post(urlparse(self.path).path, self._server().memory, body)
+        except Exception as exc:  # an unguarded create_fact StoreError → 500, not a reset socket
+            self._failsafe(exc)
+
+    def _route_post(self, path: str, memory: Memory, body: dict[str, object]) -> None:
         if path.startswith("/api/fact/") and "/" in path[len("/api/fact/") :]:
             fid, _, action = path[len("/api/fact/") :].partition("/")
             if action == "pin":
@@ -354,6 +377,9 @@ class _Handler(BaseHTTPRequestHandler):
                     {
                         "added": _note_brief(memory, added) if added else None,
                         "deduped": res.deduped,
+                        # surface a pre-disk secret-BLOCK (I6) so the form can tell the user why
+                        # nothing was stored, instead of silently showing no change.
+                        "blocked": [b.placeholder for b in res.blocked],
                     },
                 )
         elif path.startswith("/api/triage/") and path.endswith("/resolve"):

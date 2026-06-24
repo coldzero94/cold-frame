@@ -17,7 +17,7 @@ from typing import Any, TypedDict, get_args
 
 from pydantic import TypeAdapter
 
-from cold_frame.models import Band, MemoryTypeLiteral, StatusLiteral
+from cold_frame.models import Band, MemoryTypeLiteral, StatusLiteral, TriageReason
 
 
 class StrengthDict(TypedDict):
@@ -70,7 +70,7 @@ class SearchHitDict(NoteBriefDict):
 
 class TriageItemDict(NoteBriefDict):
     # a note held for human review (low-confidence / true-conflict / ambiguous-merge).
-    reason: str
+    reason: TriageReason  # the source domain, not bare str → a named TS union the UI can switch on
     candidates: list[str]
     impact: float
 
@@ -150,6 +150,7 @@ _ENUMS: dict[str, tuple[str, ...]] = {
     "Band": get_args(Band),
     "MemoryType": get_args(MemoryTypeLiteral),
     "Status": get_args(StatusLiteral),
+    "TriageReason": get_args(TriageReason),
 }
 _ENUM_BY_VALUES: dict[frozenset[str], str] = {frozenset(v): k for k, v in _ENUMS.items()}
 _ENUM_DEFS: dict[str, list[str]] = {k: list(v) for k, v in _ENUMS.items()}
