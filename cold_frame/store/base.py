@@ -109,9 +109,10 @@ class Store(ABC):
 
     @abstractmethod
     def reembed(self, items: list[tuple[str, np.ndarray]], *, meta: EmbedderMeta) -> int:
-        """Replace each note's vector with a fresh ``(id, emb)`` + retag ``notes.embedder_id``
-        to ``meta.embedder_id``, ONE txn; then set the current embedder_meta. Returns the count.
-        Idempotent: re-running with no stale vectors is a no-op."""
+        """Replace each note's vector with a fresh ``(id, emb)``, retag ``notes.embedder_id`` to
+        ``meta.embedder_id``, AND flip the stored embedder_meta — all in ONE txn (I3), so a crash
+        can't leave meta lagging the retag. Returns the count. Empty ``items`` is valid: it just
+        re-syncs the stored meta to ``meta``."""
         ...
 
     @abstractmethod

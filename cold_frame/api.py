@@ -374,14 +374,15 @@ class Memory:
         """Re-index every note whose vector was written by a different embedder than the one now
         configured (I8/I10). Run this after swapping the embedder (e.g. installing a local model)
         so the migrated notes are semantically searchable again — until then KNN excludes their
-        stale vectors and they degrade to BM25-only. Idempotent (no stale vectors → no-op)."""
+        stale vectors and they degrade to BM25-only. Idempotent: with nothing stale it only
+        fast-forwards the stored embedder_meta to the live embedder (no rewrite)."""
         current = self._embedder.meta
         stale = self._store.stale_vector_notes(current_id=current.embedder_id)
-        if stale:
-            vectors = self._embedder.embed([n.content for n in stale])
-            self._store.reembed([(n.id, vectors[i]) for i, n in enumerate(stale)], meta=current)
-        else:  # nothing stale, but make sure the stored meta reflects the live embedder
-            self._store.set_embedder_meta(current)
+        # stale_vector_notes preserves order and embed() is order-preserving → vectors[i] aligns
+        # with stale[i]. embed([]) is empty-safe, and Store.reembed handles the empty input as a
+        # meta-sync-only no-op (one txn).
+        vectors = self._embedder.embed([n.content for n in stale])
+        self._store.reembed([(n.id, vectors[i]) for i, n in enumerate(stale)], meta=current)
         return ReembedResult(reembedded=len(stale), embedder_id=current.embedder_id)
 
     # ── maintenance / forgetting ─────────────────────────────────────────

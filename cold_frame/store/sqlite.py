@@ -274,17 +274,17 @@ class SQLiteStore(Store):
         return self.get_notes([str(r["id"]) for r in rows])
 
     def reembed(self, items: list[tuple[str, np.ndarray]], *, meta: EmbedderMeta) -> int:
-        with self._txn(f"reembed({len(items)} notes)"):  # vec + notes.embedder_id, ONE txn (I3)
+        # vec retag + notes.embedder_id + the embedder_meta flip co-commit in ONE txn (I3): a
+        # crash can't leave the stored meta lagging the retagged vectors. Empty items is valid —
+        # it just fast-forwards the stored meta to ``meta`` (a same-id re-sync, no rewrite).
+        with self._txn(f"reembed({len(items)} notes)"):
             for note_id, emb in items:
                 self._conn.execute("DELETE FROM note_vec WHERE note_id=?", (note_id,))
-                self._conn.execute(
-                    "INSERT INTO note_vec(note_id, embedder_id, dim, embedding) VALUES (?,?,?,?)",
-                    (note_id, meta.embedder_id, int(emb.shape[0]), _vec_to_blob(emb)),
-                )
+                self._insert_vec(note_id, emb, embedder_id=meta.embedder_id)
                 self._conn.execute(
                     "UPDATE notes SET embedder_id=? WHERE id=?", (meta.embedder_id, note_id)
                 )
-        self.set_embedder_meta(meta)  # the DB now reads/writes under the new embedder
+            self.set_embedder_meta(meta)  # same txn → atomic with the retag
         return len(items)
 
     def get_meta(self, key: str) -> str | None:
@@ -418,10 +418,13 @@ class SQLiteStore(Store):
             (rowid, note.content, json.dumps(note.keywords), json.dumps(note.tags)),
         )
 
-    def _insert_vec(self, note_id: str, emb: np.ndarray) -> None:
+    def _insert_vec(self, note_id: str, emb: np.ndarray, *, embedder_id: str | None = None) -> None:
+        # ``embedder_id`` overrides the live embedder for re-embedding (the vector is tagged with
+        # the embedder that produced it, not whatever is currently configured).
+        eid = embedder_id or self._current_embedder_id()
         self._conn.execute(
             "INSERT INTO note_vec(note_id, embedder_id, dim, embedding) VALUES (?,?,?,?)",
-            (note_id, self._current_embedder_id(), int(emb.shape[0]), _vec_to_blob(emb)),
+            (note_id, eid, int(emb.shape[0]), _vec_to_blob(emb)),
         )
 
     def _insert_sources(self, note: Note) -> None:
