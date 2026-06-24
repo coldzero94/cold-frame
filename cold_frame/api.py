@@ -1,8 +1,9 @@
 """``Memory`` facade (api-contract §2) — the single public Python entrypoint.
 
 This is the canonical SIGNATURE surface (G6 bakes the Clock/id-factory into __init__).
-All P1-P6 + the local v1 read surface (history/triage/timeline) are implemented; the
-one remaining deferred body is secret/PII hard-purge (Tier B, D25).
+Fully implemented: P1-P6, the local read surface (history/triage/timeline), secret/PII
+hard-purge, and the embedder-swap re-embedding migration. Deferred per D25: automatic
+admission (REDACT/CONSENT) + its local-only tiebreak (I7).
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ from cold_frame.models import (
     MemoryTypeLiteral,
     Note,
     ProceduralResult,
+    ReembedResult,
     Scope,
     SearchResult,
     Source,
@@ -89,9 +91,18 @@ class Memory:
         )
         self._store.migrate()
         stored = self._store.embedder_meta()
-        if stored is not None and stored.dim != self._embedder.meta.dim:
+        current = self._embedder.meta
+        # A genuine corruption risk is the SAME embedder id at a DIFFERENT dim (KNN would vstack
+        # mixed-dim vectors). A different id is a legitimate swap — allowed; its vectors are stale
+        # (KNN excludes them, I10) until ``reembed`` re-indexes them, so we do NOT raise.
+        if (
+            stored is not None
+            and stored.embedder_id == current.embedder_id
+            and stored.dim != current.dim
+        ):
             raise EmbedderMismatchError(
-                f"configured embedder dim {self._embedder.meta.dim} != DB meta dim {stored.dim}"
+                f"embedder {current.embedder_id!r} dim {current.dim} != DB meta dim {stored.dim} "
+                f"(same id, different dim — incompatible vectors)"
             )
         self._write = WriteCore(
             self._store, embedder=self._embedder, llm=self._llm, clock=self._clock
@@ -358,6 +369,20 @@ class Memory:
         if not history and not self._store.get_notes([id]):
             raise NoteNotFound(id)
         return history
+
+    def reembed(self) -> ReembedResult:
+        """Re-index every note whose vector was written by a different embedder than the one now
+        configured (I8/I10). Run this after swapping the embedder (e.g. installing a local model)
+        so the migrated notes are semantically searchable again — until then KNN excludes their
+        stale vectors and they degrade to BM25-only. Idempotent (no stale vectors → no-op)."""
+        current = self._embedder.meta
+        stale = self._store.stale_vector_notes(current_id=current.embedder_id)
+        if stale:
+            vectors = self._embedder.embed([n.content for n in stale])
+            self._store.reembed([(n.id, vectors[i]) for i, n in enumerate(stale)], meta=current)
+        else:  # nothing stale, but make sure the stored meta reflects the live embedder
+            self._store.set_embedder_meta(current)
+        return ReembedResult(reembedded=len(stale), embedder_id=current.embedder_id)
 
     # ── maintenance / forgetting ─────────────────────────────────────────
     def consolidate(

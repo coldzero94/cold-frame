@@ -69,6 +69,15 @@ def test_cli_consolidate_dispatches(cli_db: Path, capsys: pytest.CaptureFixture[
     assert "consolidate:" in capsys.readouterr().out
 
 
+def test_cli_reembed_noop_with_default_embedder(
+    cli_db: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    main(["add", "I prefer dark roast coffee"])
+    capsys.readouterr()
+    assert main(["reembed"]) == 0  # CLI uses the default HashEmbedder → nothing stale
+    assert "nothing stale" in capsys.readouterr().out
+
+
 def test_cli_list_shows_active(cli_db: Path, capsys: pytest.CaptureFixture[str]) -> None:
     main(["add", "I prefer dark roast coffee"])
     capsys.readouterr()

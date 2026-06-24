@@ -154,9 +154,11 @@ class HashEmbedder(Embedder):
     Same embedder in prod default and tests (no embedder mock needed). dim=256.
     """
 
-    def __init__(self, dim: int = HASH_EMBED_DIM) -> None:
+    def __init__(self, dim: int = HASH_EMBED_DIM, *, name: str = "hash") -> None:
+        # ``name`` overrides the embedder_id so a second deterministic embedder can stand in for
+        # a different model (e.g. a local one) when exercising the re-embedding migration (I10).
         self._dim = dim
-        self._meta = EmbedderMeta(embedder_id="hash", dim=dim)
+        self._meta = EmbedderMeta(embedder_id=name, dim=dim)
 
     @property
     def meta(self) -> EmbedderMeta:

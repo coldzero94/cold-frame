@@ -181,6 +181,13 @@ class ConsolidateResult(BaseModel):
     held_for_human: list[str] = Field(default_factory=list)  # newly flagged triage items
 
 
+class ReembedResult(BaseModel):
+    """Result of ``Memory.reembed`` — re-indexing notes under a swapped embedder (I8/I10)."""
+
+    reembedded: int = 0  # notes whose vector was rewritten with the current embedder
+    embedder_id: str = ""  # the embedder the DB now reads/writes under
+
+
 class TriageItem(BaseModel):
     """One item in the human-resolution Triage queue (api-contract §2.3)."""
 

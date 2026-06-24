@@ -100,6 +100,20 @@ class Store(ABC):
     @abstractmethod
     def set_embedder_meta(self, meta: EmbedderMeta) -> None: ...
 
+    # ── re-embedding migration (I8/I10: swap embedder → bring stale vectors current) ──
+    @abstractmethod
+    def stale_vector_notes(self, *, current_id: str) -> list[Note]:
+        """Notes whose stored vector was written by a DIFFERENT embedder than ``current_id``
+        (so KNN currently excludes them, I10). The work-list for ``reembed``."""
+        ...
+
+    @abstractmethod
+    def reembed(self, items: list[tuple[str, np.ndarray]], *, meta: EmbedderMeta) -> int:
+        """Replace each note's vector with a fresh ``(id, emb)`` + retag ``notes.embedder_id``
+        to ``meta.embedder_id``, ONE txn; then set the current embedder_meta. Returns the count.
+        Idempotent: re-running with no stale vectors is a no-op."""
+        ...
+
     @abstractmethod
     def get_meta(self, key: str) -> str | None: ...
 
