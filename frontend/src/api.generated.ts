@@ -86,6 +86,7 @@ export interface FieldNote {
  */
 export interface MemoryFieldResponse {
   notes: FieldNote[]
+  total: number
 }
 /**
  * This interface was referenced by `ColdframeApiContract`'s JSON-Schema
@@ -105,4 +106,5 @@ export interface NoteBrief {
  */
 export interface NotesResponse {
   notes: NoteBrief[]
+  total: number
 }

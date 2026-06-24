@@ -68,12 +68,16 @@ class FieldNoteDict(TypedDict):
 
 
 # ── response envelopes (what each GET endpoint returns) ──────────────────────
+# `total` = count of ALL active notes in scope; `notes` may be a render-capped prefix of that, so
+# the client can show "showing N of M" instead of silently dropping the tail.
 class NotesResponse(TypedDict):
     notes: list[NoteBriefDict]
+    total: int
 
 
 class MemoryFieldResponse(TypedDict):
     notes: list[FieldNoteDict]
+    total: int
 
 
 # The endpoints whose response shapes are generated (fact returns FactDetailDict | null).

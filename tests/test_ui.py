@@ -24,16 +24,32 @@ def test_notes_payload_shape(memory: Memory) -> None:
     memory.add("I prefer dark roast coffee")
     payload = ui.notes_payload(memory)
     assert len(payload["notes"]) == 1
+    assert payload["total"] == 1  # full active count, for the "N of M" indicator
     note = payload["notes"][0]
     assert note["content"] == "I prefer dark roast coffee"
     assert note["strength"]["band"] in {"evergreen", "budding", "fading"}
     assert 0.0 <= note["strength"]["value"] <= 1.0
 
 
+def test_payloads_cap_render_but_report_full_total(
+    memory: Memory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # render-capped list + true total → the client shows "N of M", never silently drops the tail.
+    monkeypatch.setattr(ui, "_FIELD_CAP", 2)
+    monkeypatch.setattr(ui, "_INSPECTOR_CAP", 2)
+    for t in ("alpha fact", "beta fact", "gamma fact"):
+        memory.add(t)
+    field = ui.memory_field_payload(memory)
+    notes = ui.notes_payload(memory)
+    assert field["total"] == 3 and len(field["notes"]) == 2
+    assert notes["total"] == 3 and len(notes["notes"]) == 2
+
+
 def test_memory_field_payload_shape(memory: Memory) -> None:
     fid = memory.add("I prefer dark roast coffee").added[0].id
     payload = ui.memory_field_payload(memory)
     assert len(payload["notes"]) == 1
+    assert payload["total"] == 1
     n = payload["notes"][0]
     # the EXACT shape the p5 MemoryField sketch consumes (prototype/gen_sample.py)
     assert set(n) == {

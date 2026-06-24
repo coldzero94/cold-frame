@@ -5,6 +5,7 @@ import { api, type Band, type FactDetail, type NoteBrief } from '@/api'
 
 const route = useRoute()
 const notes = ref<NoteBrief[]>([])
+const total = ref(0)
 const detail = ref<FactDetail | null>(null)
 const loading = ref(true)
 const error = ref('')
@@ -15,7 +16,9 @@ const GLYPH: Record<Band, string> = { evergreen: '🌳', budding: '🌿', fading
 
 onMounted(async () => {
   try {
-    notes.value = (await api.notes()).notes
+    const resp = await api.notes()
+    notes.value = resp.notes
+    total.value = resp.total
   } catch (e) {
     error.value = String(e)
   } finally {
@@ -47,7 +50,12 @@ watch(
   <div class="flex h-full">
     <!-- list -->
     <div class="w-[420px] flex-shrink-0 border-r border-line overflow-auto p-4">
-      <div class="text-[12px] tracking-wide text-dim mb-3 px-1">WHAT I KNOW ABOUT YOU NOW</div>
+      <div class="flex items-baseline justify-between mb-3 px-1">
+        <span class="text-[12px] tracking-wide text-dim">WHAT I KNOW ABOUT YOU NOW</span>
+        <span v-if="!loading && !error && total" class="text-[11px] text-dim font-mono">
+          {{ notes.length < total ? `${notes.length} of ${total}` : total }}
+        </span>
+      </div>
       <p v-if="loading" class="text-dim px-1">loading…</p>
       <p v-else-if="error" class="text-ember px-1">{{ error }}</p>
       <p v-else-if="!notes.length" class="text-dim px-1">No memories yet.</p>

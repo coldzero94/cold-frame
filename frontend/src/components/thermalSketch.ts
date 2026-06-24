@@ -57,6 +57,7 @@ export function makeThermalField(
   el: HTMLElement,
   data: FieldNote[],
   onHover: (n: FieldNote | null) => void,
+  onClick?: (n: FieldNote) => void,
 ): ThermalHandle {
   let doReseed: () => void = () => {}
 
@@ -175,21 +176,25 @@ export function makeThermalField(
       ctx().globalCompositeOperation = 'source-over'
     }
 
-    function hover() {
-      if (p.mouseX < 0 || p.mouseX > W || p.mouseY < 0 || p.mouseY > H) {
-        onHover(null)
-        return
-      }
+    // nearest ember to (mx,my) within `radius`px, else null — shared by hover + click.
+    function nearest(mx: number, my: number, radius: number): FieldNote | null {
+      if (mx < 0 || mx > W || my < 0 || my > H) return null
       let best: FieldNote | null = null
-      let bd = 34 * 34
+      let bd = radius * radius
       for (const e of embers) {
-        const dd = (e.x - p.mouseX) ** 2 + (e.y - p.mouseY) ** 2
+        const dd = (e.x - mx) ** 2 + (e.y - my) ** 2
         if (dd < bd) {
           bd = dd
           best = e.d
         }
       }
-      onHover(best)
+      return best
+    }
+
+    function hover() {
+      const hit = nearest(p.mouseX, p.mouseY, 34)
+      p.cursor(hit && onClick ? 'pointer' : p.ARROW) // affordance: embers are clickable
+      onHover(hit)
     }
 
     p.setup = () => {
@@ -203,6 +208,11 @@ export function makeThermalField(
       H = el.clientHeight
       p.resizeCanvas(W, H)
       layout() // resize is a viewport change (allowed), not a data transition
+    }
+    p.mousePressed = () => {
+      if (!onClick) return
+      const hit = nearest(p.mouseX, p.mouseY, 40) // a touch larger than hover for easy targeting
+      if (hit) onClick(hit)
     }
     p.draw = () => {
       const t = p.millis() * 0.0006

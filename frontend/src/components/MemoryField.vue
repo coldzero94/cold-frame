@@ -5,8 +5,11 @@
 // no CDN → I5, and every runtime fetch (app bundle, /p5.min.js, the API) is same-origin.
 import type P5 from 'p5'
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
+import { useRouter } from 'vue-router'
 import { api, type FieldNote } from '@/api'
 import { makeThermalField } from './thermalSketch'
+
+const router = useRouter()
 
 declare global {
   interface Window {
@@ -16,6 +19,7 @@ declare global {
 
 const host = ref<HTMLDivElement>()
 const notes = shallowRef<FieldNote[]>([])
+const total = ref(0)
 const hovered = ref<FieldNote | null>(null)
 const loading = ref(true)
 const error = ref('')
@@ -41,7 +45,9 @@ const fieldLabel = computed(() => {
 
 onMounted(async () => {
   try {
-    notes.value = (await api.memoryField()).notes
+    const resp = await api.memoryField()
+    notes.value = resp.notes
+    total.value = resp.total
   } catch (e) {
     error.value = String(e)
   } finally {
@@ -52,7 +58,12 @@ onMounted(async () => {
     error.value = 'the visualization runtime failed to load' // /p5.min.js missing/blocked
     return
   }
-  const field = makeThermalField(host.value, notes.value, (n) => (hovered.value = n))
+  const field = makeThermalField(
+    host.value,
+    notes.value,
+    (n) => (hovered.value = n),
+    (n) => router.push(`/fact/${n.id}`), // click an ember → open the memory (no longer a dead-end)
+  )
   instance = new window.p5(field.sketch)
   reseed = field.reseed
 })
@@ -85,6 +96,9 @@ onBeforeUnmount(() => {
       <div class="text-[11px] text-dim mt-3 leading-relaxed">
         ⬡ {{ counts.pinned }} sheltered &nbsp;·&nbsp; ❄ {{ counts.atRisk }} at-risk
       </div>
+      <div v-if="notes.length < total" class="text-[11px] text-dim/80 mt-1.5">
+        showing {{ notes.length }} of {{ total }}
+      </div>
     </div>
 
     <!-- reshuffle the field angle (same memory, different view) -->
@@ -111,7 +125,7 @@ onBeforeUnmount(() => {
       </div>
       <div v-else-if="loading" class="text-dim text-[12px]">Kindling your memory field…</div>
       <div v-else-if="!error && notes.length" class="text-dim text-[12px]">
-        Hover an ember to read the memory. Warmth is belief; the cold is forgetting.
+        Hover an ember to read it, click to open. Warmth is belief; the cold is forgetting.
       </div>
       <div v-else-if="error" class="text-ember text-[13px]">{{ error }}</div>
       <div v-else-if="!loading && !notes.length" class="text-dim text-[13px]">

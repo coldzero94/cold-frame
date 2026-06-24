@@ -82,9 +82,17 @@ def _note_brief(memory: Memory, note: Note) -> NoteBriefDict:
     }
 
 
+# Active set is bounded by the per-scope caps (≤2600), so fetching "all" to count is cheap on a
+# local single-user DB. We render a capped prefix and report the true total → no silent truncation.
+_ACTIVE_FETCH = 5000  # > sum of caps → effectively all active, for an exact count
+_INSPECTOR_CAP = 500  # list render cap; UI shows "N of M" when total exceeds it
+_FIELD_CAP = 600  # field-ember render cap (a density control lands in a later phase)
+
+
 def notes_payload(memory: Memory) -> NotesResponse:
-    notes = memory.list_active(limit=200)
-    return {"notes": [_note_brief(memory, n) for n in notes]}
+    active = memory.list_active(limit=_ACTIVE_FETCH)
+    shown = active[:_INSPECTOR_CAP]
+    return {"notes": [_note_brief(memory, n) for n in shown], "total": len(active)}
 
 
 def memory_field_payload(memory: Memory) -> MemoryFieldResponse:
@@ -92,8 +100,9 @@ def memory_field_payload(memory: Memory) -> MemoryFieldResponse:
     ``prototype/gen_sample.py``): position is derived client-side from ``id`` (spatial-memory
     law), heat from ``s``/``band``, flicker from ``atRisk``, the glass frame from ``pinned``."""
     now = memory._clock.now()
+    active = memory.list_active(limit=_ACTIVE_FETCH)
     out: list[FieldNoteDict] = []
-    for n in memory.list_active(limit=200):
+    for n in active[:_FIELD_CAP]:
         s = compute_strength(n, now)
         last = n.last_accessed or n.created_at  # fresh notes have no last_accessed
         out.append(
@@ -110,7 +119,7 @@ def memory_field_payload(memory: Memory) -> MemoryFieldResponse:
                 "ageDays": max(0, (now - last).days),  # clamp negative clock skew
             }
         )
-    return {"notes": out}
+    return {"notes": out, "total": len(active)}
 
 
 def fact_payload(memory: Memory, fact_id: str) -> FactDetailDict | None:

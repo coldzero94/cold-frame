@@ -139,10 +139,14 @@
             "$ref": "#/$defs/FieldNote"
           },
           "type": "array"
+        },
+        "total": {
+          "type": "integer"
         }
       },
       "required": [
-        "notes"
+        "notes",
+        "total"
       ],
       "type": "object"
     },
@@ -192,10 +196,14 @@
             "$ref": "#/$defs/NoteBrief"
           },
           "type": "array"
+        },
+        "total": {
+          "type": "integer"
         }
       },
       "required": [
-        "notes"
+        "notes",
+        "total"
       ],
       "type": "object"
     },
