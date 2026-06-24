@@ -49,12 +49,13 @@ jobs:
         # No keys, no network: exclude slow + live markers.
         run: pytest -q -m "not slow and not live"
 
-  # ── API codegen freshness (Node-only; kept OUT of the core gate above) ───
-  # The UI JSON contract is single-sourced in cold_frame/ui/contract.py. The core gate's
-  # test_api_contract.py guards api.schema.json (no Node); this job regenerates BOTH the schema
-  # and api.generated.ts and fails on any diff — so a contributor can't ship a stale TS client.
-  codegen-drift:
-    name: api codegen is fresh
+  # ── Frontend checks (Node-only; kept OUT of the core gate above) ─────────
+  # (1) API codegen freshness: the JSON contract is single-sourced in cold_frame/ui/contract.py;
+  #     regenerate schema + TS and fail on any diff so a stale TS client can't ship.
+  # (2) The SPA actually builds and produces a REAL bundle — so a release machine can never ship a
+  #     wheel that silently fell back to the inline inspector (the wheel only carries what's in _dist).
+  frontend:
+    name: frontend (codegen fresh + SPA builds)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -88,6 +89,15 @@ jobs:
 
       - name: Fail on stale generated files
         run: git diff --exit-code -- frontend/src/api.schema.json frontend/src/api.generated.ts
+
+      - name: Typecheck the SPA
+        run: pnpm -C frontend run typecheck
+
+      - name: Build the SPA bundle
+        run: pnpm -C frontend run build
+
+      - name: Assert the wheel-shippable bundle is real (not the .gitkeep placeholder)
+        run: python scripts/check_ui_bundle.py
 
   # ── Publish gate (DEFERRED) ──────────────────────────────────────────────
   # Intentionally NO `twine upload` / `uv publish` job here.

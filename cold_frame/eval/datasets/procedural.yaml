@@ -1,0 +1,74 @@
+suite: procedural
+embedder: hash
+
+# P5 gate (CLAUDE.md §6): procedural memory self-improves via gradient (diagnose → edit → var-heal →
+# version), and "LLM proposes, code disposes" (I1) — a no-evidence diagnosis leaves the prompt
+# untouched. f-string vars MUST survive an edit (the var-healer; VarHealerError-on-drop is unit-tested
+# in tests/test_procedural.py). Both LLM steps are scripted via the mock LLM (deterministic, offline).
+
+cases:
+  - id: gradient_edit_preserves_vars
+    description: >
+      A diagnosis with concrete evidence warrants an edit; the rewrite swaps the deprecated script
+      but the {service} f-string var survives (var-healer) and the note versions in place (v1 → v2).
+    llm_script:
+      - task: gradient_diagnose
+        match: {any: true}
+        returns:
+          warrants_adjustment: true
+          hypotheses: "deploy.sh is deprecated; deploys time out"
+          recommendations: "use ship.sh instead of deploy.sh"
+      - task: gradient_edit
+        match: {any: true}
+        returns:
+          analysis: "swap the deprecated deploy script, keep the service slot"
+          improved_prompt: "Deploy {service} with ship.sh and wait for health checks."
+    steps:
+      - op: set_procedural
+        text: "Deploy {service} with deploy.sh and wait for health checks."
+        extra: {name: "deploy"}
+      - op: optimize_prompt
+        extra:
+          name: "deploy"
+          feedback: "the deploy timed out; we moved to ship.sh"
+          trajectory:
+            - {role: "user", content: "deploy the api"}
+            - {role: "assistant", content: "running deploy.sh…"}
+    expect:
+      notes:
+        # found by the NEW script → the edit applied; version bumped; still procedural + active
+        - where: {content_like: "ship.sh"}
+          memory_type: procedural
+          status: active
+          version: 2
+        # found by the f-string var → the var-healer preserved it through the rewrite
+        - where: {content_like: "{service}"}
+          version: 2
+
+  - id: no_evidence_leaves_prompt_untouched
+    description: >
+      The drift gate (I1): when the diagnosis finds no concrete failure (warrants_adjustment=false),
+      no edit is made and the prompt stays at version 1 — the LLM cannot mutate it without evidence.
+    llm_script:
+      - task: gradient_diagnose
+        match: {any: true}
+        returns:
+          warrants_adjustment: false
+          hypotheses: ""
+          recommendations: ""
+    steps:
+      - op: set_procedural
+        text: "Review {pr} for correctness, then approve."
+        extra: {name: "review"}
+      - op: optimize_prompt
+        extra:
+          name: "review"
+          feedback: "worked great, no issues"
+          trajectory:
+            - {role: "user", content: "review PR 42"}
+    expect:
+      notes:
+        - where: {content_like: "Review {pr}"}
+          memory_type: procedural
+          status: active
+          version: 1
