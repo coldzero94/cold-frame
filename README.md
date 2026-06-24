@@ -136,21 +136,34 @@ point `--db` at it). Import never touches the live WAL; it replaces the DB and k
 - Everything is in **one file**: `~/.cold-frame/memory.db`. Copy it to back up, move it between
   machines, or delete it to start fresh. (`cold-frame doctor` shows its exact path.)
 - Nothing is ever silently lost — forgetting/superseding **archives** facts (revivable, not deleted).
+- **It forgets on its own, and stays bounded** — roughly every 20 new facts a consolidation pass
+  runs automatically (decay-scoring, rolling up episodic clusters, archiving the weakest past
+  per-scope caps), so the active set never grows without limit — no cron needed. Force it anytime
+  with `cold-frame consolidate`, or run `cold-frame worker` to drain maintenance continuously.
 - Logs are content-free by design (ids and counters only, never your note text).
 - **Obvious secrets are blocked before they touch disk** — a deterministic scan (API keys, tokens,
   private keys, high-entropy blobs) drops them pre-write and reports a content-free placeholder; a
-  blocked secret is never embedded, stored, or sent to the host model. It's still a private local
-  file you own (delete a note with `force`, or the whole file, anytime). Full PII redaction and a
-  crypto-shred purge are planned — see Status.
+  blocked secret is never embedded, stored, or sent to the host model.
+- **Anything you did store, you can scrub** — `cold-frame purge <id> --force` hard-removes a note
+  from every grain (notes, search index, vectors, history, the event-log payload), VACUUMs, and
+  grep-verifies the text is gone from the live DB. Full PII redaction and a crypto-shred/encrypted
+  purge are planned — see Status.
 
 ---
 
 ## Status
 
-The memory **engine** is built and tested (skeleton → correctness → read-quality + UI → forgetting
-→ self-improving procedural memory → agentic self-edit), ~190 tests green.
+The memory **engine** is built and tested end-to-end (skeleton → correctness → read-quality + UI →
+forgetting → self-improving procedural memory → agentic self-edit), plus a local read-only web UI,
+on a fully offline gate: `ruff` + `mypy --strict` + 278 deterministic mock-LLM tests green.
 
-Not in this version yet (planned): PII redaction + a crypto-shred hard-purge (v1 blocks obvious
-secrets but does not redact PII or scrub the event log); a PyPI release (the `cold-frame` name is
-pending trademark/registry clearance); event-log export/import for backup; and the richer web UI. The design notes and the analysis of mem0 / Letta / Zep-Graphiti / Cognee / MemOS / A-MEM /
-LangMem that informed it live in [`docs/`](docs/).
+**Shipped:** the engine, the CLI, the MCP server, secret-blocking + a grep-verified hard-purge, an
+embedder-swap re-index, and the read-only web UI (the thermal "memory field" + a fact inspector).
+
+**Not in this version yet (planned):** full PII redaction + a crypto-shred / at-rest-encrypted purge
+(v1 blocks obvious secrets and hard-purges on request, but doesn't redact PII or crypto-shred the
+event log); the *write* web UI (triage/edit in the browser — for now, write via the CLI, MCP, or the
+API); an idempotent event-log *replay* import (today backup/restore is snapshot-based; `--events`
+dumps the log for inspection); and a PyPI release (the `cold-frame` name is pending trademark/registry
+clearance). The design notes and the analysis of mem0 / Letta / Zep-Graphiti / Cognee / MemOS / A-MEM
+/ LangMem that informed it live in [`docs/`](docs/).

@@ -56,6 +56,8 @@ class Step(BaseModel):
         "forget",
         "revive",
         "pin",
+        "set_procedural",
+        "optimize_prompt",
     ]
     at: datetime | None = None
     scope: Scope | None = None
@@ -321,6 +323,15 @@ def run_case(case: Case, *, via_tool: bool = False) -> CaseReport:
                         step.op, {"id": target, "text": step.text}, scope=step.scope or Scope()
                     )
                     created.append(str(out["new"]))
+            elif step.op == "set_procedural":  # P5: register a behavior directive (procedural note)
+                note = mem.set_procedural(str(step.extra["name"]), step.text or "")
+                created.append(note.id)
+            elif step.op == "optimize_prompt":  # P5: gradient diagnose→edit→var-heal→version
+                mem.optimize_prompt(
+                    str(step.extra["name"]),
+                    list(step.extra.get("trajectory", [])),
+                    str(step.extra.get("feedback", "")),
+                )
             else:
                 failures.append(f"op {step.op!r} not supported")
 

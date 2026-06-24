@@ -10,6 +10,21 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
 authors = [{ name = "coby" }]
+keywords = ["memory", "llm", "agent", "mcp", "sqlite", "embeddings", "vector-search", "local-first", "claude"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries",
+    "Typing :: Typed",
+]
+# [project.urls] is intentionally deferred to the publish step — repository/homepage depend on the
+# unresolved name/registry (D19), so a URL here would be speculative until that gate closes.
 dependencies = [
     "pydantic>=2.6",
     "numpy>=1.26",
