@@ -1,0 +1,152 @@
+"""The UI JSON wire contract — the SINGLE SOURCE OF TRUTH for the cross-language API shapes.
+
+These TypedDicts are exactly what the server emits (cold_frame/ui/server.py) and what the
+TS client mirrors. The TS types in ``frontend/src/api.generated.ts`` are GENERATED from these
+(``scripts/gen_api_types.py`` → ``frontend/src/api.schema.json`` → json-schema-to-typescript),
+so the two languages cannot drift: change a shape here, run ``pnpm -C frontend run gen:types``,
+and the TS updates. ``tests/test_api_contract.py`` fails the core gate if the committed schema is
+stale, and CI re-runs the generator + ``git diff --exit-code`` to catch a stale ``.generated.ts``.
+
+mypy --strict checks these against the builders; pydantic (a core dep — no new dependency) reads
+them at codegen time via ``TypeAdapter(...).json_schema()``.
+"""
+
+from __future__ import annotations
+
+from typing import Any, TypedDict
+
+from pydantic import TypeAdapter
+
+from cold_frame.models import Band, MemoryTypeLiteral, StatusLiteral
+
+
+class StrengthDict(TypedDict):
+    value: float
+    band: Band
+    at_risk: bool
+
+
+class NoteBriefDict(TypedDict):
+    id: str
+    content: str
+    memory_type: MemoryTypeLiteral
+    status: StatusLiteral
+    confidence: float
+    strength: StrengthDict
+
+
+class SourceDict(TypedDict):
+    kind: str
+    ref: str
+    role: str | None
+    observed_at: str
+
+
+class EdgeDict(TypedDict):
+    src: str
+    dst: str
+    relation: str
+
+
+class FactDetailDict(NoteBriefDict):
+    sources: list[SourceDict]
+    valid_at: str | None
+    edges: list[EdgeDict]
+
+
+class FieldNoteDict(TypedDict):
+    id: str
+    content: str
+    type: MemoryTypeLiteral
+    s: float
+    band: Band
+    atRisk: bool
+    importance: float
+    access: int
+    pinned: bool
+    ageDays: int
+
+
+# ── response envelopes (what each GET endpoint returns) ──────────────────────
+class NotesResponse(TypedDict):
+    notes: list[NoteBriefDict]
+
+
+class MemoryFieldResponse(TypedDict):
+    notes: list[FieldNoteDict]
+
+
+# The endpoints whose response shapes are generated (fact returns FactDetailDict | null).
+CONTRACT_TYPES = (
+    StrengthDict,
+    NoteBriefDict,
+    SourceDict,
+    EdgeDict,
+    FactDetailDict,
+    FieldNoteDict,
+    NotesResponse,
+    MemoryFieldResponse,
+)
+
+# String-literal domains hoisted into named JSON-Schema $defs → named TS unions (Band, …).
+_ENUM_BY_VALUES: dict[frozenset[str], str] = {
+    frozenset(("evergreen", "budding", "fading")): "Band",
+    frozenset(("semantic", "episodic", "procedural")): "MemoryType",
+    frozenset(("active", "archived", "deleted")): "Status",
+}
+_ENUM_DEFS = {
+    "Band": ["evergreen", "budding", "fading"],
+    "MemoryType": ["semantic", "episodic", "procedural"],
+    "Status": ["active", "archived", "deleted"],
+}
+
+
+def _transform(node: object, refmap: dict[str, str], used: set[str]) -> object:
+    """One pass: drop noisy ``title``s, hoist inline string-enums to a named ``$ref``,
+    and rewrite ``$ref`` targets through ``refmap`` (Dict-suffixed → clean names)."""
+    if isinstance(node, dict):
+        if node.get("type") == "string" and isinstance(node.get("enum"), list):
+            name = _ENUM_BY_VALUES.get(frozenset(node["enum"]))
+            if name:
+                used.add(name)
+                return {"$ref": f"#/$defs/{name}"}
+        out: dict[str, Any] = {}
+        for k, v in node.items():
+            if k == "title":  # pydantic stamps a title on every field/def → drop (json2ts noise)
+                continue
+            if k == "$ref" and isinstance(v, str) and v.startswith("#/$defs/"):
+                old = v[len("#/$defs/") :]
+                out[k] = f"#/$defs/{refmap.get(old, old)}"
+            else:
+                out[k] = _transform(v, refmap, used)
+        return out
+    if isinstance(node, list):
+        return [_transform(x, refmap, used) for x in node]
+    return node
+
+
+def build_api_schema() -> dict[str, Any]:
+    """The combined JSON Schema for the whole UI wire contract — the language-neutral artifact
+    the TS client is generated from. Clean type names (no ``Dict`` suffix) + named string-enum
+    types. Deterministic: ``frontend/src/api.schema.json`` must equal this (test_api_contract)."""
+    refmap = {t.__name__: t.__name__.removesuffix("Dict") for t in CONTRACT_TYPES}
+    raw: dict[str, Any] = {}
+    for t in CONTRACT_TYPES:
+        schema = TypeAdapter(t).json_schema(ref_template="#/$defs/{model}")
+        for name, sub in schema.pop("$defs", {}).items():
+            raw[name] = sub  # nested types (e.g. StrengthDict) referenced via $ref
+        raw[t.__name__] = schema
+        refmap.setdefault(t.__name__, t.__name__.removesuffix("Dict"))
+
+    used_enums: set[str] = set()
+    defs: dict[str, Any] = {}
+    for name, sub in raw.items():
+        defs[refmap.get(name, name)] = _transform(sub, refmap, used_enums)
+    for enum_name in sorted(used_enums):  # add the hoisted enum defs
+        defs[enum_name] = {"type": "string", "enum": _ENUM_DEFS[enum_name]}
+
+    return {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "title": "ColdframeApiContract",
+        "$defs": dict(sorted(defs.items())),  # sorted → stable diffs
+    }

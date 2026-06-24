@@ -158,7 +158,13 @@ uv run cold-frame doctor               # install/DB/embedder/MCP + invariant che
 pnpm -C frontend install                # once
 pnpm -C frontend run build              # → cold_frame/ui/_dist (then served by `cold-frame ui`)
 pnpm -C frontend run typecheck          # vue-tsc; uv run python scripts/check_ui_bundle.py before release
+pnpm -C frontend run gen:types          # regen API types from cold_frame/ui/contract.py (run after a shape change)
 ```
+
+The JSON API contract is single-sourced in `cold_frame/ui/contract.py` (TypedDicts). `gen:types`
+emits `frontend/src/api.schema.json` (pydantic) → `api.generated.ts` (json-schema-to-typescript);
+both are committed. `tests/test_api_contract.py` fails the core gate if the schema is stale — so
+the Python and TS types can't drift. Edit `contract.py`, run `gen:types`, commit.
 
 Run `ruff` + `mypy` + the core `pytest` clean before considering any unit of work complete.
 
