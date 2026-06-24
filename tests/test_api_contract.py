@@ -10,8 +10,19 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Literal, get_args, get_origin, get_type_hints
 
 from cold_frame.ui.contract import CONTRACT_TYPES, build_api_schema
+
+
+def _literal_domains(ann: object) -> list[frozenset[object]]:
+    """Every Literal value-set reachable in a field annotation (incl. inside Union/list)."""
+    if get_origin(ann) is Literal:
+        return [frozenset(get_args(ann))]
+    domains: list[frozenset[object]] = []
+    for arg in get_args(ann):
+        domains.extend(_literal_domains(arg))
+    return domains
 
 _SCHEMA = Path(__file__).resolve().parents[1] / "frontend" / "src" / "api.schema.json"
 
@@ -31,3 +42,17 @@ def test_schema_covers_every_contract_type() -> None:
     for t in CONTRACT_TYPES:
         assert t.__name__.removesuffix("Dict") in defs
     assert {"Band", "MemoryType", "Status"} <= defs  # the hoisted string-literal unions
+
+
+def test_every_contract_literal_is_hoisted() -> None:
+    # a Literal field that isn't registered would silently render as an inline (un-named) TS union;
+    # fail here so a new Literal is hoisted to a named type.
+    from cold_frame.ui.contract import _ENUM_BY_VALUES
+
+    for t in CONTRACT_TYPES:
+        for field, ann in get_type_hints(t).items():
+            for domain in _literal_domains(ann):
+                assert domain in _ENUM_BY_VALUES, (
+                    f"{t.__name__}.{field}: Literal {sorted(map(str, domain))} is not hoisted — "
+                    f"add its type to contract._ENUMS so it generates a named TS union."
+                )
