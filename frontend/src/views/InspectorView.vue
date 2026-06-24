@@ -2,6 +2,7 @@
 import { onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { api, type Band, type FactDetail, type NoteBrief } from '@/api'
+import EmptyState from '@/components/EmptyState.vue'
 
 const route = useRoute()
 const notes = ref<NoteBrief[]>([])
@@ -47,7 +48,12 @@ watch(
 </script>
 
 <template>
-  <div class="flex h-full">
+  <!-- cold-start: when there's genuinely nothing, the planting card replaces the two-pane layout -->
+  <div v-if="!loading && !error && !notes.length" class="h-full flex items-center justify-center">
+    <EmptyState />
+  </div>
+
+  <div v-else class="flex h-full">
     <!-- list -->
     <div class="w-[420px] flex-shrink-0 border-r border-line overflow-auto p-4">
       <div class="flex items-baseline justify-between mb-3 px-1">
@@ -58,7 +64,6 @@ watch(
       </div>
       <p v-if="loading" class="text-dim px-1">loading…</p>
       <p v-else-if="error" class="text-ember px-1">{{ error }}</p>
-      <p v-else-if="!notes.length" class="text-dim px-1">No memories yet.</p>
       <RouterLink
         v-for="n in notes"
         :key="n.id"

@@ -8,6 +8,7 @@ import { computed, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
 import { useRouter } from 'vue-router'
 import { api, type FieldNote } from '@/api'
 import { makeThermalField } from './thermalSketch'
+import EmptyState from './EmptyState.vue'
 
 const router = useRouter()
 
@@ -81,8 +82,16 @@ onBeforeUnmount(() => {
          role=img + a live summary give AT users the field at a glance (ux-design.md a11y intent). -->
     <div ref="host" class="absolute inset-0" role="img" :aria-label="fieldLabel" />
 
-    <!-- legend (read-only; reflects the live snapshot) -->
-    <div class="absolute top-5 left-6 text-[13px] select-none pointer-events-none">
+    <!-- cold-start: a centered planting card over the dark field until the first memory lands -->
+    <div
+      v-if="!loading && !error && !notes.length"
+      class="absolute inset-0 flex items-center justify-center"
+    >
+      <EmptyState />
+    </div>
+
+    <!-- legend (read-only; reflects the live snapshot) — hidden when the field is empty -->
+    <div v-if="notes.length" class="absolute top-5 left-6 text-[13px] select-none pointer-events-none">
       <div class="text-[12px] tracking-[0.08em] text-dim mb-3">YOUR MEMORY FIELD</div>
       <div class="flex items-center gap-2 mb-1.5" style="color: #f0cf8e">
         <span class="legend-dot" />Evergreen<span class="ml-2 text-dim font-mono">{{ counts.evergreen }}</span>
@@ -101,8 +110,9 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <!-- reshuffle the field angle (same memory, different view) -->
+    <!-- reshuffle the field angle (same memory, different view) — hidden when empty -->
     <button
+      v-if="notes.length"
       class="absolute top-5 right-6 text-dim text-[12px] px-3 py-1.5 rounded-[8px] border border-line bg-panel/70 hover:text-fg hover:border-dim transition-colors"
       title="Reshuffle the field — same memory, a different angle"
       @click="reseed?.()"
@@ -128,9 +138,6 @@ onBeforeUnmount(() => {
         Hover an ember to read it, click to open. Warmth is belief; the cold is forgetting.
       </div>
       <div v-else-if="error" class="text-ember text-[13px]">{{ error }}</div>
-      <div v-else-if="!loading && !notes.length" class="text-dim text-[13px]">
-        No memories yet — add some with <span class="font-mono">cold-frame add</span>.
-      </div>
     </div>
   </div>
 </template>
