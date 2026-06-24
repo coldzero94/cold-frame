@@ -37,6 +37,7 @@ _SUBCOMMANDS: tuple[str, ...] = (
     "mcp",
     "setup",
     "purge",
+    "reembed",
 )
 
 
@@ -240,6 +241,8 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     print(f"notes={h['notes']} fts={h['fts']} vec={h['vec']}  (match={h['counts_match']})")
     print(f"integrity_check={h['integrity']}  fts_integrity={h['fts_integrity']}")
     print(f"embedder={h['embedder_id']} dim={h['dim']}  stale_vectors={h['stale_vectors']}")
+    if h["stale_vectors"]:  # vectors from an old embedder → not semantically searchable yet
+        print(f"  → run '{PKG} reembed' to re-index {h['stale_vectors']} stale vector(s)")
     print(f"ui_port={branding.UI_PORT}")
     ok = (
         bool(h["counts_match"])
@@ -260,6 +263,16 @@ def _cmd_mcp(args: argparse.Namespace) -> int:
 def _cmd_consolidate(args: argparse.Namespace) -> int:
     res = _memory(args).consolidate()  # manual forgetting trigger (SPEC §6); sync
     print(f"consolidate: archived {len(res.archived)}, merged {len(res.merged)}")
+    return 0
+
+
+def _cmd_reembed(args: argparse.Namespace) -> int:
+    """Re-index notes under the currently-configured embedder (run after swapping embedders)."""
+    res = _memory(args).reembed()
+    if res.reembedded:
+        print(f"reembed: re-indexed {res.reembedded} note(s) under {res.embedder_id}")
+    else:
+        print(f"reembed: nothing stale — all vectors current under {res.embedder_id}")
     return 0
 
 
@@ -418,6 +431,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub.add_parser("consolidate", help="run forgetting/consolidation now").set_defaults(
         func=_cmd_consolidate
+    )
+    sub.add_parser("reembed", help="re-index vectors under the current embedder").set_defaults(
+        func=_cmd_reembed
     )
     p_export = sub.add_parser("export", help="back up memory (snapshot, or --events NDJSON)")
     p_export.add_argument("path", help="output file path")

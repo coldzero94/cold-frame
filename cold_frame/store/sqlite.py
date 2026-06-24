@@ -265,6 +265,28 @@ class SQLiteStore(Store):
         self.set_meta("embedder_dim", str(meta.dim))
         self.set_meta("embedder_metric", EMBED_METRIC)
 
+    def stale_vector_notes(self, *, current_id: str) -> list[Note]:
+        rows = self._conn.execute(
+            "SELECT n.id AS id FROM notes n JOIN note_vec v ON v.note_id = n.id "
+            "WHERE v.embedder_id != ? ORDER BY n.created_at, n.id",
+            (current_id,),
+        ).fetchall()
+        return self.get_notes([str(r["id"]) for r in rows])
+
+    def reembed(self, items: list[tuple[str, np.ndarray]], *, meta: EmbedderMeta) -> int:
+        with self._txn(f"reembed({len(items)} notes)"):  # vec + notes.embedder_id, ONE txn (I3)
+            for note_id, emb in items:
+                self._conn.execute("DELETE FROM note_vec WHERE note_id=?", (note_id,))
+                self._conn.execute(
+                    "INSERT INTO note_vec(note_id, embedder_id, dim, embedding) VALUES (?,?,?,?)",
+                    (note_id, meta.embedder_id, int(emb.shape[0]), _vec_to_blob(emb)),
+                )
+                self._conn.execute(
+                    "UPDATE notes SET embedder_id=? WHERE id=?", (meta.embedder_id, note_id)
+                )
+        self.set_embedder_meta(meta)  # the DB now reads/writes under the new embedder
+        return len(items)
+
     def get_meta(self, key: str) -> str | None:
         try:
             row = self._conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
@@ -1183,18 +1205,23 @@ class SQLiteStore(Store):
         vec = int(self._conn.execute("SELECT count(*) FROM note_vec").fetchone()[0])
         integrity = str(self._conn.execute("PRAGMA integrity_check").fetchone()[0])
         meta = self.embedder_meta()
+        # the LIVE embedder is the truth for what new writes use + what KNN filters on; the
+        # stored meta can lag after an embedder swap (until `reembed` updates it).
+        live = self._embedder.meta if self._embedder is not None else meta
+        current_id = live.embedder_id if live is not None else None
         # real FTS5 integrity (the external-content row count above can't detect index drift)
         try:
             self._conn.execute("INSERT INTO note_fts(note_fts) VALUES ('integrity-check')")
             fts_integrity = "ok"
         except sqlite3.Error as exc:
             fts_integrity = f"corrupt: {exc}"
-        # vectors written by a different embedder than the current one (KNN excludes them, I10)
+        # vectors written by a different embedder than the current one (KNN excludes them, I10) →
+        # they need `reembed` to become searchable again.
         stale_vectors = 0
-        if meta is not None:
+        if current_id is not None:
             stale_vectors = int(
                 self._conn.execute(
-                    "SELECT count(*) FROM note_vec WHERE embedder_id != ?", (meta.embedder_id,)
+                    "SELECT count(*) FROM note_vec WHERE embedder_id != ?", (current_id,)
                 ).fetchone()[0]
             )
         return {
@@ -1206,8 +1233,8 @@ class SQLiteStore(Store):
             "integrity": integrity,
             "fts_integrity": fts_integrity,
             "stale_vectors": stale_vectors,
-            "embedder_id": meta.embedder_id if meta else None,
-            "dim": meta.dim if meta else None,
+            "embedder_id": current_id,
+            "dim": live.dim if live is not None else None,
         }
 
     def close(self) -> None:
