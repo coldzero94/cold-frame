@@ -54,6 +54,30 @@ class FactDetailDict(NoteBriefDict):
     edges: list[EdgeDict]
 
 
+class SignalsDict(TypedDict):
+    # per-hit retrieval explainability (SPEC §5); optionals are null when that channel didn't fire.
+    semantic: float | None
+    bm25: float | None
+    edge: float | None
+    rrf: float
+    rerank: float | None
+
+
+class SearchHitDict(NoteBriefDict):
+    score: float
+    signals: SignalsDict
+
+
+class HistoryVersionDict(TypedDict):
+    # one persisted version of a note, oldest→newest — the rewindable belief trail (fork-history).
+    id: str
+    content: str
+    status: StatusLiteral
+    version: int
+    valid_at: str | None
+    invalid_at: str | None
+
+
 class FieldNoteDict(TypedDict):
     id: str
     content: str
@@ -80,6 +104,15 @@ class MemoryFieldResponse(TypedDict):
     total: int
 
 
+class SearchResponse(TypedDict):
+    query: str
+    hits: list[SearchHitDict]
+
+
+class FactHistoryResponse(TypedDict):
+    versions: list[HistoryVersionDict]
+
+
 # The endpoints whose response shapes are generated (fact returns FactDetailDict | null).
 CONTRACT_TYPES = (
     StrengthDict,
@@ -88,8 +121,13 @@ CONTRACT_TYPES = (
     EdgeDict,
     FactDetailDict,
     FieldNoteDict,
+    SignalsDict,
+    SearchHitDict,
+    HistoryVersionDict,
     NotesResponse,
     MemoryFieldResponse,
+    SearchResponse,
+    FactHistoryResponse,
 )
 
 # String-literal domains hoisted into named JSON-Schema $defs → named TS unions (Band, …).

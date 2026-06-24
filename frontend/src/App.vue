@@ -6,6 +6,7 @@ const nav = [
   { to: '/inspector', label: 'Inspector', glyph: '☰' },
   { to: '/triage', label: 'Triage', glyph: '⬡' },
   { to: '/search', label: 'Search', glyph: '⌕' },
+  { to: '/about', label: 'About', glyph: 'ⓘ' },
 ]
 
 function dismiss(): void {

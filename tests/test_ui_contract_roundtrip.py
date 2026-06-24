@@ -15,7 +15,13 @@ import pytest
 from cold_frame.api import Memory
 from cold_frame.models import Edge
 from cold_frame.ui import server as ui
-from cold_frame.ui.contract import FactDetailDict, MemoryFieldResponse, NotesResponse
+from cold_frame.ui.contract import (
+    FactDetailDict,
+    FactHistoryResponse,
+    MemoryFieldResponse,
+    NotesResponse,
+    SearchResponse,
+)
 from pydantic import TypeAdapter, ValidationError
 
 
@@ -45,6 +51,12 @@ def test_payloads_validate_against_contract_types(memory: Memory) -> None:
     fact = ui.fact_payload(memory, fid)
     assert fact is not None and fact["sources"] and fact["edges"]  # provenance present
     TypeAdapter(FactDetailDict).validate_python(fact, strict=True)
+    search = ui.search_payload(memory, "coffee")
+    assert search["hits"] and "signals" in search["hits"][0]
+    TypeAdapter(SearchResponse).validate_python(search, strict=True)
+    hist = ui.fact_history_payload(memory, fid)
+    assert hist is not None and hist["versions"]
+    TypeAdapter(FactHistoryResponse).validate_python(hist, strict=True)
 
 
 def test_roundtrip_guard_has_teeth(memory: Memory, monkeypatch: pytest.MonkeyPatch) -> None:

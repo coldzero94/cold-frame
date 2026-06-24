@@ -13,6 +13,7 @@ export const router = createRouter({
     { path: '/inspector/:id', redirect: (to) => ({ path: `/fact/${to.params.id}` }) },
     { path: '/triage', name: 'triage', component: () => import('@/views/TriageView.vue') },
     { path: '/search', name: 'search', component: () => import('@/views/SearchView.vue') },
+    { path: '/about', name: 'about', component: () => import('@/views/AboutView.vue') },
     // catch-all: a stale/mistyped path (or a renamed deep-link) gets a real 404, never a blank pane.
     { path: '/:pathMatch(.*)*', name: 'notfound', component: () => import('@/views/NotFoundView.vue') },
   ],

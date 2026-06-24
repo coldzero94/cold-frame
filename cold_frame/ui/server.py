@@ -23,7 +23,7 @@ from contextlib import suppress
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import cast
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from cold_frame.api import Memory
 from cold_frame.branding import UI_HOST, UI_PORT, UI_PORTFILE
@@ -33,10 +33,13 @@ from cold_frame.observability import get_logger
 from cold_frame.read.strength import compute_strength
 from cold_frame.ui.contract import (
     FactDetailDict,
+    FactHistoryResponse,
     FieldNoteDict,
     MemoryFieldResponse,
     NoteBriefDict,
     NotesResponse,
+    SearchHitDict,
+    SearchResponse,
 )
 
 _log = get_logger(__name__)
@@ -142,6 +145,49 @@ def fact_payload(memory: Memory, fact_id: str) -> FactDetailDict | None:
     }
 
 
+def search_payload(memory: Memory, query: str, *, k: int = 20) -> SearchResponse:
+    """Ranked hits for a query, each carrying its retrieval signal breakdown (explainability)."""
+    result = memory.search(query, k=k)
+    hits: list[SearchHitDict] = []
+    for h in result.hits:
+        sig = h.signals
+        hits.append(
+            {
+                **_note_brief(memory, h.note),
+                "score": round(h.score, 4),
+                "signals": {
+                    "semantic": sig.semantic,
+                    "bm25": sig.bm25,
+                    "edge": sig.edge,
+                    "rrf": round(sig.rrf, 4),
+                    "rerank": sig.rerank,
+                },
+            }
+        )
+    return {"query": query, "hits": hits}
+
+
+def fact_history_payload(memory: Memory, fact_id: str) -> FactHistoryResponse | None:
+    """Every persisted version of a note (oldest→newest) — the rewindable belief trail."""
+    try:
+        versions = memory.fork_history(fact_id)
+    except NoteNotFound:
+        return None
+    return {
+        "versions": [
+            {
+                "id": v.id,
+                "content": v.content,
+                "status": v.status,
+                "version": v.version,
+                "valid_at": v.valid_at.isoformat() if v.valid_at else None,
+                "invalid_at": v.invalid_at.isoformat() if v.invalid_at else None,
+            }
+            for v in versions
+        ]
+    }
+
+
 # ── server + handler ─────────────────────────────────────────────────────────
 class _UIServer(ThreadingHTTPServer):
     daemon_threads = True
@@ -170,12 +216,20 @@ class _Handler(BaseHTTPRequestHandler):
         if not self._host_allowed():  # DNS-rebind guard
             self._json(403, {"error": "forbidden host"})
             return
-        path = urlparse(self.path).path
+        parsed = urlparse(self.path)
+        path = parsed.path
         memory = self._server().memory
         if path == "/api/notes":
             self._json(200, notes_payload(memory))
         elif path == "/api/memory-field":
             self._json(200, memory_field_payload(memory))
+        elif path == "/api/search":
+            q = (parse_qs(parsed.query).get("q") or [""])[0].strip()
+            self._json(200, search_payload(memory, q) if q else {"query": "", "hits": []})
+        elif path.startswith("/api/fact/") and path.endswith("/history"):
+            fid = path[len("/api/fact/") : -len("/history")]
+            hist = fact_history_payload(memory, fid)
+            self._json(200, hist) if hist is not None else self._json(404, {"error": "not_found"})
         elif path.startswith("/api/fact/"):
             data = fact_payload(memory, path[len("/api/fact/") :])
             if data is not None:

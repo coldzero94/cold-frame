@@ -85,6 +85,20 @@
       ],
       "type": "object"
     },
+    "FactHistoryResponse": {
+      "properties": {
+        "versions": {
+          "items": {
+            "$ref": "#/$defs/HistoryVersion"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "versions"
+      ],
+      "type": "object"
+    },
     "FieldNote": {
       "properties": {
         "id": {
@@ -129,6 +143,51 @@
         "access",
         "pinned",
         "ageDays"
+      ],
+      "type": "object"
+    },
+    "HistoryVersion": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "content": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/Status"
+        },
+        "version": {
+          "type": "integer"
+        },
+        "valid_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "invalid_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "content",
+        "status",
+        "version",
+        "valid_at",
+        "invalid_at"
       ],
       "type": "object"
     },
@@ -204,6 +263,118 @@
       "required": [
         "notes",
         "total"
+      ],
+      "type": "object"
+    },
+    "SearchHit": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "content": {
+          "type": "string"
+        },
+        "memory_type": {
+          "$ref": "#/$defs/MemoryType"
+        },
+        "status": {
+          "$ref": "#/$defs/Status"
+        },
+        "confidence": {
+          "type": "number"
+        },
+        "strength": {
+          "$ref": "#/$defs/Strength"
+        },
+        "score": {
+          "type": "number"
+        },
+        "signals": {
+          "$ref": "#/$defs/Signals"
+        }
+      },
+      "required": [
+        "id",
+        "content",
+        "memory_type",
+        "status",
+        "confidence",
+        "strength",
+        "score",
+        "signals"
+      ],
+      "type": "object"
+    },
+    "SearchResponse": {
+      "properties": {
+        "query": {
+          "type": "string"
+        },
+        "hits": {
+          "items": {
+            "$ref": "#/$defs/SearchHit"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "query",
+        "hits"
+      ],
+      "type": "object"
+    },
+    "Signals": {
+      "properties": {
+        "semantic": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "bm25": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "edge": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rrf": {
+          "type": "number"
+        },
+        "rerank": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "semantic",
+        "bm25",
+        "edge",
+        "rrf",
+        "rerank"
       ],
       "type": "object"
     },

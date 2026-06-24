@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { api, type Band, type FactDetail, type NoteBrief } from '@/api'
+import { api, type Band, type FactDetail, type HistoryVersion, type NoteBrief } from '@/api'
 import EmptyState from '@/components/EmptyState.vue'
 
 const route = useRoute()
 const notes = ref<NoteBrief[]>([])
 const total = ref(0)
 const detail = ref<FactDetail | null>(null)
+const history = ref<HistoryVersion[]>([])
 const loading = ref(true)
 const error = ref('')
 const detailError = ref('')
@@ -47,12 +48,14 @@ watch(
   () => route.params.id,
   async (id) => {
     detailError.value = ''
+    history.value = []
     if (!id) {
       detail.value = null
       return
     }
     try {
       detail.value = await api.fact(String(id))
+      history.value = (await api.factHistory(String(id))).versions
     } catch (e) {
       // surface it (mirrors the list path) — never swallow a 500/network error to a blank pane
       detail.value = null
@@ -146,6 +149,25 @@ watch(
             <span>{{ e.relation }}</span>
             <span class="text-dim font-mono">{{ e.dst.slice(0, 8) }}</span>
           </RouterLink>
+        </template>
+
+        <!-- belief trail (ux-design §4.2): the rewindable supersession history of this fact -->
+        <template v-if="history.length > 1">
+          <div class="text-[12px] tracking-wide text-dim mb-2 mt-6">BELIEF HISTORY</div>
+          <ol class="border-l border-line pl-4">
+            <li v-for="(v, i) in history" :key="v.id" class="relative mb-2.5 text-[13px]">
+              <span
+                class="absolute -left-[21px] top-1.5 w-2 h-2 rounded-full"
+                :class="v.status === 'active' ? 'bg-ember' : 'bg-dim'"
+              />
+              <span :class="v.status === 'active' ? 'text-fg' : 'text-dim line-through'">
+                {{ v.content }}
+              </span>
+              <span class="text-dim text-[11px] ml-2 font-mono">
+                v{{ v.version }}<template v-if="i < history.length - 1"> ⇒</template>
+              </span>
+            </li>
+          </ol>
         </template>
 
         <!-- cross-surface footer (ux-design §6.5): the same memory in the CLI — one product, 3 lenses -->
