@@ -13,7 +13,7 @@ them at codegen time via ``TypeAdapter(...).json_schema()``.
 
 from __future__ import annotations
 
-from typing import Any, TypedDict
+from typing import Any, TypedDict, get_args
 
 from pydantic import TypeAdapter
 
@@ -89,16 +89,15 @@ CONTRACT_TYPES = (
 )
 
 # String-literal domains hoisted into named JSON-Schema $defs → named TS unions (Band, …).
-_ENUM_BY_VALUES: dict[frozenset[str], str] = {
-    frozenset(("evergreen", "budding", "fading")): "Band",
-    frozenset(("semantic", "episodic", "procedural")): "MemoryType",
-    frozenset(("active", "archived", "deleted")): "Status",
+# Derived from the models.py Literals (single source) so a new member flows through automatically
+# instead of silently falling back to an un-hoisted inline union.
+_ENUMS: dict[str, tuple[str, ...]] = {
+    "Band": get_args(Band),
+    "MemoryType": get_args(MemoryTypeLiteral),
+    "Status": get_args(StatusLiteral),
 }
-_ENUM_DEFS = {
-    "Band": ["evergreen", "budding", "fading"],
-    "MemoryType": ["semantic", "episodic", "procedural"],
-    "Status": ["active", "archived", "deleted"],
-}
+_ENUM_BY_VALUES: dict[frozenset[str], str] = {frozenset(v): k for k, v in _ENUMS.items()}
+_ENUM_DEFS: dict[str, list[str]] = {k: list(v) for k, v in _ENUMS.items()}
 
 
 def _transform(node: object, refmap: dict[str, str], used: set[str]) -> object:

@@ -49,6 +49,46 @@ jobs:
         # No keys, no network: exclude slow + live markers.
         run: pytest -q -m "not slow and not live"
 
+  # ── API codegen freshness (Node-only; kept OUT of the core gate above) ───
+  # The UI JSON contract is single-sourced in cold_frame/ui/contract.py. The core gate's
+  # test_api_contract.py guards api.schema.json (no Node); this job regenerates BOTH the schema
+  # and api.generated.ts and fails on any diff — so a contributor can't ship a stale TS client.
+  codegen-drift:
+    name: api codegen is fresh
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install frontend deps
+        run: pnpm -C frontend install --frozen-lockfile
+
+      - name: Regenerate API types (schema + TS)
+        run: pnpm -C frontend run gen:types
+
+      - name: Fail on stale generated files
+        run: git diff --exit-code -- frontend/src/api.schema.json frontend/src/api.generated.ts
+
   # ── Publish gate (DEFERRED) ──────────────────────────────────────────────
   # Intentionally NO `twine upload` / `uv publish` job here.
   # Per CLAUDE.md §8 + D19: the dist name `cold-frame` (D19) vs abandon-the-name

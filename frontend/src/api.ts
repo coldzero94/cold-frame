@@ -4,19 +4,9 @@
 // the core test gate fails if the schema is stale, and CI re-runs the generator + git diff.
 import type { FactDetail, MemoryFieldResponse, NotesResponse } from './api.generated'
 
-export type {
-  Band,
-  Edge,
-  FactDetail,
-  FieldNote,
-  MemoryFieldResponse,
-  MemoryType,
-  NoteBrief,
-  NotesResponse,
-  Source,
-  Status,
-  Strength,
-} from './api.generated'
+// re-export every generated type (no hand-maintained list → a new contract type is exported
+// automatically; the only local export, `api`, can't collide with the generated interface names).
+export * from './api.generated'
 
 async function getJSON<T>(url: string): Promise<T> {
   const r = await fetch(url, { headers: { Accept: 'application/json' } })
