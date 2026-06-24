@@ -53,8 +53,16 @@ def test_memory_field_payload_shape(memory: Memory) -> None:
     n = payload["notes"][0]
     # the EXACT shape the p5 MemoryField sketch consumes (prototype/gen_sample.py)
     assert set(n) == {
-        "id", "content", "type", "s", "band", "atRisk",
-        "importance", "access", "pinned", "ageDays",
+        "id",
+        "content",
+        "type",
+        "s",
+        "band",
+        "atRisk",
+        "importance",
+        "access",
+        "pinned",
+        "ageDays",
     }
     assert n["id"] == fid and n["content"] == "I prefer dark roast coffee"
     assert n["type"] in {"semantic", "episodic", "procedural"}
@@ -133,9 +141,7 @@ def test_fact_payload_includes_provenance_and_unknown_is_none(memory: Memory) ->
 
 
 @pytest.fixture
-def running_ui(
-    memory: Memory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> Iterator[int]:
+def running_ui(memory: Memory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[int]:
     # Deterministic: pin _DIST to a bundle-less dir so these tests exercise the inline fallback
     # regardless of whether `pnpm build` has populated the real _dist. (SPA mode has its own test.)
     monkeypatch.setattr(ui, "_DIST", tmp_path / "no_bundle")
@@ -338,3 +344,77 @@ def test_index_html_escapes_note_content_xss() -> None:
     assert "esc(n.content)" in html  # user content is HTML-escaped before injection
     assert "+n.content+" not in html  # the raw-injection footgun is gone
     assert "const esc=" in html  # the escaper is defined
+
+
+# ── mutating-request security (security-spec §localhost: Host + Origin/Referer + CSRF token) ──
+def _post(
+    port: int,
+    path: str,
+    *,
+    body: bytes = b"{}",
+    origin: str | None = None,
+    token: str | None = None,
+) -> http.client.HTTPResponse:
+    headers = {"Content-Type": "application/json"}
+    if origin is not None:
+        headers["Origin"] = origin
+    if token is not None:
+        headers["X-CSRF-Token"] = token
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}{path}", data=body, headers=headers, method="POST"
+    )
+    return urllib.request.urlopen(req)
+
+
+def test_post_without_csrf_token_is_rejected(memory: Memory) -> None:
+    fid = memory.add("a fact").added[0].id
+    server, port = _run_server(memory)
+    try:
+        with pytest.raises(urllib.error.HTTPError) as ei:
+            _post(port, f"/api/fact/{fid}/pin", origin=f"http://127.0.0.1:{port}")  # no token
+        assert ei.value.code == 403
+        assert memory.get(fid).pinned is False  # the write did NOT happen
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_post_from_foreign_origin_is_rejected(memory: Memory) -> None:
+    fid = memory.add("a fact").added[0].id
+    server, port = _run_server(memory)
+    try:
+        # a drive-by site: correct token guess is impossible, but even WITH the token a foreign
+        # Origin must be refused (the token can't leak cross-origin, but defence-in-depth).
+        with pytest.raises(urllib.error.HTTPError) as ei:
+            _post(
+                port, f"/api/fact/{fid}/pin", origin="https://evil.example", token=server.csrf_token
+            )
+        assert ei.value.code == 403
+        assert memory.get(fid).pinned is False
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_post_with_same_origin_and_token_succeeds(memory: Memory) -> None:
+    fid = memory.add("a fact").added[0].id
+    server, port = _run_server(memory)
+    try:
+        resp = _post(
+            port, f"/api/fact/{fid}/pin", origin=f"http://127.0.0.1:{port}", token=server.csrf_token
+        )
+        assert resp.status == 200
+        assert memory.get(fid).pinned is True  # the write applied
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_csrf_token_is_injected_into_the_page(memory: Memory) -> None:
+    server, port = _run_server(memory)
+    try:
+        html = urllib.request.urlopen(f"http://127.0.0.1:{port}/").read().decode()
+        assert 'name="csrf-token"' in html and server.csrf_token in html
+    finally:
+        server.shutdown()
+        server.server_close()

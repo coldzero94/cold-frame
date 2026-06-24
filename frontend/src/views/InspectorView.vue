@@ -1,10 +1,14 @@
 <script setup lang="ts">
 import { onMounted, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { api, type Band, type FactDetail, type HistoryVersion, type NoteBrief } from '@/api'
 import EmptyState from '@/components/EmptyState.vue'
 
 const route = useRoute()
+const router = useRouter()
+const busy = ref(false)
+const correcting = ref(false)
+const correctText = ref('')
 const notes = ref<NoteBrief[]>([])
 const total = ref(0)
 const detail = ref<FactDetail | null>(null)
@@ -64,6 +68,48 @@ watch(
   },
   { immediate: true },
 )
+
+async function refresh(): Promise<void> {
+  const resp = await api.notes()
+  notes.value = resp.notes
+  total.value = resp.total
+  const id = route.params.id
+  if (id) {
+    detail.value = await api.fact(String(id))
+    history.value = (await api.factHistory(String(id))).versions
+  }
+}
+
+// run a mutation, then refresh the list + detail so the view reflects the new truth
+async function act(fn: () => Promise<unknown>): Promise<void> {
+  busy.value = true
+  detailError.value = ''
+  try {
+    await fn()
+    await refresh()
+  } catch (e) {
+    detailError.value = String(e)
+  } finally {
+    busy.value = false
+  }
+}
+
+async function submitCorrect(): Promise<void> {
+  const text = correctText.value.trim()
+  if (!text) return
+  busy.value = true
+  detailError.value = ''
+  try {
+    const created = await api.correct(String(route.params.id), text)
+    correcting.value = false
+    correctText.value = ''
+    await router.push(`/fact/${created.id}`) // follow the supersede to the new fact
+  } catch (e) {
+    detailError.value = String(e)
+  } finally {
+    busy.value = false
+  }
+}
 </script>
 
 <template>
@@ -115,7 +161,7 @@ watch(
       <RouterLink to="/inspector" class="sm:hidden inline-block mb-4 text-dim text-[13px] no-underline">
         ← all memories
       </RouterLink>
-      <div v-if="detailError" class="text-ember h-full flex items-center justify-center">
+      <div v-if="!detail && detailError" class="text-ember h-full flex items-center justify-center">
         couldn't load this memory — {{ detailError }}
       </div>
       <div v-else-if="!detail" class="text-dim h-full flex items-center justify-center">
@@ -123,11 +169,46 @@ watch(
       </div>
       <div v-else class="max-w-[640px]">
         <div class="text-[20px] text-fg leading-snug mb-3">{{ detail.content }}</div>
-        <div class="text-[12px] text-dim mb-6">
+        <div class="text-[12px] text-dim mb-5">
           {{ detail.memory_type }} · {{ detail.status }} · S={{ detail.strength.value }} ({{ detail.strength.band }})
           · confidence {{ detail.confidence }}
           <span v-if="detail.strength.at_risk" class="text-ember ml-1">· ○ at risk</span>
         </div>
+
+        <!-- write actions (CSRF-guarded). Forget archives (revivable); Correct supersedes. -->
+        <div class="flex flex-wrap gap-2 mb-2">
+          <button type="button" class="act" :disabled="busy" @click="act(() => api.pin(detail!.id))">
+            ⬡ Pin
+          </button>
+          <button
+            v-if="detail.status === 'active'"
+            type="button"
+            class="act"
+            :disabled="busy"
+            @click="act(() => api.forget(detail!.id))"
+          >
+            Forget
+          </button>
+          <button v-else type="button" class="act" :disabled="busy" @click="act(() => api.revive(detail!.id))">
+            Revive
+          </button>
+          <button type="button" class="act" :disabled="busy" @click="correcting = !correcting">
+            Correct…
+          </button>
+        </div>
+        <div v-if="correcting" class="flex gap-2 mb-2">
+          <input
+            v-model="correctText"
+            placeholder="the corrected fact…"
+            class="flex-1 bg-panel border border-line rounded-[8px] px-3 py-1.5 text-fg text-[13px] outline-none focus:border-dim"
+            @keyup.enter="submitCorrect"
+          />
+          <button type="button" class="act" :disabled="busy || !correctText.trim()" @click="submitCorrect">
+            Save
+          </button>
+        </div>
+        <p v-if="detailError" class="text-ember text-[12px] mb-4" role="alert">{{ detailError }}</p>
+        <div class="mb-6" />
 
         <div class="text-[12px] tracking-wide text-dim mb-2">PROVENANCE</div>
         <div v-for="(s, i) in detail.sources" :key="i" class="text-[13px] text-fg/90 mb-1">
@@ -178,3 +259,24 @@ watch(
     </div>
   </div>
 </template>
+
+<style scoped>
+.act {
+  font-size: 12px;
+  color: #8a8a93;
+  padding: 5px 11px;
+  border: 1px solid #1c1c22;
+  border-radius: 8px;
+  background: #101015;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+.act:hover:not(:disabled) {
+  color: #e7e7ea;
+  border-color: #8a8a93;
+}
+.act:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+</style>

@@ -3,20 +3,22 @@
 Dep-free + core-only (no Node, no web framework at runtime, I9): serves the CI-built SPA bundle
 from ``_dist/`` (history-fallback for client routes) and degrades to a dependency-free inline
 inspector when no bundle is present (dev without ``pnpm build``). The API exposes the "what I know
-about you now" list + growth bands, the per-note MemoryField viz feed, and fact detail
-(provenance + edges). Read-only for P3 — mutations (pin/forget/edit) are P4 Triage.
+about you now" list, the per-note MemoryField viz feed, fact detail (provenance + edges), search,
+belief history, and health (GET); plus mutating routes (pin/forget/revive/correct/create/triage).
 
-Security contract (security-spec §3): binds 127.0.0.1 only; a Host-header allowlist defends
-DNS-rebinding; a strict same-origin CSP (``default-src 'self'``, no remote/inline script) ships
-with every response (the inline dev fallback uses a scoped relaxed CSP); the port auto-falls-back
-to the next free one (recorded in ``~/.cold-frame/ui.port`` so deep-links never go stale). CSRF
-token + Origin allowlist land with the P4 mutating routes.
+Security contract (security-spec §3 + §localhost): binds 127.0.0.1 only; a Host-header allowlist
+defends DNS-rebinding; a strict same-origin CSP (``default-src 'self'``, no remote/inline script)
+ships with every response (the inline dev fallback uses a scoped relaxed CSP); the port auto-falls
+-back to the next free one (recorded in ``~/.cold-frame/ui.port``). Every mutating request requires
+BOTH a same-origin ``Origin``/``Referer`` and the per-process CSRF token (injected into the page,
+sent back as ``X-CSRF-Token``) — so a drive-by site can neither forge the origin nor read the token.
 """
 
 from __future__ import annotations
 
 import json
 import mimetypes
+import secrets
 import sys
 from collections.abc import Callable
 from contextlib import suppress
@@ -195,6 +197,14 @@ class _UIServer(ThreadingHTTPServer):
     def __init__(self, addr: tuple[str, int], memory: Memory) -> None:
         super().__init__(addr, _Handler)
         self.memory = memory
+        # per-process CSRF token (security-spec §localhost): injected into the served page, required
+        # on every mutating request alongside an Origin/Referer same-origin check. Unauthenticated,
+        # not defenceless — a drive-by site can neither read this token nor forge Origin.
+        self.csrf_token = secrets.token_urlsafe(32)
+
+    def allowed_origins(self) -> frozenset[str]:
+        port = self.server_address[1]
+        return frozenset(f"http://{h}:{port}" for h in _ALLOWED_HOSTS)
 
     def handle_error(self, request: object, client_address: object) -> None:
         # Override the stdlib default (raw traceback to stderr) so an unexpected handler error logs
@@ -243,11 +253,121 @@ class _Handler(BaseHTTPRequestHandler):
         else:  # the SPA (built bundle) or the inline inspector fallback
             self._serve_app(path)
 
+    # ── mutating requests (security-spec §localhost: Host + Origin/Referer + CSRF token) ──
+    def _csrf_ok(self) -> bool:
+        srv = self._server()
+        allowed = srv.allowed_origins()
+        origin = self.headers.get("Origin")
+        if origin is not None:  # browsers send Origin on cross-origin POST → must be our own
+            if origin not in allowed:
+                return False
+        else:  # no Origin header → require a same-origin Referer; fail CLOSED if neither is present
+            ref = self.headers.get("Referer", "")
+            if not any(ref == o or ref.startswith(o + "/") for o in allowed):
+                return False
+        token = self.headers.get("X-CSRF-Token", "")
+        return bool(token) and secrets.compare_digest(token, srv.csrf_token)
+
+    def _read_json_body(self) -> dict[str, object]:
+        n = int(self.headers.get("Content-Length") or 0)
+        if n <= 0:
+            return {}
+        if n > 1_000_000:  # bound the body — a local UI never posts a megabyte
+            raise ValueError("body too large")
+        data = json.loads(self.rfile.read(n))
+        if not isinstance(data, dict):
+            raise ValueError("expected a JSON object")
+        return data
+
+    def _note_result(self, fn: Callable[[], Note]) -> None:
+        try:
+            note = fn()
+        except NoteNotFound:
+            self._json(404, {"error": "not_found"})
+        except ValueError:
+            self._json(400, {"error": "invalid"})
+        else:
+            self._json(200, _note_brief(self._server().memory, note))
+
+    def do_POST(self) -> None:  # stdlib hook name
+        if not self._host_allowed():  # DNS-rebind guard (same as GET)
+            self._json(403, {"error": "forbidden host"})
+            return
+        if not self._csrf_ok():  # Origin/Referer + per-process token — blocks drive-by writes
+            self._json(403, {"error": "csrf_failed"})
+            return
+        path = urlparse(self.path).path
+        memory = self._server().memory
+        try:
+            body = self._read_json_body()
+        except ValueError:
+            self._json(400, {"error": "bad_request"})
+            return
+        if path.startswith("/api/fact/") and "/" in path[len("/api/fact/") :]:
+            fid, _, action = path[len("/api/fact/") :].partition("/")
+            if action == "pin":
+                self._note_result(lambda: memory.pin(fid))
+            elif action == "forget":
+                self._note_result(lambda: memory.forget(fid))
+            elif action == "revive":
+                self._note_result(lambda: memory.revive(fid))
+            elif action == "correct":
+                text = str(body.get("text", "")).strip()
+                if not text:
+                    self._json(400, {"error": "text_required"})
+                else:
+                    self._note_result(lambda: memory.correct_memory(fid, text).new)
+            else:
+                self._json(404, {"error": "not_found"})
+        elif path == "/api/fact":  # create a new fact (same WriteCore as add, I15)
+            text = str(body.get("text", "")).strip()
+            mt = body.get("memory_type", "semantic")
+            if not text:
+                self._json(400, {"error": "text_required"})
+            elif mt not in ("semantic", "episodic", "procedural"):
+                self._json(400, {"error": "bad_memory_type"})
+            else:
+                res = memory.create_fact(text, memory_type=mt)
+                added = res.added[0] if res.added else None
+                self._json(
+                    200,
+                    {
+                        "added": _note_brief(memory, added) if added else None,
+                        "deduped": res.deduped,
+                    },
+                )
+        elif path.startswith("/api/triage/") and path.endswith("/resolve"):
+            tid = path[len("/api/triage/") : -len("/resolve")]
+            act = body.get("action")
+            target = body.get("target")
+            if act not in ("pin", "let_go", "merge", "keep", "supersede"):
+                self._json(400, {"error": "bad_action"})
+            else:
+                try:
+                    memory.resolve_triage(
+                        tid,
+                        act,
+                        target=str(target) if target is not None else None,
+                    )
+                except NoteNotFound:
+                    self._json(404, {"error": "not_found"})
+                except ValueError:
+                    self._json(400, {"error": "invalid"})
+                else:
+                    self._json(200, {"ok": True})
+        else:
+            self._json(404, {"error": "not_found"})
+
     def _serve_app(self, path: str) -> None:
         if _spa_built():
             self._serve_static(path)
         else:  # no bundle (dev without `pnpm build`) → the degraded inline inspector
-            self._html(_INDEX_HTML, csp=_FALLBACK_CSP)
+            self._html(self._inject_csrf(_INDEX_HTML), csp=_FALLBACK_CSP)
+
+    def _inject_csrf(self, html: str) -> str:
+        # surface the per-process CSRF token to the SPA via a meta tag (security-spec §localhost).
+        tag = f'<meta name="csrf-token" content="{self._server().csrf_token}">'
+        return html.replace("<head>", "<head>" + tag, 1) if "<head>" in html else tag + html
 
     def _serve_static(self, path: str) -> None:
         rel = path.lstrip("/") or "index.html"
@@ -267,6 +387,8 @@ class _Handler(BaseHTTPRequestHandler):
             _log.warning("ui_static_read_failed", extra={"errno": exc.errno})  # id/errno only (I16)
             self._json(500, {"error": "asset_unavailable"})
             return
+        if target.name == "index.html":  # inject the CSRF token into the SPA entry document
+            body = self._inject_csrf(body.decode("utf-8")).encode("utf-8")
         self._send_bytes(200, body, ctype, _STRICT_CSP)
 
     def _json(self, code: int, obj: object) -> None:
