@@ -418,3 +418,45 @@ def test_csrf_token_is_injected_into_the_page(memory: Memory) -> None:
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_triage_payload_lists_held_items(memory: Memory) -> None:
+    fid = memory.add("a shaky low-confidence fact").added[0].id
+    memory._store.set_held_for_human(fid, held=True, quarantined=True, reason="low_confidence")
+    payload = ui.triage_payload(memory)
+    item = next(i for i in payload["items"] if i["id"] == fid)
+    assert item["reason"] == "low_confidence" and "impact" in item
+
+
+def test_post_create_fact_succeeds(memory: Memory) -> None:
+    server, port = _run_server(memory)
+    try:
+        body = json.dumps({"text": "a brand new fact"}).encode()
+        resp = _post(
+            port, "/api/fact", body=body, origin=f"http://127.0.0.1:{port}", token=server.csrf_token
+        )
+        assert resp.status == 200
+        assert any(n.content == "a brand new fact" for n in memory.list_active())
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_post_resolve_triage_clears_the_hold(memory: Memory) -> None:
+    fid = memory.add("held fact").added[0].id
+    memory._store.set_held_for_human(fid, held=True, quarantined=True, reason="low_confidence")
+    server, port = _run_server(memory)
+    try:
+        body = json.dumps({"action": "keep"}).encode()
+        resp = _post(
+            port,
+            f"/api/triage/{fid}/resolve",
+            body=body,
+            origin=f"http://127.0.0.1:{port}",
+            token=server.csrf_token,
+        )
+        assert resp.status == 200
+        assert not ui.triage_payload(memory)["items"]  # the hold is cleared
+    finally:
+        server.shutdown()
+        server.server_close()

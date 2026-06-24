@@ -160,3 +160,25 @@ export interface SearchResponse {
   query: string
   hits: SearchHit[]
 }
+/**
+ * This interface was referenced by `ColdframeApiContract`'s JSON-Schema
+ * via the `definition` "TriageItem".
+ */
+export interface TriageItem {
+  id: string
+  content: string
+  memory_type: MemoryType
+  status: Status
+  confidence: number
+  strength: Strength
+  reason: string
+  candidates: string[]
+  impact: number
+}
+/**
+ * This interface was referenced by `ColdframeApiContract`'s JSON-Schema
+ * via the `definition` "TriageResponse".
+ */
+export interface TriageResponse {
+  items: TriageItem[]
+}

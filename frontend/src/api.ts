@@ -10,6 +10,7 @@ import type {
   NoteBrief,
   NotesResponse,
   SearchResponse,
+  TriageResponse,
 } from './api.generated'
 
 // re-export every generated type (no hand-maintained list → a new contract type is exported
@@ -45,6 +46,7 @@ export const api = {
   fact: (id: string) => getJSON<FactDetail>(`/api/fact/${enc(id)}`),
   factHistory: (id: string) => getJSON<FactHistoryResponse>(`/api/fact/${enc(id)}/history`),
   search: (q: string) => getJSON<SearchResponse>(`/api/search?q=${enc(q)}`),
+  triage: () => getJSON<TriageResponse>('/api/triage'),
   health: () => getJSON<Record<string, unknown>>('/api/health'),
   // mutations (CSRF-guarded)
   pin: (id: string) => postJSON<NoteBrief>(`/api/fact/${enc(id)}/pin`),

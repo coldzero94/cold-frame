@@ -9,6 +9,9 @@ const router = useRouter()
 const busy = ref(false)
 const correcting = ref(false)
 const correctText = ref('')
+const adding = ref(false)
+const addText = ref('')
+const addError = ref('')
 const notes = ref<NoteBrief[]>([])
 const total = ref(0)
 const detail = ref<FactDetail | null>(null)
@@ -94,6 +97,23 @@ async function act(fn: () => Promise<unknown>): Promise<void> {
   }
 }
 
+async function submitAdd(): Promise<void> {
+  const text = addText.value.trim()
+  if (!text) return
+  busy.value = true
+  addError.value = ''
+  try {
+    await api.create(text)
+    addText.value = ''
+    adding.value = false
+    await refresh()
+  } catch (e) {
+    addError.value = String(e)
+  } finally {
+    busy.value = false
+  }
+}
+
 async function submitCorrect(): Promise<void> {
   const text = correctText.value.trim()
   if (!text) return
@@ -127,9 +147,27 @@ async function submitCorrect(): Promise<void> {
     >
       <div class="flex items-baseline justify-between mb-3 px-1">
         <span class="text-[12px] tracking-wide text-dim">WHAT I KNOW ABOUT YOU NOW</span>
-        <span v-if="!loading && !error && total" class="text-[11px] text-dim font-mono">
-          {{ notes.length < total ? `${notes.length} of ${total}` : total }}
-        </span>
+        <button
+          type="button"
+          class="text-[12px] text-dim hover:text-fg bg-transparent border-0 cursor-pointer"
+          :title="adding ? 'Cancel' : 'Add a memory'"
+          @click="adding = !adding"
+        >
+          {{ adding ? '×' : '+ add' }}
+          <span v-if="!adding && total" class="text-[11px] font-mono ml-1">
+            {{ notes.length < total ? `${notes.length} of ${total}` : total }}
+          </span>
+        </button>
+      </div>
+      <div v-if="adding" class="mb-3 px-1">
+        <input
+          v-model="addText"
+          placeholder="remember that…"
+          aria-label="Add a memory"
+          class="w-full bg-panel border border-line rounded-[8px] px-3 py-2 text-fg text-[13px] outline-none focus:border-dim"
+          @keyup.enter="submitAdd"
+        />
+        <p v-if="addError" class="text-ember text-[11px] mt-1">{{ addError }}</p>
       </div>
       <p v-if="loading" class="text-dim px-1">loading…</p>
       <p v-else-if="error" class="text-ember px-1">{{ error }}</p>

@@ -434,6 +434,66 @@
         "at_risk"
       ],
       "type": "object"
+    },
+    "TriageItem": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "content": {
+          "type": "string"
+        },
+        "memory_type": {
+          "$ref": "#/$defs/MemoryType"
+        },
+        "status": {
+          "$ref": "#/$defs/Status"
+        },
+        "confidence": {
+          "type": "number"
+        },
+        "strength": {
+          "$ref": "#/$defs/Strength"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "candidates": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "impact": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "content",
+        "memory_type",
+        "status",
+        "confidence",
+        "strength",
+        "reason",
+        "candidates",
+        "impact"
+      ],
+      "type": "object"
+    },
+    "TriageResponse": {
+      "properties": {
+        "items": {
+          "items": {
+            "$ref": "#/$defs/TriageItem"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "items"
+      ],
+      "type": "object"
     }
   }
 }

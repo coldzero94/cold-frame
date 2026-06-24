@@ -68,6 +68,13 @@ class SearchHitDict(NoteBriefDict):
     signals: SignalsDict
 
 
+class TriageItemDict(NoteBriefDict):
+    # a note held for human review (low-confidence / true-conflict / ambiguous-merge).
+    reason: str
+    candidates: list[str]
+    impact: float
+
+
 class HistoryVersionDict(TypedDict):
     # one persisted version of a note, oldest→newest — the rewindable belief trail (fork-history).
     id: str
@@ -113,6 +120,10 @@ class FactHistoryResponse(TypedDict):
     versions: list[HistoryVersionDict]
 
 
+class TriageResponse(TypedDict):
+    items: list[TriageItemDict]
+
+
 # The endpoints whose response shapes are generated (fact returns FactDetailDict | null).
 CONTRACT_TYPES = (
     StrengthDict,
@@ -123,11 +134,13 @@ CONTRACT_TYPES = (
     FieldNoteDict,
     SignalsDict,
     SearchHitDict,
+    TriageItemDict,
     HistoryVersionDict,
     NotesResponse,
     MemoryFieldResponse,
     SearchResponse,
     FactHistoryResponse,
+    TriageResponse,
 )
 
 # String-literal domains hoisted into named JSON-Schema $defs → named TS unions (Band, …).

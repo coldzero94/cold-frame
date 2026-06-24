@@ -42,6 +42,8 @@ from cold_frame.ui.contract import (
     NotesResponse,
     SearchHitDict,
     SearchResponse,
+    TriageItemDict,
+    TriageResponse,
 )
 
 _log = get_logger(__name__)
@@ -169,6 +171,21 @@ def search_payload(memory: Memory, query: str, *, k: int = 20) -> SearchResponse
     return {"query": query, "hits": hits}
 
 
+def triage_payload(memory: Memory) -> TriageResponse:
+    """The human-resolution queue: notes held for review (low-confidence / conflict / merge)."""
+    items: list[TriageItemDict] = []
+    for it in memory.triage_queue():
+        items.append(
+            {
+                **_note_brief(memory, it.note),
+                "reason": it.reason,
+                "candidates": list(it.candidates),
+                "impact": round(it.impact, 4),
+            }
+        )
+    return {"items": items}
+
+
 def fact_history_payload(memory: Memory, fact_id: str) -> FactHistoryResponse | None:
     """Every persisted version of a note (oldest→newest) — the rewindable belief trail."""
     try:
@@ -246,6 +263,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json(200, data)
             else:
                 self._json(404, {"error": "not_found"})
+        elif path == "/api/triage":
+            self._json(200, triage_payload(memory))
         elif path == "/api/health":
             self._json(200, dict(memory.health()))
         elif path.startswith("/api/"):
