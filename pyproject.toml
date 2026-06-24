@@ -29,6 +29,12 @@ cold-frame = "cold_frame.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["cold_frame"]
+# Ship the CI-built SPA bundle (cold_frame/ui/_dist/*) even though it is git-ignored:
+# ``artifacts`` un-ignores these build outputs for packaging without the double-add that
+# force-include hits on the tracked .gitkeep. No matches (dev, pre-build) → nothing added,
+# build never breaks; when the real bundle is absent the server degrades to the inline
+# inspector. Release CI runs `pnpm build` first, then asserts _dist/index.html is real.
+artifacts = ["cold_frame/ui/_dist/**"]
 
 # ── Code style & type checking (PEP8 + full type hints) ──
 [tool.ruff]

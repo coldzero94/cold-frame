@@ -1,18 +1,25 @@
-"""Local web UI — a read-only localhost inspector (SPEC §9 / security-spec §3).
+"""Local web UI server — stdlib ``http.server``, serving the built Vue SPA + a read-only JSON API.
 
-Dep-free stdlib ``http.server`` (no Node, no extra needed): the "what I know about you
-now" list with VISIBLE decay (growth bands) + a fact-detail view (provenance + edges).
-Read-only for P3 — mutations (pin/forget/edit) are P4 Triage. Security contract: binds
-127.0.0.1 only, a Host-header allowlist defends DNS-rebinding, and the port auto-falls-
-back to the next free one (recorded in ``~/.cold-frame/ui.port`` so deep-links never go
-stale). No CSRF token needed while there are no mutating endpoints.
+Dep-free + core-only (no Node, no web framework at runtime, I9): serves the CI-built SPA bundle
+from ``_dist/`` (history-fallback for client routes) and degrades to a dependency-free inline
+inspector when no bundle is present (dev without ``pnpm build``). The API exposes the "what I know
+about you now" list + growth bands, the per-note MemoryField viz feed, and fact detail
+(provenance + edges). Read-only for P3 — mutations (pin/forget/edit) are P4 Triage.
+
+Security contract (security-spec §3): binds 127.0.0.1 only; a Host-header allowlist defends
+DNS-rebinding; a strict same-origin CSP (``default-src 'self'``, no remote/inline script) ships
+with every response (the inline dev fallback uses a scoped relaxed CSP); the port auto-falls-back
+to the next free one (recorded in ``~/.cold-frame/ui.port`` so deep-links never go stale). CSRF
+token + Origin allowlist land with the P4 mutating routes.
 """
 
 from __future__ import annotations
 
 import json
+import mimetypes
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any, cast
 from urllib.parse import urlparse
 
@@ -24,6 +31,28 @@ from cold_frame.read.strength import compute_strength
 
 _ALLOWED_HOSTS = frozenset({"localhost", "127.0.0.1"})
 _BAND_GLYPH = {"evergreen": "🌳", "budding": "🌿", "fading": "🌱"}
+
+# The CI-built SPA bundle (Vite output, shipped in the wheel via [tool.hatch ... artifacts]).
+_DIST = Path(__file__).parent / "_dist"
+
+# security-spec §3: every asset is same-origin, so a strict CSP holds for the shipped SPA —
+# no remote script/style, no inline (the drive-by write-API protection, H8). connect-src 'self'
+# keeps the JSON API same-origin; frame-ancestors/base-uri 'none' block clickjacking/base-tag.
+_STRICT_CSP = (
+    "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
+    "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'"
+)
+# The inline dev inspector (served ONLY when no bundle is built) needs its one inline script +
+# style, so it relaxes script/style to 'unsafe-inline'. Scoped to the degraded no-build path.
+_FALLBACK_CSP = (
+    "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'"
+)
+
+
+def _spa_built() -> bool:
+    """True iff a real Vite bundle (not just the .gitkeep placeholder) is present."""
+    return (_DIST / "index.html").is_file()
 
 
 # ── payload builders (pure; testable without HTTP) ───────────────────────────
@@ -42,6 +71,32 @@ def _note_brief(memory: Memory, note: Note) -> dict[str, Any]:
 def notes_payload(memory: Memory) -> dict[str, Any]:
     notes = memory.list_active(limit=200)
     return {"notes": [_note_brief(memory, n) for n in notes]}
+
+
+def memory_field_payload(memory: Memory) -> dict[str, Any]:
+    """The compact per-note shape the p5.js MemoryField hero viz consumes (matches
+    ``prototype/gen_sample.py``): position is derived client-side from ``id`` (spatial-memory
+    law), heat from ``s``/``band``, flicker from ``atRisk``, the glass frame from ``pinned``."""
+    now = memory._clock.now()
+    out: list[dict[str, Any]] = []
+    for n in memory.list_active(limit=200):
+        s = compute_strength(n, now)
+        last = n.last_accessed or n.created_at
+        out.append(
+            {
+                "id": n.id,
+                "content": n.content,
+                "type": n.memory_type,
+                "s": round(s.value, 4),
+                "band": s.band,
+                "atRisk": s.at_risk,
+                "importance": n.importance,
+                "access": n.access_count,
+                "pinned": n.pinned,
+                "ageDays": max(0, (now - last).days),
+            }
+        )
+    return {"notes": out}
 
 
 def fact_payload(memory: Memory, fact_id: str) -> dict[str, Any] | None:
@@ -86,31 +141,53 @@ class _Handler(BaseHTTPRequestHandler):
             return
         path = urlparse(self.path).path
         memory = self._server().memory
-        if path in ("/", "/index.html"):
-            self._html(_INDEX_HTML)
-        elif path == "/api/notes":
+        if path == "/api/notes":
             self._json(200, notes_payload(memory))
+        elif path == "/api/memory-field":
+            self._json(200, memory_field_payload(memory))
         elif path.startswith("/api/fact/"):
             data = fact_payload(memory, path[len("/api/fact/") :])
             self._json(200, data) if data is not None else self._json(404, {"error": "not_found"})
         elif path == "/api/health":
             self._json(200, dict(memory.health()))
-        else:
+        elif path.startswith("/api/"):
             self._json(404, {"error": "not_found"})
+        else:  # the SPA (built bundle) or the inline inspector fallback
+            self._serve_app(path)
+
+    def _serve_app(self, path: str) -> None:
+        if _spa_built():
+            self._serve_static(path)
+        else:  # no bundle (dev without `pnpm build`) → the degraded inline inspector
+            self._html(_INDEX_HTML, csp=_FALLBACK_CSP)
+
+    def _serve_static(self, path: str) -> None:
+        rel = path.lstrip("/") or "index.html"
+        root = _DIST.resolve()
+        target = (root / rel).resolve()
+        if not (target == root or target.is_relative_to(root)):  # path-traversal guard
+            self._json(403, {"error": "forbidden"})
+            return
+        if not target.is_file():  # SPA history fallback: client routes resolve to index.html
+            target = root / "index.html"
+        ctype = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+        if ctype.startswith("text/") or ctype in ("application/javascript", "application/json"):
+            ctype += "; charset=utf-8"
+        self._send_bytes(200, target.read_bytes(), ctype, _STRICT_CSP)
 
     def _json(self, code: int, obj: dict[str, Any]) -> None:
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        self._send_bytes(code, body, "application/json; charset=utf-8", _STRICT_CSP)
 
-    def _html(self, html: str) -> None:
-        body = html.encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
+    def _html(self, html: str, *, csp: str = _STRICT_CSP) -> None:
+        self._send_bytes(200, html.encode("utf-8"), "text/html; charset=utf-8", csp)
+
+    def _send_bytes(self, code: int, body: bytes, ctype: str, csp: str) -> None:
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Content-Security-Policy", csp)
+        self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.wfile.write(body)
 

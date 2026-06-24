@@ -151,6 +151,13 @@ uv run mypy cold_frame
 # smoke the product (offline)
 uv run cold-frame add "I prefer dark roast" && uv run cold-frame search "coffee"
 uv run cold-frame doctor               # install/DB/embedder/MCP + invariant checks
+
+# web UI (Vue SPA — source in frontend/, D20). Node/pnpm are MAINTAINER-only release tools,
+# never a pip/uv dep: the built bundle ships in the wheel (cold_frame/ui/_dist via hatch
+# artifacts) so users need no Node. Server (stdlib) degrades to an inline inspector if unbuilt.
+pnpm -C frontend install                # once
+pnpm -C frontend run build              # → cold_frame/ui/_dist (then served by `cold-frame ui`)
+pnpm -C frontend run typecheck          # vue-tsc; uv run python scripts/check_ui_bundle.py before release
 ```
 
 Run `ruff` + `mypy` + the core `pytest` clean before considering any unit of work complete.

@@ -13,4 +13,9 @@ build/
 .DS_Store
 CLAUDE.local.md
 node_modules/
-cold_frame/ui/_dist/
+# p5 is vendored into public/ from node_modules at build time (scripts/vendor-p5.mjs) — not committed.
+frontend/public/p5.min.js
+# built SPA bundle (CI-built, force-included into the wheel) — never commit the assets,
+# but keep the dir present via .gitkeep so the wheel build never breaks in dev.
+cold_frame/ui/_dist/*
+!cold_frame/ui/_dist/.gitkeep
