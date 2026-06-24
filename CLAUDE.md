@@ -111,6 +111,7 @@ caps: `semantic=2000, episodic=500, procedural=100` (per scope) ·
 - **No hardcoded vector dim** — from `Embedder.meta.dim`, written at migrate time (I8).
 - **No reposition on UI transitions** — opacity/size only (spatial memory). Toasts only when a belief *changes*.
 - **No OAuth/server for local integration** — local MCP is stdio, OAuth-free (D11).
+- **No hand-maintained / hand-edited API types** (D20). The JSON wire contract is single-sourced in `cold_frame/ui/contract.py` (TypedDicts); `frontend/src/api.schema.json` + `api.generated.ts` are GENERATED — never edit them or re-declare the shapes in TS. After a contract change run `pnpm -C frontend run gen:types` and commit both artifacts. The drift proof-chain is mandatory and must not be weakened: mypy (builder static type) · `test_ui_contract_roundtrip.py` (runtime JSON validates against the contract, strict) · `test_api_contract.py` (schema == contract; every Literal hoisted) · CI **`codegen-drift`** git-diff (authoritative TS guard — `vue-tsc` is consumption-gated, do NOT drop the job assuming it covers unconsumed fields).
 
 ---
 
