@@ -31,6 +31,13 @@ const counts = computed(() => {
   return c
 })
 
+const fieldLabel = computed(() => {
+  if (loading.value) return 'Memory field, loading'
+  if (!notes.value.length) return 'Memory field, empty'
+  const c = counts.value
+  return `Memory field: ${c.evergreen} evergreen, ${c.budding} budding, ${c.fading} fading, ${c.pinned} sheltered, ${c.atRisk} at-risk. Full detail in the Inspector.`
+})
+
 interface Ember { d: FieldNote; x: number; y: number; phase: number; nseed: number }
 type Rgb = { r: number; g: number; b: number }
 
@@ -258,7 +265,9 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="relative h-full w-full overflow-hidden bg-ink">
-    <div ref="host" class="absolute inset-0" />
+    <!-- the canvas is an ambient view; its per-note data is fully available in the Inspector.
+         role=img + a live summary give AT users the field at a glance (ux-design.md a11y intent). -->
+    <div ref="host" class="absolute inset-0" role="img" :aria-label="fieldLabel" />
 
     <!-- legend (read-only; reflects the live snapshot) -->
     <div class="absolute top-5 left-6 text-[13px] select-none pointer-events-none">
@@ -287,7 +296,7 @@ onBeforeUnmount(() => {
     </button>
 
     <!-- hover read-out (calm, fixed — no chasing tooltip) -->
-    <div class="absolute bottom-0 left-0 right-0 p-6 pointer-events-none">
+    <div class="absolute bottom-0 left-0 right-0 p-6 pointer-events-none" aria-live="polite">
       <div
         v-if="hovered"
         class="inline-block max-w-[70%] rounded-[10px] border-l-2 border-ember bg-ink/85 px-4 py-3 backdrop-blur-sm"
@@ -299,7 +308,8 @@ onBeforeUnmount(() => {
           <span v-if="hovered.atRisk" class="text-ember"> · ❄ at-risk</span>
         </div>
       </div>
-      <div v-else-if="!loading && !error && notes.length" class="text-dim text-[12px]">
+      <div v-else-if="loading" class="text-dim text-[12px]">Kindling your memory field…</div>
+      <div v-else-if="!error && notes.length" class="text-dim text-[12px]">
         Hover an ember to read the memory. Warmth is belief; the cold is forgetting.
       </div>
       <div v-else-if="error" class="text-ember text-[13px]">{{ error }}</div>
