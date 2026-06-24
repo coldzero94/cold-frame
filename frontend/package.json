@@ -4,6 +4,7 @@
   "type": "module",
   "version": "0.1.0",
   "description": "Coldframe local web UI — Vite + Vue 3 SPA. Built into ../cold_frame/ui/_dist and shipped in the wheel (no Node for users).",
+  "packageManager": "pnpm@10.14.0",
   "engines": {
     "node": ">=20"
   },
@@ -11,7 +12,7 @@
     "dev": "node scripts/vendor-p5.mjs && vite",
     "build": "node scripts/vendor-p5.mjs && vite build && node scripts/restore-gitkeep.mjs",
     "typecheck": "vue-tsc --noEmit",
-    "gen:types": "uv run --project .. python ../scripts/gen_api_types.py && node scripts/gen-ts.mjs"
+    "gen:types": "uv run --project .. --frozen python ../scripts/gen_api_types.py && node scripts/gen-ts.mjs"
   },
   "dependencies": {
     "p5": "^1.11.3",

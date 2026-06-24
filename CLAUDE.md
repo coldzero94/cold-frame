@@ -163,8 +163,12 @@ pnpm -C frontend run gen:types          # regen API types from cold_frame/ui/con
 
 The JSON API contract is single-sourced in `cold_frame/ui/contract.py` (TypedDicts). `gen:types`
 emits `frontend/src/api.schema.json` (pydantic) → `api.generated.ts` (json-schema-to-typescript);
-both are committed. `tests/test_api_contract.py` fails the core gate if the schema is stale — so
-the Python and TS types can't drift. Edit `contract.py`, run `gen:types`, commit.
+both are committed. Edit `contract.py`, run `gen:types`, commit. The full proof chain that Python and
+TS can't drift: mypy (builder static type == TypedDict) · `test_ui_contract_roundtrip.py` (the real
+runtime JSON validates against the contract) · `test_api_contract.py` (committed schema == contract) ·
+the CI **`codegen-drift`** job (committed `api.generated.ts` == regenerated). NOTE: `codegen-drift`
+(git-diff), not `vue-tsc`, is the authoritative TS-drift guard — `vue-tsc` only catches a field a
+`.vue`/`.ts` file actually reads, so don't drop the CI job assuming typecheck covers it.
 
 Run `ruff` + `mypy` + the core `pytest` clean before considering any unit of work complete.
 
