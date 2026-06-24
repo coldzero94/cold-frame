@@ -68,6 +68,21 @@ So in a Claude Code session you can just say:
 and the answer comes from your own memory file. Corrections supersede the old fact instead of
 duplicating it, so the memory stays clean over time.
 
+### Auto-recall on a new session (opt-in)
+
+Install the SessionStart hook and Claude Code opens each session already knowing your durable
+memories — no need to ask:
+
+```bash
+cold-frame hook install      # wires a SessionStart recall hook into ~/.claude/settings.json
+cold-frame hook status       # check it's wired
+```
+
+> **Where Coldframe is heading (D26):** *automatic* memory is the goal — capture happening as you
+> work, not only when the agent calls `add_memory`. Auto-**recall** (above) is live; auto-**capture**
+> via hooks is in progress, designed to ride the same forgetting/dedup engine so the DB stays lean
+> instead of mindlessly accumulating. Today, capture is still the agent's tool-calls + `cold-frame add`.
+
 > Works with any MCP client (not just Claude Code) — it's a standard stdio MCP server.
 
 ---
