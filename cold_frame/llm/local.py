@@ -43,9 +43,11 @@ class SentenceTransformerEmbedder(Embedder):
 
     @property
     def is_local(self) -> bool:
-        return True  # runs in-process, no network → admission-safe (I7)
+        return True  # runs in-process, no network — embeddings never leave the machine
 
     def embed(self, texts: list[str]) -> np.ndarray:
+        if not texts:  # encode([]) is undefined across versions; (0, dim) keeps callers simple
+            return np.empty((0, self._meta.dim), dtype=np.float32)
         # normalize_embeddings=True → L2-normalized, so the KNN cosine matmul is a plain dot.
         vecs = self._model.encode(
             texts, normalize_embeddings=True, convert_to_numpy=True, show_progress_bar=False
