@@ -47,6 +47,7 @@ class RetrievePipeline:
         as_of: datetime | None = None,
         include_archived: bool = False,
         rerank: bool = False,
+        reinforce: bool = True,
     ) -> SearchResult:
         """Hybrid retrieve → RRF fuse → top-k → REINFORCE (P1; rerank/budget are P3).
 
@@ -113,7 +114,10 @@ class RetrievePipeline:
         if token_budget is not None:
             hits, used_tokens, truncated = pack_budget(hits, token_budget, get_token_counter())
 
-        if hits:  # REINFORCE only emitted hits, best-effort (read path stays fast, SPEC §5)
+        # REINFORCE only emitted hits, best-effort (read path stays fast, SPEC §5). `reinforce` is
+        # False for the local UI: surfacing memories in a viewer is NOT the agent re-accessing them,
+        # and an ungated GET must not let a drive-by page bump decay/access (write-via-GET).
+        if hits and reinforce:
             try:
                 self._store.reinforce([h.note.id for h in hits], now=self._clock.now())
             except (

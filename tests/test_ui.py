@@ -460,3 +460,41 @@ def test_post_resolve_triage_clears_the_hold(memory: Memory) -> None:
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_search_does_not_reinforce(memory: Memory) -> None:
+    # a UI search is a human browsing, not the agent recalling — it must NOT bump access/decay
+    # (also keeps the ungated GET /api/search from being a write-via-GET; security review).
+    fid = memory.add("I prefer dark roast coffee").added[0].id
+    before = memory.get(fid).access_count
+    ui.search_payload(memory, "coffee")
+    assert memory.get(fid).access_count == before
+
+
+def test_post_create_rejects_non_string_text(memory: Memory) -> None:
+    server, port = _run_server(memory)
+    try:
+        for bad in (b'{"text": null}', b'{"text": 5}', b'{"text": "   "}'):
+            with pytest.raises(urllib.error.HTTPError) as ei:
+                _post(
+                    port, "/api/fact", body=bad, origin=f"http://127.0.0.1:{port}",
+                    token=server.csrf_token,
+                )
+            assert ei.value.code == 400
+        assert not memory.list_active()  # nothing was created from a non-string/blank text
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_post_without_origin_is_rejected(memory: Memory) -> None:
+    fid = memory.add("a fact").added[0].id
+    server, port = _run_server(memory)
+    try:  # no Origin header (token alone) → fail closed
+        with pytest.raises(urllib.error.HTTPError) as ei:
+            _post(port, f"/api/fact/{fid}/pin", token=server.csrf_token)
+        assert ei.value.code == 403
+        assert memory.get(fid).pinned is False
+    finally:
+        server.shutdown()
+        server.server_close()

@@ -150,8 +150,11 @@ def fact_payload(memory: Memory, fact_id: str) -> FactDetailDict | None:
 
 
 def search_payload(memory: Memory, query: str, *, k: int = 20) -> SearchResponse:
-    """Ranked hits for a query, each carrying its retrieval signal breakdown (explainability)."""
-    result = memory.search(query, k=k)
+    """Ranked hits for a query, each carrying its retrieval signal breakdown (explainability).
+
+    ``reinforce=False``: a UI search is a human browsing, not the agent recalling — it must not
+    bump decay/access (and keeps this ungated GET from being a write-via-GET, security review)."""
+    result = memory.search(query, k=k, reinforce=False)
     hits: list[SearchHitDict] = []
     for h in result.hits:
         sig = h.signals
@@ -275,15 +278,11 @@ class _Handler(BaseHTTPRequestHandler):
     # ── mutating requests (security-spec §localhost: Host + Origin/Referer + CSRF token) ──
     def _csrf_ok(self) -> bool:
         srv = self._server()
-        allowed = srv.allowed_origins()
-        origin = self.headers.get("Origin")
-        if origin is not None:  # browsers send Origin on cross-origin POST → must be our own
-            if origin not in allowed:
-                return False
-        else:  # no Origin header → require a same-origin Referer; fail CLOSED if neither is present
-            ref = self.headers.get("Referer", "")
-            if not any(ref == o or ref.startswith(o + "/") for o in allowed):
-                return False
+        # Require a same-origin Origin: browsers always send it on a POST (same- OR cross-origin),
+        # and it cannot be forged by a drive-by page — so fail CLOSED if it's absent or foreign
+        # (no looser Referer fallback). The per-process token is the second factor; both must pass.
+        if self.headers.get("Origin") not in srv.allowed_origins():
+            return False
         token = self.headers.get("X-CSRF-Token", "")
         return bool(token) and secrets.compare_digest(token, srv.csrf_token)
 
@@ -331,15 +330,17 @@ class _Handler(BaseHTTPRequestHandler):
             elif action == "revive":
                 self._note_result(lambda: memory.revive(fid))
             elif action == "correct":
-                text = str(body.get("text", "")).strip()
-                if not text:
+                raw = body.get("text")
+                text = raw.strip() if isinstance(raw, str) else ""
+                if not text:  # reject non-string/empty rather than str()-coercing null→"None"
                     self._json(400, {"error": "text_required"})
                 else:
                     self._note_result(lambda: memory.correct_memory(fid, text).new)
             else:
                 self._json(404, {"error": "not_found"})
         elif path == "/api/fact":  # create a new fact (same WriteCore as add, I15)
-            text = str(body.get("text", "")).strip()
+            raw = body.get("text")
+            text = raw.strip() if isinstance(raw, str) else ""
             mt = body.get("memory_type", "semantic")
             if not text:
                 self._json(400, {"error": "text_required"})
