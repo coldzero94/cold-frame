@@ -1,10 +1,16 @@
 <script setup lang="ts">
+import { appError } from '@/appError'
+
 const nav = [
   { to: '/', label: 'Field', glyph: '◎' },
   { to: '/inspector', label: 'Inspector', glyph: '☰' },
   { to: '/triage', label: 'Triage', glyph: '⬡' },
   { to: '/search', label: 'Search', glyph: '⌕' },
 ]
+
+function dismiss(): void {
+  appError.value = ''
+}
 </script>
 
 <template>
@@ -27,5 +33,16 @@ const nav = [
     <main class="flex-1 min-w-0 overflow-auto">
       <RouterView />
     </main>
+
+    <!-- catch-all error banner (operational; dismissible) — wired in main.ts -->
+    <div
+      v-if="appError"
+      role="alert"
+      class="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 max-w-[80%] flex items-center gap-3 rounded-[10px] border border-ember/50 bg-panel px-4 py-2.5 text-[13px] shadow-lg"
+    >
+      <span class="text-ember">⚠</span>
+      <span class="text-fg truncate">{{ appError }}</span>
+      <button class="text-dim hover:text-fg ml-1" title="Dismiss" @click="dismiss">✕</button>
+    </div>
   </div>
 </template>
