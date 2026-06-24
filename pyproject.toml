@@ -35,6 +35,7 @@ packages = ["cold_frame"]
 line-length = 100
 target-version = "py311"
 src = ["cold_frame", "tests"]
+extend-exclude = ["cold_frame/ui/prototype"]  # design assets (data-gen script), not library code
 
 [tool.ruff.lint]
 # E/W=pycodestyle(PEP8) · F=pyflakes · I=isort · UP=pyupgrade · B=bugbear
@@ -56,6 +57,7 @@ warn_redundant_casts = true
 no_implicit_optional = true
 show_error_codes = true
 files = ["cold_frame"]
+exclude = ["cold_frame/ui/prototype/"]  # design assets (data-gen script), not library code
 
 [[tool.mypy.overrides]]
 module = ["tests.*", "cold_frame.eval.*"]
