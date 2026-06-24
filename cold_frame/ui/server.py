@@ -22,15 +22,22 @@ from collections.abc import Callable
 from contextlib import suppress
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import TypedDict, cast
+from typing import cast
 from urllib.parse import urlparse
 
 from cold_frame.api import Memory
 from cold_frame.branding import UI_HOST, UI_PORT, UI_PORTFILE
 from cold_frame.exceptions import NoteNotFound
-from cold_frame.models import Band, MemoryTypeLiteral, Note, StatusLiteral
+from cold_frame.models import Note
 from cold_frame.observability import get_logger
 from cold_frame.read.strength import compute_strength
+from cold_frame.ui.contract import (
+    FactDetailDict,
+    FieldNoteDict,
+    MemoryFieldResponse,
+    NoteBriefDict,
+    NotesResponse,
+)
 
 _log = get_logger(__name__)
 
@@ -61,56 +68,8 @@ def _spa_built() -> bool:
     return (_DIST / "index.html").is_file()
 
 
-# ── payload shapes (TypedDicts = the canonical Python-side JSON contract the TS mirrors;
-# mypy --strict then catches a dropped/misspelled key here, which dict[str, Any] would hide) ──
-class _StrengthDict(TypedDict):
-    value: float
-    band: Band
-    at_risk: bool
-
-
-class NoteBriefDict(TypedDict):
-    id: str
-    content: str
-    memory_type: MemoryTypeLiteral
-    status: StatusLiteral
-    confidence: float
-    strength: _StrengthDict
-
-
-class _SourceDict(TypedDict):
-    kind: str
-    ref: str
-    role: str | None
-    observed_at: str
-
-
-class _EdgeDict(TypedDict):
-    src: str
-    dst: str
-    relation: str
-
-
-class FactDetailDict(NoteBriefDict):
-    sources: list[_SourceDict]
-    valid_at: str | None
-    edges: list[_EdgeDict]
-
-
-class FieldNoteDict(TypedDict):
-    id: str
-    content: str
-    type: MemoryTypeLiteral
-    s: float
-    band: Band
-    atRisk: bool
-    importance: float
-    access: int
-    pinned: bool
-    ageDays: int
-
-
 # ── payload builders (pure; testable without HTTP) ───────────────────────────
+# Wire shapes live in contract.py (the single source of truth the TS client is generated from).
 def _note_brief(memory: Memory, note: Note) -> NoteBriefDict:
     s = compute_strength(note, memory._clock.now())
     return {
@@ -123,12 +82,12 @@ def _note_brief(memory: Memory, note: Note) -> NoteBriefDict:
     }
 
 
-def notes_payload(memory: Memory) -> dict[str, list[NoteBriefDict]]:
+def notes_payload(memory: Memory) -> NotesResponse:
     notes = memory.list_active(limit=200)
     return {"notes": [_note_brief(memory, n) for n in notes]}
 
 
-def memory_field_payload(memory: Memory) -> dict[str, list[FieldNoteDict]]:
+def memory_field_payload(memory: Memory) -> MemoryFieldResponse:
     """The compact per-note shape the p5.js MemoryField hero viz consumes (matches
     ``prototype/gen_sample.py``): position is derived client-side from ``id`` (spatial-memory
     law), heat from ``s``/``band``, flicker from ``atRisk``, the glass frame from ``pinned``."""

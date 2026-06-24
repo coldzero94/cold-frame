@@ -1,42 +1,22 @@
-// Typed client for the local read-only JSON API (cold_frame/ui/server.py). These interfaces
-// MIRROR the server's TypedDict payload shapes (NoteBriefDict / FieldNoteDict / FactDetailDict);
-// a shape change the UI consumes fails the vue-tsc build at the read site. The unions below match
-// the Python Literals (models.py Band / MemoryTypeLiteral / StatusLiteral) one-to-one.
+// Typed client for the local read-only JSON API (cold_frame/ui/server.py). The TYPES are GENERATED
+// from the Python wire contract (cold_frame/ui/contract.py → api.schema.json → api.generated.ts);
+// run `pnpm run gen:types` after changing a server payload shape. The two languages cannot drift —
+// the core test gate fails if the schema is stale, and CI re-runs the generator + git diff.
+import type { FactDetail, MemoryFieldResponse, NotesResponse } from './api.generated'
 
-export type Band = 'evergreen' | 'budding' | 'fading'
-export type MemoryType = 'semantic' | 'episodic' | 'procedural'
-export type Status = 'active' | 'archived' | 'deleted'
-
-/** One note as the p5 MemoryField viz consumes it (GET /api/memory-field). */
-export interface FieldNote {
-  id: string
-  content: string
-  type: MemoryType
-  s: number
-  band: Band
-  atRisk: boolean
-  importance: number
-  access: number
-  pinned: boolean
-  ageDays: number
-}
-
-/** A note brief in the Inspector list (GET /api/notes). */
-export interface NoteBrief {
-  id: string
-  content: string
-  memory_type: MemoryType
-  status: Status
-  confidence: number
-  strength: { value: number; band: Band; at_risk: boolean }
-}
-
-/** Full fact detail with provenance + edges (GET /api/fact/{id}). */
-export interface FactDetail extends NoteBrief {
-  sources: { kind: string; ref: string; role: string | null; observed_at: string }[]
-  valid_at: string | null
-  edges: { src: string; dst: string; relation: string }[]
-}
+export type {
+  Band,
+  Edge,
+  FactDetail,
+  FieldNote,
+  MemoryFieldResponse,
+  MemoryType,
+  NoteBrief,
+  NotesResponse,
+  Source,
+  Status,
+  Strength,
+} from './api.generated'
 
 async function getJSON<T>(url: string): Promise<T> {
   const r = await fetch(url, { headers: { Accept: 'application/json' } })
@@ -45,7 +25,7 @@ async function getJSON<T>(url: string): Promise<T> {
 }
 
 export const api = {
-  memoryField: () => getJSON<{ notes: FieldNote[] }>('/api/memory-field'),
-  notes: () => getJSON<{ notes: NoteBrief[] }>('/api/notes'),
+  memoryField: () => getJSON<MemoryFieldResponse>('/api/memory-field'),
+  notes: () => getJSON<NotesResponse>('/api/notes'),
   fact: (id: string) => getJSON<FactDetail>(`/api/fact/${encodeURIComponent(id)}`),
 }

@@ -10,7 +10,8 @@
   "scripts": {
     "dev": "node scripts/vendor-p5.mjs && vite",
     "build": "node scripts/vendor-p5.mjs && vite build && node scripts/restore-gitkeep.mjs",
-    "typecheck": "vue-tsc --noEmit"
+    "typecheck": "vue-tsc --noEmit",
+    "gen:types": "uv run --project .. python ../scripts/gen_api_types.py && node scripts/gen-ts.mjs"
   },
   "dependencies": {
     "p5": "^1.11.3",
@@ -21,6 +22,7 @@
     "@types/node": "^22.10.5",
     "@types/p5": "^1.7.6",
     "@vitejs/plugin-vue": "^5.2.1",
+    "json-schema-to-typescript": "^15.0.4",
     "typescript": "^5.7.2",
     "unocss": "^0.65.1",
     "vite": "^5.4.11",

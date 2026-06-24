@@ -1,0 +1,260 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ColdframeApiContract",
+  "$defs": {
+    "Band": {
+      "type": "string",
+      "enum": [
+        "evergreen",
+        "budding",
+        "fading"
+      ]
+    },
+    "Edge": {
+      "properties": {
+        "src": {
+          "type": "string"
+        },
+        "dst": {
+          "type": "string"
+        },
+        "relation": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "src",
+        "dst",
+        "relation"
+      ],
+      "type": "object"
+    },
+    "FactDetail": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "content": {
+          "type": "string"
+        },
+        "memory_type": {
+          "$ref": "#/$defs/MemoryType"
+        },
+        "status": {
+          "$ref": "#/$defs/Status"
+        },
+        "confidence": {
+          "type": "number"
+        },
+        "strength": {
+          "$ref": "#/$defs/Strength"
+        },
+        "sources": {
+          "items": {
+            "$ref": "#/$defs/Source"
+          },
+          "type": "array"
+        },
+        "valid_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "edges": {
+          "items": {
+            "$ref": "#/$defs/Edge"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "content",
+        "memory_type",
+        "status",
+        "confidence",
+        "strength",
+        "sources",
+        "valid_at",
+        "edges"
+      ],
+      "type": "object"
+    },
+    "FieldNote": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "content": {
+          "type": "string"
+        },
+        "type": {
+          "$ref": "#/$defs/MemoryType"
+        },
+        "s": {
+          "type": "number"
+        },
+        "band": {
+          "$ref": "#/$defs/Band"
+        },
+        "atRisk": {
+          "type": "boolean"
+        },
+        "importance": {
+          "type": "number"
+        },
+        "access": {
+          "type": "integer"
+        },
+        "pinned": {
+          "type": "boolean"
+        },
+        "ageDays": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "content",
+        "type",
+        "s",
+        "band",
+        "atRisk",
+        "importance",
+        "access",
+        "pinned",
+        "ageDays"
+      ],
+      "type": "object"
+    },
+    "MemoryFieldResponse": {
+      "properties": {
+        "notes": {
+          "items": {
+            "$ref": "#/$defs/FieldNote"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "notes"
+      ],
+      "type": "object"
+    },
+    "MemoryType": {
+      "type": "string",
+      "enum": [
+        "semantic",
+        "episodic",
+        "procedural"
+      ]
+    },
+    "NoteBrief": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "content": {
+          "type": "string"
+        },
+        "memory_type": {
+          "$ref": "#/$defs/MemoryType"
+        },
+        "status": {
+          "$ref": "#/$defs/Status"
+        },
+        "confidence": {
+          "type": "number"
+        },
+        "strength": {
+          "$ref": "#/$defs/Strength"
+        }
+      },
+      "required": [
+        "id",
+        "content",
+        "memory_type",
+        "status",
+        "confidence",
+        "strength"
+      ],
+      "type": "object"
+    },
+    "NotesResponse": {
+      "properties": {
+        "notes": {
+          "items": {
+            "$ref": "#/$defs/NoteBrief"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "notes"
+      ],
+      "type": "object"
+    },
+    "Source": {
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "ref": {
+          "type": "string"
+        },
+        "role": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "observed_at": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "ref",
+        "role",
+        "observed_at"
+      ],
+      "type": "object"
+    },
+    "Status": {
+      "type": "string",
+      "enum": [
+        "active",
+        "archived",
+        "deleted"
+      ]
+    },
+    "Strength": {
+      "properties": {
+        "value": {
+          "type": "number"
+        },
+        "band": {
+          "$ref": "#/$defs/Band"
+        },
+        "at_risk": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "value",
+        "band",
+        "at_risk"
+      ],
+      "type": "object"
+    }
+  }
+}
