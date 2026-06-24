@@ -195,11 +195,25 @@ def test_static_spa_serving_history_fallback_and_strict_csp(
         assert ctype("/s.css") == "text/css; charset=utf-8"
         assert ctype("/icon.png") == "image/png"
         # a client-side route (no such file) falls back to index.html (SPA history routing)
-        deep = urllib.request.urlopen(f"http://127.0.0.1:{port}/inspector/abc")
+        deep = urllib.request.urlopen(f"http://127.0.0.1:{port}/fact/abc")
         assert b"SPA" in deep.read()
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_fact_deeplink_path_has_a_matching_router_route() -> None:
+    # The server's history-fallback returns 200 for ANY path, so a server test can't catch a
+    # deep-link that the CLIENT router doesn't define (it renders a blank <main>). Guard the
+    # cross-language contract directly: branding.fact_deeplink's path must be a route in router.ts.
+    from urllib.parse import urlparse
+
+    from cold_frame import branding
+
+    path = urlparse(branding.fact_deeplink("SOME_ID")).path  # e.g. /fact/SOME_ID
+    template = path.replace("SOME_ID", ":id")  # /fact/:id
+    router = (Path(__file__).resolve().parents[1] / "frontend" / "src" / "router.ts").read_text()
+    assert f"'{template}'" in router, f"router.ts defines no route for deeplink path {template!r}"
 
 
 def test_inline_fallback_when_no_bundle(running_ui: int) -> None:

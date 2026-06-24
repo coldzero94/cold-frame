@@ -268,9 +268,9 @@ header{padding:20px 24px;border-bottom:1px solid #1c1c22}
 h1{margin:0;font-size:15px;letter-spacing:.04em;color:#a9a9b2;font-weight:600}
 main{padding:16px 24px;max-width:760px}
 .card{padding:12px 14px;border:1px solid #1c1c22;border-radius:10px;margin:8px 0;background:#101015}
-.c{display:flex;gap:10px;align-items:baseline}.g{font-size:16px}.m{color:#6f6f78;font-size:12px}
+.c{display:flex;gap:10px;align-items:baseline}.g{font-size:16px}.m{color:#8a8a93;font-size:12px}
 .bar{height:3px;border-radius:2px;background:#7C5CFF;margin-top:8px}
-.risk{color:#e0795b;font-size:11px;margin-left:6px}.empty{color:#6f6f78}
+.risk{color:#e0795b;font-size:11px;margin-left:6px}.empty{color:#8a8a93}
 </style></head><body>
 <header><h1>COLD-FRAME · what I know about you now</h1></header>
 <main id="app"><p class="empty">loading…</p></main><script>

@@ -54,7 +54,7 @@ watch(
       <RouterLink
         v-for="n in notes"
         :key="n.id"
-        :to="`/inspector/${n.id}`"
+        :to="`/fact/${n.id}`"
         class="block no-underline rounded-[10px] p-3 mb-2 border border-line bg-panel transition-colors hover:border-dim"
         :class="route.params.id === n.id ? 'border-ember!' : ''"
       >
