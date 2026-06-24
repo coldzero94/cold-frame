@@ -85,6 +85,20 @@
       ],
       "type": "object"
     },
+    "FactHistoryResponse": {
+      "properties": {
+        "versions": {
+          "items": {
+            "$ref": "#/$defs/HistoryVersion"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "versions"
+      ],
+      "type": "object"
+    },
     "FieldNote": {
       "properties": {
         "id": {
@@ -132,6 +146,51 @@
       ],
       "type": "object"
     },
+    "HistoryVersion": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "content": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/Status"
+        },
+        "version": {
+          "type": "integer"
+        },
+        "valid_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "invalid_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "content",
+        "status",
+        "version",
+        "valid_at",
+        "invalid_at"
+      ],
+      "type": "object"
+    },
     "MemoryFieldResponse": {
       "properties": {
         "notes": {
@@ -139,10 +198,14 @@
             "$ref": "#/$defs/FieldNote"
           },
           "type": "array"
+        },
+        "total": {
+          "type": "integer"
         }
       },
       "required": [
-        "notes"
+        "notes",
+        "total"
       ],
       "type": "object"
     },
@@ -192,10 +255,126 @@
             "$ref": "#/$defs/NoteBrief"
           },
           "type": "array"
+        },
+        "total": {
+          "type": "integer"
         }
       },
       "required": [
-        "notes"
+        "notes",
+        "total"
+      ],
+      "type": "object"
+    },
+    "SearchHit": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "content": {
+          "type": "string"
+        },
+        "memory_type": {
+          "$ref": "#/$defs/MemoryType"
+        },
+        "status": {
+          "$ref": "#/$defs/Status"
+        },
+        "confidence": {
+          "type": "number"
+        },
+        "strength": {
+          "$ref": "#/$defs/Strength"
+        },
+        "score": {
+          "type": "number"
+        },
+        "signals": {
+          "$ref": "#/$defs/Signals"
+        }
+      },
+      "required": [
+        "id",
+        "content",
+        "memory_type",
+        "status",
+        "confidence",
+        "strength",
+        "score",
+        "signals"
+      ],
+      "type": "object"
+    },
+    "SearchResponse": {
+      "properties": {
+        "query": {
+          "type": "string"
+        },
+        "hits": {
+          "items": {
+            "$ref": "#/$defs/SearchHit"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "query",
+        "hits"
+      ],
+      "type": "object"
+    },
+    "Signals": {
+      "properties": {
+        "semantic": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "bm25": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "edge": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rrf": {
+          "type": "number"
+        },
+        "rerank": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "semantic",
+        "bm25",
+        "edge",
+        "rrf",
+        "rerank"
       ],
       "type": "object"
     },
@@ -253,6 +432,75 @@
         "value",
         "band",
         "at_risk"
+      ],
+      "type": "object"
+    },
+    "TriageItem": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "content": {
+          "type": "string"
+        },
+        "memory_type": {
+          "$ref": "#/$defs/MemoryType"
+        },
+        "status": {
+          "$ref": "#/$defs/Status"
+        },
+        "confidence": {
+          "type": "number"
+        },
+        "strength": {
+          "$ref": "#/$defs/Strength"
+        },
+        "reason": {
+          "$ref": "#/$defs/TriageReason"
+        },
+        "candidates": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "impact": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "content",
+        "memory_type",
+        "status",
+        "confidence",
+        "strength",
+        "reason",
+        "candidates",
+        "impact"
+      ],
+      "type": "object"
+    },
+    "TriageReason": {
+      "type": "string",
+      "enum": [
+        "true_conflict",
+        "ambiguous_merge",
+        "low_confidence",
+        "pin_adjacent_archive"
+      ]
+    },
+    "TriageResponse": {
+      "properties": {
+        "items": {
+          "items": {
+            "$ref": "#/$defs/TriageItem"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "items"
       ],
       "type": "object"
     }

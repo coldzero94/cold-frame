@@ -5,8 +5,12 @@
 // no CDN → I5, and every runtime fetch (app bundle, /p5.min.js, the API) is same-origin.
 import type P5 from 'p5'
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
-import { api, type FieldNote } from '@/api'
+import { useRouter } from 'vue-router'
+import { api, type Band, type FieldNote } from '@/api'
 import { makeThermalField } from './thermalSketch'
+import EmptyState from './EmptyState.vue'
+
+const router = useRouter()
 
 declare global {
   interface Window {
@@ -16,11 +20,22 @@ declare global {
 
 const host = ref<HTMLDivElement>()
 const notes = shallowRef<FieldNote[]>([])
+const total = ref(0)
 const hovered = ref<FieldNote | null>(null)
 const loading = ref(true)
 const error = ref('')
 let instance: P5 | null = null
 let reseed: (() => void) | null = null
+
+// declutter: toggle bands off to thin a dense field (positions are id-stable, so they persist).
+const BANDS = ['evergreen', 'budding', 'fading'] as const
+const BAND_COLOR: Record<Band, string> = {
+  evergreen: '#f0cf8e',
+  budding: '#d97757',
+  fading: '#6a9bcc',
+}
+const enabledBands = ref<Record<Band, boolean>>({ evergreen: true, budding: true, fading: true })
+const shown = computed(() => notes.value.filter((n) => enabledBands.value[n.band]))
 
 const counts = computed(() => {
   const c = { evergreen: 0, budding: 0, fading: 0, pinned: 0, atRisk: 0 }
@@ -39,11 +54,31 @@ const fieldLabel = computed(() => {
   return `Memory field: ${c.evergreen} evergreen, ${c.budding} budding, ${c.fading} fading, ${c.pinned} sheltered, ${c.atRisk} at-risk. Full detail in the Inspector.`
 })
 
+function mountField(): void {
+  if (!host.value || typeof window.p5 !== 'function') return
+  instance?.remove() // rebuild with the current band filter (id-stable positions persist)
+  const field = makeThermalField(
+    host.value,
+    shown.value,
+    (n) => (hovered.value = n),
+    (n) => router.push(`/fact/${n.id}`), // click an ember → open the memory (no longer a dead-end)
+  )
+  instance = new window.p5(field.sketch)
+  reseed = field.reseed
+}
+
+function toggleBand(b: Band): void {
+  enabledBands.value[b] = !enabledBands.value[b]
+  mountField()
+}
+
 onMounted(async () => {
   try {
-    notes.value = (await api.memoryField()).notes
+    const resp = await api.memoryField()
+    notes.value = resp.notes
+    total.value = resp.total
   } catch (e) {
-    error.value = String(e)
+    error.value = e instanceof Error ? e.message : String(e)
   } finally {
     loading.value = false
   }
@@ -52,9 +87,7 @@ onMounted(async () => {
     error.value = 'the visualization runtime failed to load' // /p5.min.js missing/blocked
     return
   }
-  const field = makeThermalField(host.value, notes.value, (n) => (hovered.value = n))
-  instance = new window.p5(field.sketch)
-  reseed = field.reseed
+  mountField()
 })
 
 onBeforeUnmount(() => {
@@ -70,25 +103,44 @@ onBeforeUnmount(() => {
          role=img + a live summary give AT users the field at a glance (ux-design.md a11y intent). -->
     <div ref="host" class="absolute inset-0" role="img" :aria-label="fieldLabel" />
 
-    <!-- legend (read-only; reflects the live snapshot) -->
-    <div class="absolute top-5 left-6 text-[13px] select-none pointer-events-none">
+    <!-- cold-start: a centered planting card over the dark field until the first memory lands -->
+    <div
+      v-if="!loading && !error && !notes.length"
+      class="absolute inset-0 flex items-center justify-center"
+    >
+      <EmptyState />
+    </div>
+
+    <!-- legend (read-only; reflects the live snapshot) — hidden when the field is empty -->
+    <div
+      v-if="notes.length"
+      class="absolute top-5 left-6 max-w-[55%] text-[13px] select-none pointer-events-none"
+    >
       <div class="text-[12px] tracking-[0.08em] text-dim mb-3">YOUR MEMORY FIELD</div>
-      <div class="flex items-center gap-2 mb-1.5" style="color: #f0cf8e">
-        <span class="legend-dot" />Evergreen<span class="ml-2 text-dim font-mono">{{ counts.evergreen }}</span>
-      </div>
-      <div class="flex items-center gap-2 mb-1.5" style="color: #d97757">
-        <span class="legend-dot" />Budding<span class="ml-2 text-dim font-mono">{{ counts.budding }}</span>
-      </div>
-      <div class="flex items-center gap-2" style="color: #6a9bcc">
-        <span class="legend-dot" />Fading<span class="ml-2 text-dim font-mono">{{ counts.fading }}</span>
-      </div>
+      <!-- each band is a toggle: click to thin the field by hiding that band -->
+      <button
+        v-for="b in BANDS"
+        :key="b"
+        type="button"
+        class="flex items-center gap-2 mb-1.5 pointer-events-auto border-0 bg-transparent p-0 cursor-pointer transition-opacity capitalize"
+        :style="{ color: BAND_COLOR[b], opacity: enabledBands[b] ? 1 : 0.3 }"
+        :title="enabledBands[b] ? `Hide ${b}` : `Show ${b}`"
+        :aria-pressed="enabledBands[b]"
+        @click="toggleBand(b)"
+      >
+        <span class="legend-dot" />{{ b }}<span class="ml-2 text-dim font-mono">{{ counts[b] }}</span>
+      </button>
       <div class="text-[11px] text-dim mt-3 leading-relaxed">
         ⬡ {{ counts.pinned }} sheltered &nbsp;·&nbsp; ❄ {{ counts.atRisk }} at-risk
       </div>
+      <div v-if="notes.length < total" class="text-[11px] text-dim/80 mt-1.5">
+        showing {{ notes.length }} of {{ total }}
+      </div>
     </div>
 
-    <!-- reshuffle the field angle (same memory, different view) -->
+    <!-- reshuffle the field angle (same memory, different view) — hidden when empty -->
     <button
+      v-if="notes.length"
       class="absolute top-5 right-6 text-dim text-[12px] px-3 py-1.5 rounded-[8px] border border-line bg-panel/70 hover:text-fg hover:border-dim transition-colors"
       title="Reshuffle the field — same memory, a different angle"
       @click="reseed?.()"
@@ -111,12 +163,9 @@ onBeforeUnmount(() => {
       </div>
       <div v-else-if="loading" class="text-dim text-[12px]">Kindling your memory field…</div>
       <div v-else-if="!error && notes.length" class="text-dim text-[12px]">
-        Hover an ember to read the memory. Warmth is belief; the cold is forgetting.
+        Hover an ember to read it, click to open. Warmth is belief; the cold is forgetting.
       </div>
       <div v-else-if="error" class="text-ember text-[13px]">{{ error }}</div>
-      <div v-else-if="!loading && !notes.length" class="text-dim text-[13px]">
-        No memories yet — add some with <span class="font-mono">cold-frame add</span>.
-      </div>
     </div>
   </div>
 </template>

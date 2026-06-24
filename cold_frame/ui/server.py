@@ -1,42 +1,50 @@
-"""Local web UI server — stdlib ``http.server``, serving the built Vue SPA + a read-only JSON API.
+"""Local web UI server — stdlib ``http.server``, serving the built Vue SPA + a JSON API (read +
+CSRF-guarded mutations).
 
 Dep-free + core-only (no Node, no web framework at runtime, I9): serves the CI-built SPA bundle
 from ``_dist/`` (history-fallback for client routes) and degrades to a dependency-free inline
 inspector when no bundle is present (dev without ``pnpm build``). The API exposes the "what I know
-about you now" list + growth bands, the per-note MemoryField viz feed, and fact detail
-(provenance + edges). Read-only for P3 — mutations (pin/forget/edit) are P4 Triage.
+about you now" list, the per-note MemoryField viz feed, fact detail (provenance + edges), search,
+belief history, and health (GET); plus mutating routes (pin/forget/revive/correct/create/triage).
 
-Security contract (security-spec §3): binds 127.0.0.1 only; a Host-header allowlist defends
-DNS-rebinding; a strict same-origin CSP (``default-src 'self'``, no remote/inline script) ships
-with every response (the inline dev fallback uses a scoped relaxed CSP); the port auto-falls-back
-to the next free one (recorded in ``~/.cold-frame/ui.port`` so deep-links never go stale). CSRF
-token + Origin allowlist land with the P4 mutating routes.
+Security contract (security-spec §3 + §localhost): binds 127.0.0.1 only; a Host-header allowlist
+defends DNS-rebinding; a strict same-origin CSP (``default-src 'self'``, no remote/inline script)
+ships with every response (the inline dev fallback uses a scoped relaxed CSP); the port auto-falls
+-back to the next free one (recorded in ``~/.cold-frame/ui.port``). Every mutating request requires
+BOTH a same-origin ``Origin`` (fail-closed if absent) and the per-process CSRF token (injected into
+the page, sent back as ``X-CSRF-Token``) — a drive-by site can neither forge the origin nor read it.
 """
 
 from __future__ import annotations
 
 import json
 import mimetypes
+import secrets
 import sys
 from collections.abc import Callable
 from contextlib import suppress
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import cast
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from cold_frame.api import Memory
 from cold_frame.branding import UI_HOST, UI_PORT, UI_PORTFILE
-from cold_frame.exceptions import NoteNotFound
+from cold_frame.exceptions import ColdFrameError, NoteNotFound, SecretBlocked
 from cold_frame.models import Note
 from cold_frame.observability import get_logger
 from cold_frame.read.strength import compute_strength
 from cold_frame.ui.contract import (
     FactDetailDict,
+    FactHistoryResponse,
     FieldNoteDict,
     MemoryFieldResponse,
     NoteBriefDict,
     NotesResponse,
+    SearchHitDict,
+    SearchResponse,
+    TriageItemDict,
+    TriageResponse,
 )
 
 _log = get_logger(__name__)
@@ -82,9 +90,17 @@ def _note_brief(memory: Memory, note: Note) -> NoteBriefDict:
     }
 
 
+# Active set is bounded by the per-scope caps (≤2600), so fetching "all" to count is cheap on a
+# local single-user DB. We render a capped prefix and report the true total → no silent truncation.
+_ACTIVE_FETCH = 5000  # > sum of caps → effectively all active, for an exact count
+_INSPECTOR_CAP = 500  # list render cap; UI shows "N of M" when total exceeds it
+_FIELD_CAP = 600  # field-ember render cap (a density control lands in a later phase)
+
+
 def notes_payload(memory: Memory) -> NotesResponse:
-    notes = memory.list_active(limit=200)
-    return {"notes": [_note_brief(memory, n) for n in notes]}
+    active = memory.list_active(limit=_ACTIVE_FETCH)
+    shown = active[:_INSPECTOR_CAP]
+    return {"notes": [_note_brief(memory, n) for n in shown], "total": len(active)}
 
 
 def memory_field_payload(memory: Memory) -> MemoryFieldResponse:
@@ -92,8 +108,9 @@ def memory_field_payload(memory: Memory) -> MemoryFieldResponse:
     ``prototype/gen_sample.py``): position is derived client-side from ``id`` (spatial-memory
     law), heat from ``s``/``band``, flicker from ``atRisk``, the glass frame from ``pinned``."""
     now = memory._clock.now()
+    active = memory.list_active(limit=_ACTIVE_FETCH)
     out: list[FieldNoteDict] = []
-    for n in memory.list_active(limit=200):
+    for n in active[:_FIELD_CAP]:
         s = compute_strength(n, now)
         last = n.last_accessed or n.created_at  # fresh notes have no last_accessed
         out.append(
@@ -110,7 +127,7 @@ def memory_field_payload(memory: Memory) -> MemoryFieldResponse:
                 "ageDays": max(0, (now - last).days),  # clamp negative clock skew
             }
         )
-    return {"notes": out}
+    return {"notes": out, "total": len(active)}
 
 
 def fact_payload(memory: Memory, fact_id: str) -> FactDetailDict | None:
@@ -133,6 +150,67 @@ def fact_payload(memory: Memory, fact_id: str) -> FactDetailDict | None:
     }
 
 
+def search_payload(memory: Memory, query: str, *, k: int = 20) -> SearchResponse:
+    """Ranked hits for a query, each carrying its retrieval signal breakdown (explainability).
+
+    ``reinforce=False``: a UI search is a human browsing, not the agent recalling — it must not
+    bump decay/access (and keeps this ungated GET from being a write-via-GET, security review)."""
+    result = memory.search(query, k=k, reinforce=False)
+    hits: list[SearchHitDict] = []
+    for h in result.hits:
+        sig = h.signals
+        hits.append(
+            {
+                **_note_brief(memory, h.note),
+                "score": round(h.score, 4),
+                "signals": {
+                    "semantic": sig.semantic,
+                    "bm25": sig.bm25,
+                    "edge": sig.edge,
+                    "rrf": round(sig.rrf, 4),
+                    "rerank": sig.rerank,
+                },
+            }
+        )
+    return {"query": query, "hits": hits}
+
+
+def triage_payload(memory: Memory) -> TriageResponse:
+    """The human-resolution queue: notes held for review (low-confidence / conflict / merge)."""
+    items: list[TriageItemDict] = []
+    for it in memory.triage_queue():
+        items.append(
+            {
+                **_note_brief(memory, it.note),
+                "reason": it.reason,
+                "candidates": list(it.candidates),
+                "impact": round(it.impact, 4),
+            }
+        )
+    return {"items": items}
+
+
+def fact_history_payload(memory: Memory, fact_id: str) -> FactHistoryResponse | None:
+    """Every persisted version of a note (oldest→newest) — the rewindable belief trail."""
+    try:
+        versions = memory.fork_history(fact_id)
+    except NoteNotFound:
+        return None
+    return {
+        "versions": [
+            {
+                "id": v.id,
+                "content": v.content,
+                "status": v.status,
+                "version": v.version,
+                "valid_at": v.valid_at.isoformat() if v.valid_at else None,
+                "invalid_at": v.invalid_at.isoformat() if v.invalid_at else None,
+            }
+            for v in versions
+        ]
+    }
+
+
 # ── server + handler ─────────────────────────────────────────────────────────
 class _UIServer(ThreadingHTTPServer):
     daemon_threads = True
@@ -140,6 +218,14 @@ class _UIServer(ThreadingHTTPServer):
     def __init__(self, addr: tuple[str, int], memory: Memory) -> None:
         super().__init__(addr, _Handler)
         self.memory = memory
+        # per-process CSRF token (security-spec §localhost): injected into the served page, required
+        # on every mutating request alongside a same-origin Origin check. Unauthenticated,
+        # not defenceless — a drive-by site can neither read this token nor forge Origin.
+        self.csrf_token = secrets.token_urlsafe(32)
+
+    def allowed_origins(self) -> frozenset[str]:
+        port = self.server_address[1]
+        return frozenset(f"http://{h}:{port}" for h in _ALLOWED_HOSTS)
 
     def handle_error(self, request: object, client_address: object) -> None:
         # Override the stdlib default (raw traceback to stderr) so an unexpected handler error logs
@@ -157,22 +243,45 @@ class _Handler(BaseHTTPRequestHandler):
         hostname = host.rsplit(":", 1)[0] if ":" in host else host
         return hostname in _ALLOWED_HOSTS
 
+    def _failsafe(self, exc: BaseException) -> None:
+        # never drop the connection on an unhandled error: log the TYPE only (I16) + send a real 500
+        # so the client sees a structured error instead of "Failed to fetch" on a reset socket.
+        _log.warning("ui_unhandled", extra={"exc_type": type(exc).__name__})
+        with suppress(Exception):
+            self._json(500, {"error": "internal"})
+
     def do_GET(self) -> None:  # stdlib http.server hook name (camelCase by API)
         if not self._host_allowed():  # DNS-rebind guard
             self._json(403, {"error": "forbidden host"})
             return
-        path = urlparse(self.path).path
+        try:
+            self._route_get()
+        except Exception as exc:  # a StoreError in a payload builder → 500, not a reset socket
+            self._failsafe(exc)
+
+    def _route_get(self) -> None:
+        parsed = urlparse(self.path)
+        path = parsed.path
         memory = self._server().memory
         if path == "/api/notes":
             self._json(200, notes_payload(memory))
         elif path == "/api/memory-field":
             self._json(200, memory_field_payload(memory))
+        elif path == "/api/search":
+            q = (parse_qs(parsed.query).get("q") or [""])[0].strip()
+            self._json(200, search_payload(memory, q) if q else {"query": "", "hits": []})
+        elif path.startswith("/api/fact/") and path.endswith("/history"):
+            fid = path[len("/api/fact/") : -len("/history")]
+            hist = fact_history_payload(memory, fid)
+            self._json(200, hist) if hist is not None else self._json(404, {"error": "not_found"})
         elif path.startswith("/api/fact/"):
             data = fact_payload(memory, path[len("/api/fact/") :])
             if data is not None:
                 self._json(200, data)
             else:
                 self._json(404, {"error": "not_found"})
+        elif path == "/api/triage":
+            self._json(200, triage_payload(memory))
         elif path == "/api/health":
             self._json(200, dict(memory.health()))
         elif path.startswith("/api/"):
@@ -180,11 +289,131 @@ class _Handler(BaseHTTPRequestHandler):
         else:  # the SPA (built bundle) or the inline inspector fallback
             self._serve_app(path)
 
+    # ── mutating requests (security-spec §localhost: Host + same-origin Origin + CSRF token) ──
+    def _csrf_ok(self) -> bool:
+        srv = self._server()
+        # Require a same-origin Origin: browsers always send it on a POST (same- OR cross-origin),
+        # and it cannot be forged by a drive-by page — so fail CLOSED if it's absent or foreign
+        # (no looser Referer fallback). The per-process token is the second factor; both must pass.
+        if self.headers.get("Origin") not in srv.allowed_origins():
+            return False
+        token = self.headers.get("X-CSRF-Token", "")
+        return bool(token) and secrets.compare_digest(token, srv.csrf_token)
+
+    def _read_json_body(self) -> dict[str, object]:
+        n = int(self.headers.get("Content-Length") or 0)
+        if n <= 0:
+            return {}
+        if n > 1_000_000:  # bound the body — a local UI never posts a megabyte
+            raise ValueError("body too large")
+        data = json.loads(self.rfile.read(n))
+        if not isinstance(data, dict):
+            raise ValueError("expected a JSON object")
+        return data
+
+    def _note_result(self, fn: Callable[[], Note]) -> None:
+        try:
+            note = fn()
+        except NoteNotFound:
+            self._json(404, {"error": "not_found"})
+        except SecretBlocked:  # user-actionable (a secret in the text) — NOT an internal error
+            self._json(422, {"error": "secret_blocked"})
+        except ValueError:
+            self._json(400, {"error": "invalid"})
+        except ColdFrameError as exc:  # StoreError / EmbedderMismatch / … → a real 500, not a drop
+            _log.warning("ui_write_failed", extra={"exc_type": type(exc).__name__})  # type only
+            self._json(500, {"error": "internal"})
+        else:
+            self._json(200, _note_brief(self._server().memory, note))
+
+    def do_POST(self) -> None:  # stdlib hook name
+        if not self._host_allowed():  # DNS-rebind guard (same as GET)
+            self._json(403, {"error": "forbidden host"})
+            return
+        if not self._csrf_ok():  # same-origin Origin + per-process token — blocks drive-by writes
+            self._json(403, {"error": "csrf_failed"})
+            return
+        try:
+            body = self._read_json_body()
+        except ValueError:
+            self._json(400, {"error": "bad_request"})
+            return
+        try:
+            self._route_post(urlparse(self.path).path, self._server().memory, body)
+        except Exception as exc:  # an unguarded create_fact StoreError → 500, not a reset socket
+            self._failsafe(exc)
+
+    def _route_post(self, path: str, memory: Memory, body: dict[str, object]) -> None:
+        if path.startswith("/api/fact/") and "/" in path[len("/api/fact/") :]:
+            fid, _, action = path[len("/api/fact/") :].partition("/")
+            if action == "pin":
+                self._note_result(lambda: memory.pin(fid))
+            elif action == "forget":
+                self._note_result(lambda: memory.forget(fid))
+            elif action == "revive":
+                self._note_result(lambda: memory.revive(fid))
+            elif action == "correct":
+                raw = body.get("text")
+                text = raw.strip() if isinstance(raw, str) else ""
+                if not text:  # reject non-string/empty rather than str()-coercing null→"None"
+                    self._json(400, {"error": "text_required"})
+                else:
+                    self._note_result(lambda: memory.correct_memory(fid, text).new)
+            else:
+                self._json(404, {"error": "not_found"})
+        elif path == "/api/fact":  # create a new fact (same WriteCore as add, I15)
+            raw = body.get("text")
+            text = raw.strip() if isinstance(raw, str) else ""
+            mt = body.get("memory_type", "semantic")
+            if not text:
+                self._json(400, {"error": "text_required"})
+            elif mt not in ("semantic", "episodic", "procedural"):
+                self._json(400, {"error": "bad_memory_type"})
+            else:
+                res = memory.create_fact(text, memory_type=mt)
+                added = res.added[0] if res.added else None
+                self._json(
+                    200,
+                    {
+                        "added": _note_brief(memory, added) if added else None,
+                        "deduped": res.deduped,
+                        # surface a pre-disk secret-BLOCK (I6) so the form can tell the user why
+                        # nothing was stored, instead of silently showing no change.
+                        "blocked": [b.placeholder for b in res.blocked],
+                    },
+                )
+        elif path.startswith("/api/triage/") and path.endswith("/resolve"):
+            tid = path[len("/api/triage/") : -len("/resolve")]
+            act = body.get("action")
+            target = body.get("target")
+            if act not in ("pin", "let_go", "merge", "keep", "supersede"):
+                self._json(400, {"error": "bad_action"})
+            else:
+                try:
+                    memory.resolve_triage(
+                        tid,
+                        act,
+                        target=str(target) if target is not None else None,
+                    )
+                except NoteNotFound:
+                    self._json(404, {"error": "not_found"})
+                except ValueError:
+                    self._json(400, {"error": "invalid"})
+                else:
+                    self._json(200, {"ok": True})
+        else:
+            self._json(404, {"error": "not_found"})
+
     def _serve_app(self, path: str) -> None:
         if _spa_built():
             self._serve_static(path)
         else:  # no bundle (dev without `pnpm build`) → the degraded inline inspector
-            self._html(_INDEX_HTML, csp=_FALLBACK_CSP)
+            self._html(self._inject_csrf(_INDEX_HTML), csp=_FALLBACK_CSP)
+
+    def _inject_csrf(self, html: str) -> str:
+        # surface the per-process CSRF token to the SPA via a meta tag (security-spec §localhost).
+        tag = f'<meta name="csrf-token" content="{self._server().csrf_token}">'
+        return html.replace("<head>", "<head>" + tag, 1) if "<head>" in html else tag + html
 
     def _serve_static(self, path: str) -> None:
         rel = path.lstrip("/") or "index.html"
@@ -204,6 +433,8 @@ class _Handler(BaseHTTPRequestHandler):
             _log.warning("ui_static_read_failed", extra={"errno": exc.errno})  # id/errno only (I16)
             self._json(500, {"error": "asset_unavailable"})
             return
+        if target.name == "index.html":  # inject the CSRF token into the SPA entry document
+            body = self._inject_csrf(body.decode("utf-8")).encode("utf-8")
         self._send_bytes(200, body, ctype, _STRICT_CSP)
 
     def _json(self, code: int, obj: object) -> None:
@@ -268,9 +499,9 @@ header{padding:20px 24px;border-bottom:1px solid #1c1c22}
 h1{margin:0;font-size:15px;letter-spacing:.04em;color:#a9a9b2;font-weight:600}
 main{padding:16px 24px;max-width:760px}
 .card{padding:12px 14px;border:1px solid #1c1c22;border-radius:10px;margin:8px 0;background:#101015}
-.c{display:flex;gap:10px;align-items:baseline}.g{font-size:16px}.m{color:#6f6f78;font-size:12px}
+.c{display:flex;gap:10px;align-items:baseline}.g{font-size:16px}.m{color:#8a8a93;font-size:12px}
 .bar{height:3px;border-radius:2px;background:#7C5CFF;margin-top:8px}
-.risk{color:#e0795b;font-size:11px;margin-left:6px}.empty{color:#6f6f78}
+.risk{color:#e0795b;font-size:11px;margin-left:6px}.empty{color:#8a8a93}
 </style></head><body>
 <header><h1>COLD-FRAME · what I know about you now</h1></header>
 <main id="app"><p class="empty">loading…</p></main><script>

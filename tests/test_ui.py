@@ -24,21 +24,45 @@ def test_notes_payload_shape(memory: Memory) -> None:
     memory.add("I prefer dark roast coffee")
     payload = ui.notes_payload(memory)
     assert len(payload["notes"]) == 1
+    assert payload["total"] == 1  # full active count, for the "N of M" indicator
     note = payload["notes"][0]
     assert note["content"] == "I prefer dark roast coffee"
     assert note["strength"]["band"] in {"evergreen", "budding", "fading"}
     assert 0.0 <= note["strength"]["value"] <= 1.0
 
 
+def test_payloads_cap_render_but_report_full_total(
+    memory: Memory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # render-capped list + true total → the client shows "N of M", never silently drops the tail.
+    monkeypatch.setattr(ui, "_FIELD_CAP", 2)
+    monkeypatch.setattr(ui, "_INSPECTOR_CAP", 2)
+    for t in ("alpha fact", "beta fact", "gamma fact"):
+        memory.add(t)
+    field = ui.memory_field_payload(memory)
+    notes = ui.notes_payload(memory)
+    assert field["total"] == 3 and len(field["notes"]) == 2
+    assert notes["total"] == 3 and len(notes["notes"]) == 2
+
+
 def test_memory_field_payload_shape(memory: Memory) -> None:
     fid = memory.add("I prefer dark roast coffee").added[0].id
     payload = ui.memory_field_payload(memory)
     assert len(payload["notes"]) == 1
+    assert payload["total"] == 1
     n = payload["notes"][0]
     # the EXACT shape the p5 MemoryField sketch consumes (prototype/gen_sample.py)
     assert set(n) == {
-        "id", "content", "type", "s", "band", "atRisk",
-        "importance", "access", "pinned", "ageDays",
+        "id",
+        "content",
+        "type",
+        "s",
+        "band",
+        "atRisk",
+        "importance",
+        "access",
+        "pinned",
+        "ageDays",
     }
     assert n["id"] == fid and n["content"] == "I prefer dark roast coffee"
     assert n["type"] in {"semantic", "episodic", "procedural"}
@@ -117,9 +141,7 @@ def test_fact_payload_includes_provenance_and_unknown_is_none(memory: Memory) ->
 
 
 @pytest.fixture
-def running_ui(
-    memory: Memory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> Iterator[int]:
+def running_ui(memory: Memory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[int]:
     # Deterministic: pin _DIST to a bundle-less dir so these tests exercise the inline fallback
     # regardless of whether `pnpm build` has populated the real _dist. (SPA mode has its own test.)
     monkeypatch.setattr(ui, "_DIST", tmp_path / "no_bundle")
@@ -195,11 +217,25 @@ def test_static_spa_serving_history_fallback_and_strict_csp(
         assert ctype("/s.css") == "text/css; charset=utf-8"
         assert ctype("/icon.png") == "image/png"
         # a client-side route (no such file) falls back to index.html (SPA history routing)
-        deep = urllib.request.urlopen(f"http://127.0.0.1:{port}/inspector/abc")
+        deep = urllib.request.urlopen(f"http://127.0.0.1:{port}/fact/abc")
         assert b"SPA" in deep.read()
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_fact_deeplink_path_has_a_matching_router_route() -> None:
+    # The server's history-fallback returns 200 for ANY path, so a server test can't catch a
+    # deep-link that the CLIENT router doesn't define (it renders a blank <main>). Guard the
+    # cross-language contract directly: branding.fact_deeplink's path must be a route in router.ts.
+    from urllib.parse import urlparse
+
+    from cold_frame import branding
+
+    path = urlparse(branding.fact_deeplink("SOME_ID")).path  # e.g. /fact/SOME_ID
+    template = path.replace("SOME_ID", ":id")  # /fact/:id
+    router = (Path(__file__).resolve().parents[1] / "frontend" / "src" / "router.ts").read_text()
+    assert f"'{template}'" in router, f"router.ts defines no route for deeplink path {template!r}"
 
 
 def test_inline_fallback_when_no_bundle(running_ui: int) -> None:
@@ -308,3 +344,284 @@ def test_index_html_escapes_note_content_xss() -> None:
     assert "esc(n.content)" in html  # user content is HTML-escaped before injection
     assert "+n.content+" not in html  # the raw-injection footgun is gone
     assert "const esc=" in html  # the escaper is defined
+
+
+# ── mutating-request security (security-spec §localhost: Host + Origin/Referer + CSRF token) ──
+def _post(
+    port: int,
+    path: str,
+    *,
+    body: bytes = b"{}",
+    origin: str | None = None,
+    token: str | None = None,
+) -> http.client.HTTPResponse:
+    headers = {"Content-Type": "application/json"}
+    if origin is not None:
+        headers["Origin"] = origin
+    if token is not None:
+        headers["X-CSRF-Token"] = token
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}{path}", data=body, headers=headers, method="POST"
+    )
+    return urllib.request.urlopen(req)
+
+
+def test_post_without_csrf_token_is_rejected(memory: Memory) -> None:
+    fid = memory.add("a fact").added[0].id
+    server, port = _run_server(memory)
+    try:
+        with pytest.raises(urllib.error.HTTPError) as ei:
+            _post(port, f"/api/fact/{fid}/pin", origin=f"http://127.0.0.1:{port}")  # no token
+        assert ei.value.code == 403
+        assert memory.get(fid).pinned is False  # the write did NOT happen
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_post_from_foreign_origin_is_rejected(memory: Memory) -> None:
+    fid = memory.add("a fact").added[0].id
+    server, port = _run_server(memory)
+    try:
+        # a drive-by site: correct token guess is impossible, but even WITH the token a foreign
+        # Origin must be refused (the token can't leak cross-origin, but defence-in-depth).
+        with pytest.raises(urllib.error.HTTPError) as ei:
+            _post(
+                port, f"/api/fact/{fid}/pin", origin="https://evil.example", token=server.csrf_token
+            )
+        assert ei.value.code == 403
+        assert memory.get(fid).pinned is False
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_post_with_same_origin_and_token_succeeds(memory: Memory) -> None:
+    fid = memory.add("a fact").added[0].id
+    server, port = _run_server(memory)
+    try:
+        resp = _post(
+            port, f"/api/fact/{fid}/pin", origin=f"http://127.0.0.1:{port}", token=server.csrf_token
+        )
+        assert resp.status == 200
+        assert memory.get(fid).pinned is True  # the write applied
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_csrf_token_is_injected_into_the_page(memory: Memory) -> None:
+    server, port = _run_server(memory)
+    try:
+        html = urllib.request.urlopen(f"http://127.0.0.1:{port}/").read().decode()
+        assert 'name="csrf-token"' in html and server.csrf_token in html
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_triage_payload_lists_held_items(memory: Memory) -> None:
+    fid = memory.add("a shaky low-confidence fact").added[0].id
+    memory._store.set_held_for_human(fid, held=True, quarantined=True, reason="low_confidence")
+    payload = ui.triage_payload(memory)
+    item = next(i for i in payload["items"] if i["id"] == fid)
+    assert item["reason"] == "low_confidence" and "impact" in item
+
+
+def test_post_create_fact_succeeds(memory: Memory) -> None:
+    server, port = _run_server(memory)
+    try:
+        body = json.dumps({"text": "a brand new fact"}).encode()
+        resp = _post(
+            port, "/api/fact", body=body, origin=f"http://127.0.0.1:{port}", token=server.csrf_token
+        )
+        assert resp.status == 200
+        assert any(n.content == "a brand new fact" for n in memory.list_active())
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_post_resolve_triage_clears_the_hold(memory: Memory) -> None:
+    fid = memory.add("held fact").added[0].id
+    memory._store.set_held_for_human(fid, held=True, quarantined=True, reason="low_confidence")
+    server, port = _run_server(memory)
+    try:
+        body = json.dumps({"action": "keep"}).encode()
+        resp = _post(
+            port,
+            f"/api/triage/{fid}/resolve",
+            body=body,
+            origin=f"http://127.0.0.1:{port}",
+            token=server.csrf_token,
+        )
+        assert resp.status == 200
+        assert not ui.triage_payload(memory)["items"]  # the hold is cleared
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_search_does_not_reinforce(memory: Memory) -> None:
+    # a UI search is a human browsing, not the agent recalling — it must NOT bump access/decay
+    # (also keeps the ungated GET /api/search from being a write-via-GET; security review).
+    fid = memory.add("I prefer dark roast coffee").added[0].id
+    before = memory.get(fid).access_count
+    ui.search_payload(memory, "coffee")
+    assert memory.get(fid).access_count == before
+
+
+def test_post_create_rejects_non_string_text(memory: Memory) -> None:
+    server, port = _run_server(memory)
+    try:
+        for bad in (b'{"text": null}', b'{"text": 5}', b'{"text": "   "}'):
+            with pytest.raises(urllib.error.HTTPError) as ei:
+                _post(
+                    port,
+                    "/api/fact",
+                    body=bad,
+                    origin=f"http://127.0.0.1:{port}",
+                    token=server.csrf_token,
+                )
+            assert ei.value.code == 400
+        assert not memory.list_active()  # nothing was created from a non-string/blank text
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_post_without_origin_is_rejected(memory: Memory) -> None:
+    fid = memory.add("a fact").added[0].id
+    server, port = _run_server(memory)
+    try:  # no Origin header (token alone) → fail closed
+        with pytest.raises(urllib.error.HTTPError) as ei:
+            _post(port, f"/api/fact/{fid}/pin", token=server.csrf_token)
+        assert ei.value.code == 403
+        assert memory.get(fid).pinned is False
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+# ── do_POST / route coverage (the action interior past the CSRF gate) ──
+_AWS = "AKIA1234567890ABCDEF"  # a secret the admission scan BLOCKs (mirrors test_admission)
+
+
+def _ok_post(port: int, server: ui._UIServer, path: str, body: bytes = b"{}"):
+    return _post(port, path, body=body, origin=f"http://127.0.0.1:{port}", token=server.csrf_token)
+
+
+def test_post_unknown_id_is_404(memory: Memory) -> None:
+    server, port = _run_server(memory)
+    try:
+        with pytest.raises(urllib.error.HTTPError) as ei:
+            _ok_post(port, server, "/api/fact/does-not-exist/pin")
+        assert ei.value.code == 404
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_post_forget_then_revive(memory: Memory) -> None:
+    fid = memory.add("a fact").added[0].id
+    server, port = _run_server(memory)
+    try:
+        _ok_post(port, server, f"/api/fact/{fid}/forget")
+        assert memory.get(fid).status == "archived"
+        _ok_post(port, server, f"/api/fact/{fid}/revive")
+        assert memory.get(fid).status == "active"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_post_correct_returns_new_version(memory: Memory) -> None:
+    fid = memory.add("deploy with deploy.sh").added[0].id
+    server, port = _run_server(memory)
+    try:
+        resp = _ok_post(
+            port, server, f"/api/fact/{fid}/correct", b'{"text": "deploy with ship.sh"}'
+        )
+        new = json.loads(resp.read())
+        assert new["content"] == "deploy with ship.sh" and new["id"] != fid
+        assert memory.get(fid).status == "archived"  # old superseded
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_post_create_bad_memory_type_is_400(memory: Memory) -> None:
+    server, port = _run_server(memory)
+    try:
+        with pytest.raises(urllib.error.HTTPError) as ei:
+            _ok_post(port, server, "/api/fact", b'{"text": "x", "memory_type": "bogus"}')
+        assert ei.value.code == 400
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_post_triage_bad_action_is_400(memory: Memory) -> None:
+    fid = memory.add("held").added[0].id
+    memory._store.set_held_for_human(fid, held=True, quarantined=True, reason="low_confidence")
+    server, port = _run_server(memory)
+    try:
+        with pytest.raises(urllib.error.HTTPError) as ei:
+            _ok_post(port, server, f"/api/triage/{fid}/resolve", b'{"action": "frobnicate"}')
+        assert ei.value.code == 400
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_get_search_empty_query_returns_empty(memory: Memory) -> None:
+    server, port = _run_server(memory)
+    try:
+        data = json.loads(urllib.request.urlopen(f"http://127.0.0.1:{port}/api/search?q=").read())
+        assert data == {"query": "", "hits": []}
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_get_history_route_200_and_404(memory: Memory) -> None:
+    fid = memory.add("a fact").added[0].id
+    server, port = _run_server(memory)
+    try:
+        ok = json.loads(
+            urllib.request.urlopen(f"http://127.0.0.1:{port}/api/fact/{fid}/history").read()
+        )
+        assert ok["versions"] and ok["versions"][0]["id"] == fid
+        with pytest.raises(urllib.error.HTTPError) as ei:
+            urllib.request.urlopen(f"http://127.0.0.1:{port}/api/fact/nope/history")
+        assert ei.value.code == 404
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_post_create_secret_is_blocked(memory: Memory) -> None:
+    server, port = _run_server(memory)
+    try:
+        body = json.dumps({"text": f"my aws key is {_AWS}"}).encode()
+        resp = _ok_post(port, server, "/api/fact", body)
+        out = json.loads(resp.read())
+        assert out["added"] is None and out["blocked"]  # surfaced, not silently stored
+        assert _AWS not in json.dumps(out)  # the secret never leaks into the response
+        assert not memory.list_active()
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_post_correct_with_secret_returns_422(memory: Memory) -> None:
+    fid = memory.add("a benign fact").added[0].id
+    server, port = _run_server(memory)
+    try:
+        body = json.dumps({"text": f"the key is {_AWS}"}).encode()
+        with pytest.raises(urllib.error.HTTPError) as ei:
+            _ok_post(port, server, f"/api/fact/{fid}/correct", body)
+        assert ei.value.code == 422  # SecretBlocked → user-actionable, not a dropped connection
+    finally:
+        server.shutdown()
+        server.server_close()

@@ -17,6 +17,11 @@ export type MemoryType = 'semantic' | 'episodic' | 'procedural'
  * via the `definition` "Status".
  */
 export type Status = 'active' | 'archived' | 'deleted'
+/**
+ * This interface was referenced by `ColdframeApiContract`'s JSON-Schema
+ * via the `definition` "TriageReason".
+ */
+export type TriageReason = 'true_conflict' | 'ambiguous_merge' | 'low_confidence' | 'pin_adjacent_archive'
 
 export interface ColdframeApiContract {
   [k: string]: unknown
@@ -66,6 +71,25 @@ export interface Source {
 }
 /**
  * This interface was referenced by `ColdframeApiContract`'s JSON-Schema
+ * via the `definition` "FactHistoryResponse".
+ */
+export interface FactHistoryResponse {
+  versions: HistoryVersion[]
+}
+/**
+ * This interface was referenced by `ColdframeApiContract`'s JSON-Schema
+ * via the `definition` "HistoryVersion".
+ */
+export interface HistoryVersion {
+  id: string
+  content: string
+  status: Status
+  version: number
+  valid_at: string | null
+  invalid_at: string | null
+}
+/**
+ * This interface was referenced by `ColdframeApiContract`'s JSON-Schema
  * via the `definition` "FieldNote".
  */
 export interface FieldNote {
@@ -86,6 +110,7 @@ export interface FieldNote {
  */
 export interface MemoryFieldResponse {
   notes: FieldNote[]
+  total: number
 }
 /**
  * This interface was referenced by `ColdframeApiContract`'s JSON-Schema
@@ -105,4 +130,60 @@ export interface NoteBrief {
  */
 export interface NotesResponse {
   notes: NoteBrief[]
+  total: number
+}
+/**
+ * This interface was referenced by `ColdframeApiContract`'s JSON-Schema
+ * via the `definition` "SearchHit".
+ */
+export interface SearchHit {
+  id: string
+  content: string
+  memory_type: MemoryType
+  status: Status
+  confidence: number
+  strength: Strength
+  score: number
+  signals: Signals
+}
+/**
+ * This interface was referenced by `ColdframeApiContract`'s JSON-Schema
+ * via the `definition` "Signals".
+ */
+export interface Signals {
+  semantic: number | null
+  bm25: number | null
+  edge: number | null
+  rrf: number
+  rerank: number | null
+}
+/**
+ * This interface was referenced by `ColdframeApiContract`'s JSON-Schema
+ * via the `definition` "SearchResponse".
+ */
+export interface SearchResponse {
+  query: string
+  hits: SearchHit[]
+}
+/**
+ * This interface was referenced by `ColdframeApiContract`'s JSON-Schema
+ * via the `definition` "TriageItem".
+ */
+export interface TriageItem {
+  id: string
+  content: string
+  memory_type: MemoryType
+  status: Status
+  confidence: number
+  strength: Strength
+  reason: TriageReason
+  candidates: string[]
+  impact: number
+}
+/**
+ * This interface was referenced by `ColdframeApiContract`'s JSON-Schema
+ * via the `definition` "TriageResponse".
+ */
+export interface TriageResponse {
+  items: TriageItem[]
 }

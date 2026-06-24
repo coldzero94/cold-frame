@@ -8,7 +8,7 @@ export default defineConfig({
       ink: '#0b0b0f',
       panel: '#101015',
       line: '#1c1c22',
-      dim: '#6f6f78',
+      dim: '#8a8a93', // secondary text — WCAG AA on ink (~5.8:1); the old #6f6f78 failed at 3.95:1
       fg: '#e7e7ea',
       ember: '#d97757',
       cold: '#6a9bcc',

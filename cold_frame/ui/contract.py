@@ -17,7 +17,7 @@ from typing import Any, TypedDict, get_args
 
 from pydantic import TypeAdapter
 
-from cold_frame.models import Band, MemoryTypeLiteral, StatusLiteral
+from cold_frame.models import Band, MemoryTypeLiteral, StatusLiteral, TriageReason
 
 
 class StrengthDict(TypedDict):
@@ -54,6 +54,37 @@ class FactDetailDict(NoteBriefDict):
     edges: list[EdgeDict]
 
 
+class SignalsDict(TypedDict):
+    # per-hit retrieval explainability (SPEC §5); optionals are null when that channel didn't fire.
+    semantic: float | None
+    bm25: float | None
+    edge: float | None
+    rrf: float
+    rerank: float | None
+
+
+class SearchHitDict(NoteBriefDict):
+    score: float
+    signals: SignalsDict
+
+
+class TriageItemDict(NoteBriefDict):
+    # a note held for human review (low-confidence / true-conflict / ambiguous-merge).
+    reason: TriageReason  # the source domain, not bare str → a named TS union the UI can switch on
+    candidates: list[str]
+    impact: float
+
+
+class HistoryVersionDict(TypedDict):
+    # one persisted version of a note, oldest→newest — the rewindable belief trail (fork-history).
+    id: str
+    content: str
+    status: StatusLiteral
+    version: int
+    valid_at: str | None
+    invalid_at: str | None
+
+
 class FieldNoteDict(TypedDict):
     id: str
     content: str
@@ -68,12 +99,29 @@ class FieldNoteDict(TypedDict):
 
 
 # ── response envelopes (what each GET endpoint returns) ──────────────────────
+# `total` = count of ALL active notes in scope; `notes` may be a render-capped prefix of that, so
+# the client can show "showing N of M" instead of silently dropping the tail.
 class NotesResponse(TypedDict):
     notes: list[NoteBriefDict]
+    total: int
 
 
 class MemoryFieldResponse(TypedDict):
     notes: list[FieldNoteDict]
+    total: int
+
+
+class SearchResponse(TypedDict):
+    query: str
+    hits: list[SearchHitDict]
+
+
+class FactHistoryResponse(TypedDict):
+    versions: list[HistoryVersionDict]
+
+
+class TriageResponse(TypedDict):
+    items: list[TriageItemDict]
 
 
 # The endpoints whose response shapes are generated (fact returns FactDetailDict | null).
@@ -84,8 +132,15 @@ CONTRACT_TYPES = (
     EdgeDict,
     FactDetailDict,
     FieldNoteDict,
+    SignalsDict,
+    SearchHitDict,
+    TriageItemDict,
+    HistoryVersionDict,
     NotesResponse,
     MemoryFieldResponse,
+    SearchResponse,
+    FactHistoryResponse,
+    TriageResponse,
 )
 
 # String-literal domains hoisted into named JSON-Schema $defs → named TS unions (Band, …).
@@ -95,6 +150,7 @@ _ENUMS: dict[str, tuple[str, ...]] = {
     "Band": get_args(Band),
     "MemoryType": get_args(MemoryTypeLiteral),
     "Status": get_args(StatusLiteral),
+    "TriageReason": get_args(TriageReason),
 }
 _ENUM_BY_VALUES: dict[frozenset[str], str] = {frozenset(v): k for k, v in _ENUMS.items()}
 _ENUM_DEFS: dict[str, list[str]] = {k: list(v) for k, v in _ENUMS.items()}
