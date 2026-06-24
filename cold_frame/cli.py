@@ -9,6 +9,7 @@ server). Other subcommands remain stubs until their phase. The DB location resol
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sqlite3
 from collections import Counter
@@ -254,6 +255,95 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+# ── Claude Code hooks (auto-recall / capture, D26) ───────────────────────────
+_RECALL_K = 7  # SessionStart digest: inject up to K strongest durable beliefs
+
+
+def _settings_path(*, user: bool) -> Path:
+    """Claude Code settings file: ~/.claude (user) or ./.claude (project)."""
+    base = Path.home() if user else Path.cwd()
+    return base / ".claude" / "settings.json"
+
+
+def _cmd_hook_session_start(args: argparse.Namespace) -> int:
+    """SessionStart recall hook: emit the strongest durable memories as additionalContext so a new
+    Claude Code session opens already knowing the user. Read-only (no reinforce, no write); on ANY
+    error it emits nothing and exits 0 — a hook must never block the session (D26)."""
+    try:
+        mem = _memory(args)
+        lines: list[str] = []
+        for n in mem.list_active(sort="importance", limit=_RECALL_K * 3):
+            if mem.strength(n.id).band == "fading":
+                continue  # inject durable beliefs, not what's already cooling toward forgetting
+            lines.append(f"- {n.content}")
+            if len(lines) >= _RECALL_K:
+                break
+        if not lines:
+            return 0  # silence > noise: nothing worth surfacing
+        ctx = (
+            "Relevant memory from Coldframe (this user's local memory):\n"
+            + "\n".join(lines)
+            + f"\n(Full memory: run `{PKG} ui`.)"
+        )
+        out = {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": ctx}}
+        print(json.dumps(out))
+    except Exception:  # a hook failure must degrade to a silent no-op, never crash the session
+        return 0
+    return 0
+
+
+def _hook_present(entries: object, cmd: str) -> bool:
+    """True if our hook command is already wired in a settings SessionStart entry list."""
+    if not isinstance(entries, list):
+        return False
+    for e in entries:
+        hooks = e.get("hooks", []) if isinstance(e, dict) else []
+        if isinstance(hooks, list):
+            for h in hooks:
+                if isinstance(h, dict) and cmd in str(h.get("command", "")):
+                    return True
+    return False
+
+
+def _cmd_hook_install(args: argparse.Namespace) -> int:
+    path = _settings_path(user=not args.project)
+    cmd = f"{PKG} hook session-start"
+    try:
+        settings = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except (OSError, ValueError):
+        print(f"{PKG}: couldn't read {path} — fix or remove it, then retry")
+        return 1
+    entries = settings.setdefault("hooks", {}).setdefault("SessionStart", [])
+    if _hook_present(entries, cmd):
+        print(f"already installed → {path}")
+        return 0
+    entries.append({"matcher": "startup|resume", "hooks": [{"type": "command", "command": cmd}]})
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
+    print(f"installed SessionStart recall hook → {path}\n  {cmd}")
+    return 0
+
+
+def _cmd_hook_status(args: argparse.Namespace) -> int:
+    cmd = f"{PKG} hook session-start"
+    for scope, user in (("user", True), ("project", False)):
+        path = _settings_path(user=user)
+        try:
+            settings = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        except (OSError, ValueError):
+            settings = {}
+        entries = settings.get("hooks", {}).get("SessionStart", [])
+        wired = _hook_present(entries, cmd)
+        print(f"{scope:8} {path}: {'✓ recall hook installed' if wired else '— not installed'}")
+    print(f"install with: {PKG} hook install")
+    return 0
+
+
+def _cmd_hook_help(args: argparse.Namespace) -> int:
+    print(f"usage: {PKG} hook {{session-start|install|status}}")
+    return 1
+
+
 def _cmd_mcp(args: argparse.Namespace) -> int:
     from cold_frame.mcp import main as mcp_main  # lazy: keeps heavy deps out of the CLI
 
@@ -450,6 +540,20 @@ def build_parser() -> argparse.ArgumentParser:
     p_ui.add_argument("--port", type=int, default=None, help="UI port (else 27182 + auto-fallback)")
     p_ui.set_defaults(func=_cmd_ui)
     sub.add_parser("mcp", help="run the MCP stdio server").set_defaults(func=_cmd_mcp)
+    p_hook = sub.add_parser("hook", help="Claude Code auto-recall/capture hooks (D26)")
+    p_hook.set_defaults(func=_cmd_hook_help)  # `hook` with no event → usage
+    hook_sub = p_hook.add_subparsers(dest="hook_cmd", metavar="<event>")
+    hook_sub.add_parser("session-start", help="emit recall context for a new session").set_defaults(
+        func=_cmd_hook_session_start
+    )
+    p_hi = hook_sub.add_parser("install", help="wire the recall hook into Claude Code settings")
+    p_hi.add_argument(
+        "--project", action="store_true", help="install into ./.claude (else ~/.claude)"
+    )
+    p_hi.set_defaults(func=_cmd_hook_install)
+    hook_sub.add_parser("status", help="show whether the recall hook is installed").set_defaults(
+        func=_cmd_hook_status
+    )
     sub.add_parser("setup", help="first-run setup").set_defaults(func=_cmd_setup)
     p_purge = sub.add_parser("purge", help="hard-scrub a secret/PII note (irreversible)")
     p_purge.add_argument("id", nargs="?", help="note id (or unique prefix)")
