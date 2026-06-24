@@ -15,6 +15,22 @@ const detailError = ref('')
 // Record<Band> (not Record<string>) so the glyph table is proven exhaustive against the union.
 const GLYPH: Record<Band, string> = { evergreen: '🌳', budding: '🌿', fading: '🌱' }
 
+// Confidence as a discrete glyph in ambient surfaces (ux-design §8.1/§8.3: one signal → one channel,
+// decimals only in the Fact Detail header). ● high · ◐ medium · ○ low.
+function confGlyph(c: number): string {
+  return c >= 0.8 ? '●' : c >= 0.4 ? '◐' : '○'
+}
+
+// Edges get a per-relation channel (§8.5): supersedes is the belief-change story, not a flat list.
+const EDGE_STYLE: Record<string, { icon: string; cls: string }> = {
+  supersedes: { icon: '⇒', cls: 'text-ember' },
+  duplicate_of: { icon: '≈', cls: 'text-cold' },
+  relates_to: { icon: '→', cls: 'text-dim' },
+}
+function edgeStyle(rel: string): { icon: string; cls: string } {
+  return EDGE_STYLE[rel] ?? { icon: '→', cls: 'text-dim' }
+}
+
 onMounted(async () => {
   try {
     const resp = await api.notes()
@@ -81,7 +97,8 @@ watch(
         </div>
         <div class="h-[3px] rounded-full bg-ember/80 mt-2" :style="{ width: `${Math.round(n.strength.value * 100)}%` }" />
         <div class="text-[11px] text-dim mt-1.5">
-          {{ n.memory_type }} · S={{ n.strength.value }}
+          {{ n.memory_type }}
+          <span :title="`confidence ${n.confidence}`" class="ml-1">{{ confGlyph(n.confidence) }}</span>
           <span v-if="n.strength.at_risk" class="text-ember ml-1">○ at risk</span>
         </div>
       </RouterLink>
@@ -118,10 +135,23 @@ watch(
 
         <template v-if="detail.edges.length">
           <div class="text-[12px] tracking-wide text-dim mb-2 mt-6">EDGES</div>
-          <div v-for="(e, i) in detail.edges" :key="i" class="text-[13px] text-fg/90 mb-1">
-            {{ e.relation }} → {{ e.dst.slice(0, 8) }}
-          </div>
+          <RouterLink
+            v-for="(e, i) in detail.edges"
+            :key="i"
+            :to="`/fact/${e.dst}`"
+            class="flex items-baseline gap-2 text-[13px] mb-1 no-underline hover:underline"
+            :class="edgeStyle(e.relation).cls"
+          >
+            <span class="w-4 text-center">{{ edgeStyle(e.relation).icon }}</span>
+            <span>{{ e.relation }}</span>
+            <span class="text-dim font-mono">{{ e.dst.slice(0, 8) }}</span>
+          </RouterLink>
         </template>
+
+        <!-- cross-surface footer (ux-design §6.5): the same memory in the CLI — one product, 3 lenses -->
+        <div class="text-[11px] text-dim/70 mt-8 pt-4 border-t border-line font-mono">
+          cli: cold-frame show {{ detail.id.slice(0, 8) }}
+        </div>
       </div>
     </div>
   </div>

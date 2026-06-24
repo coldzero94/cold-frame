@@ -6,7 +6,7 @@
 import type P5 from 'p5'
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
 import { useRouter } from 'vue-router'
-import { api, type FieldNote } from '@/api'
+import { api, type Band, type FieldNote } from '@/api'
 import { makeThermalField } from './thermalSketch'
 import EmptyState from './EmptyState.vue'
 
@@ -27,6 +27,16 @@ const error = ref('')
 let instance: P5 | null = null
 let reseed: (() => void) | null = null
 
+// declutter: toggle bands off to thin a dense field (positions are id-stable, so they persist).
+const BANDS = ['evergreen', 'budding', 'fading'] as const
+const BAND_COLOR: Record<Band, string> = {
+  evergreen: '#f0cf8e',
+  budding: '#d97757',
+  fading: '#6a9bcc',
+}
+const enabledBands = ref<Record<Band, boolean>>({ evergreen: true, budding: true, fading: true })
+const shown = computed(() => notes.value.filter((n) => enabledBands.value[n.band]))
+
 const counts = computed(() => {
   const c = { evergreen: 0, budding: 0, fading: 0, pinned: 0, atRisk: 0 }
   for (const n of notes.value) {
@@ -44,6 +54,24 @@ const fieldLabel = computed(() => {
   return `Memory field: ${c.evergreen} evergreen, ${c.budding} budding, ${c.fading} fading, ${c.pinned} sheltered, ${c.atRisk} at-risk. Full detail in the Inspector.`
 })
 
+function mountField(): void {
+  if (!host.value || typeof window.p5 !== 'function') return
+  instance?.remove() // rebuild with the current band filter (id-stable positions persist)
+  const field = makeThermalField(
+    host.value,
+    shown.value,
+    (n) => (hovered.value = n),
+    (n) => router.push(`/fact/${n.id}`), // click an ember → open the memory (no longer a dead-end)
+  )
+  instance = new window.p5(field.sketch)
+  reseed = field.reseed
+}
+
+function toggleBand(b: Band): void {
+  enabledBands.value[b] = !enabledBands.value[b]
+  mountField()
+}
+
 onMounted(async () => {
   try {
     const resp = await api.memoryField()
@@ -59,14 +87,7 @@ onMounted(async () => {
     error.value = 'the visualization runtime failed to load' // /p5.min.js missing/blocked
     return
   }
-  const field = makeThermalField(
-    host.value,
-    notes.value,
-    (n) => (hovered.value = n),
-    (n) => router.push(`/fact/${n.id}`), // click an ember → open the memory (no longer a dead-end)
-  )
-  instance = new window.p5(field.sketch)
-  reseed = field.reseed
+  mountField()
 })
 
 onBeforeUnmount(() => {
@@ -96,15 +117,19 @@ onBeforeUnmount(() => {
       class="absolute top-5 left-6 max-w-[55%] text-[13px] select-none pointer-events-none"
     >
       <div class="text-[12px] tracking-[0.08em] text-dim mb-3">YOUR MEMORY FIELD</div>
-      <div class="flex items-center gap-2 mb-1.5" style="color: #f0cf8e">
-        <span class="legend-dot" />Evergreen<span class="ml-2 text-dim font-mono">{{ counts.evergreen }}</span>
-      </div>
-      <div class="flex items-center gap-2 mb-1.5" style="color: #d97757">
-        <span class="legend-dot" />Budding<span class="ml-2 text-dim font-mono">{{ counts.budding }}</span>
-      </div>
-      <div class="flex items-center gap-2" style="color: #6a9bcc">
-        <span class="legend-dot" />Fading<span class="ml-2 text-dim font-mono">{{ counts.fading }}</span>
-      </div>
+      <!-- each band is a toggle: click to thin the field by hiding that band -->
+      <button
+        v-for="b in BANDS"
+        :key="b"
+        type="button"
+        class="flex items-center gap-2 mb-1.5 pointer-events-auto border-0 bg-transparent p-0 cursor-pointer transition-opacity capitalize"
+        :style="{ color: BAND_COLOR[b], opacity: enabledBands[b] ? 1 : 0.3 }"
+        :title="enabledBands[b] ? `Hide ${b}` : `Show ${b}`"
+        :aria-pressed="enabledBands[b]"
+        @click="toggleBand(b)"
+      >
+        <span class="legend-dot" />{{ b }}<span class="ml-2 text-dim font-mono">{{ counts[b] }}</span>
+      </button>
       <div class="text-[11px] text-dim mt-3 leading-relaxed">
         ⬡ {{ counts.pinned }} sheltered &nbsp;·&nbsp; ❄ {{ counts.atRisk }} at-risk
       </div>
