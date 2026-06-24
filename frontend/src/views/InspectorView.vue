@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api, type Band, type FactDetail, type HistoryVersion, type NoteBrief } from '@/api'
 import EmptyState from '@/components/EmptyState.vue'
@@ -38,6 +38,17 @@ const EDGE_STYLE: Record<string, { icon: string; cls: string }> = {
 function edgeStyle(rel: string): { icon: string; cls: string } {
   return EDGE_STYLE[rel] ?? { icon: '→', cls: 'text-dim' }
 }
+
+// decay sparkline: recall timestamps mapped to x∈[0,1] over [first recall … now]. Dense-recent =
+// reinforced; a long gap before the now-marker = cooling toward forgetting.
+const sparkline = computed<number[]>(() => {
+  const acc = detail.value?.accesses ?? []
+  if (!acc.length) return []
+  const ts = acc.map((s) => new Date(s).getTime())
+  const first = ts[0]
+  const span = Math.max(Date.now() - first, 1)
+  return ts.map((t) => Math.min(1, Math.max(0, (t - first) / span)))
+})
 
 onMounted(async () => {
   try {
@@ -273,6 +284,34 @@ async function submitCorrect(): Promise<void> {
             <span>{{ e.relation }}</span>
             <span class="text-dim font-mono">{{ e.dst.slice(0, 8) }}</span>
           </RouterLink>
+        </template>
+
+        <!-- decay sparkline (ux-design §8.2): when this fact was recalled — each recall reinforces -->
+        <template v-if="detail.accesses.length">
+          <div class="text-[12px] tracking-wide text-dim mb-2 mt-6">RECALL HISTORY</div>
+          <svg
+            viewBox="0 0 220 22"
+            class="w-[220px] h-[22px]"
+            role="img"
+            :aria-label="`${detail.accesses.length} recalls`"
+          >
+            <line x1="0" y1="18" x2="220" y2="18" stroke="#1c1c22" stroke-width="1" />
+            <line
+              v-for="(p, i) in sparkline"
+              :key="i"
+              :x1="p * 214 + 3"
+              y1="5"
+              :x2="p * 214 + 3"
+              y2="18"
+              stroke="#d97757"
+              stroke-width="1.5"
+            />
+            <circle cx="217" cy="18" r="2.5" fill="#8a8a93" />
+          </svg>
+          <div class="text-[11px] text-dim mt-1">
+            {{ detail.accesses.length }} recall{{ detail.accesses.length === 1 ? '' : 's' }} ·
+            recent reinforces, gaps cool toward forgetting
+          </div>
         </template>
 
         <!-- belief trail (ux-design §4.2): the rewindable supersession history of this fact -->

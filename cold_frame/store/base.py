@@ -302,6 +302,11 @@ class Store(ABC):
         ...
 
     @abstractmethod
+    def access_log(self, id: str, *, limit: int = 50) -> list[datetime]:
+        """Recall timestamps for ``id`` (oldest→newest) from the capped access_log (I13)."""
+        ...
+
+    @abstractmethod
     def iter_events(self, *, since_hlc: str | None = None) -> Iterator[Event]: ...
 
     @abstractmethod

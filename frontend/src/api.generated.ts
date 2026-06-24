@@ -49,6 +49,7 @@ export interface FactDetail {
   sources: Source[]
   valid_at: string | null
   edges: Edge[]
+  accesses: string[]
 }
 /**
  * This interface was referenced by `ColdframeApiContract`'s JSON-Schema

@@ -23,6 +23,7 @@ import secrets
 import sys
 from collections.abc import Callable
 from contextlib import suppress
+from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import cast
@@ -74,6 +75,17 @@ _FALLBACK_CSP = (
 def _spa_built() -> bool:
     """True iff a real Vite bundle (not just the .gitkeep placeholder) is present."""
     return (_DIST / "index.html").is_file()
+
+
+def _parse_iso(value: str) -> datetime | None:
+    """Parse an ISO date/datetime from a query param → tz-aware UTC, or None if empty/invalid."""
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
 
 
 # ── payload builders (pure; testable without HTTP) ───────────────────────────
@@ -147,15 +159,22 @@ def fact_payload(memory: Memory, fact_id: str) -> FactDetailDict | None:
             {"src": e.src_id, "dst": e.dst_id, "relation": e.relation}
             for e in memory.neighbors(fact_id)
         ],
+        "accesses": [t.isoformat() for t in memory.access_history(fact_id)],
     }
 
 
-def search_payload(memory: Memory, query: str, *, k: int = 20) -> SearchResponse:
+def search_payload(
+    memory: Memory, query: str, *, k: int = 20, as_of: datetime | None = None
+) -> SearchResponse:
     """Ranked hits for a query, each carrying its retrieval signal breakdown (explainability).
 
-    ``reinforce=False``: a UI search is a human browsing, not the agent recalling — it must not
-    bump decay/access (and keeps this ungated GET from being a write-via-GET, security review)."""
-    result = memory.search(query, k=k, reinforce=False)
+    ``as_of`` → time-travel: search the belief state as it was at that instant (bi-temporal
+    valid_at≤T<invalid_at), incl. notes archived SINCE T (``include_archived``) — "what did I
+    believe in March". ``reinforce=False``: a UI search is a human browsing, not the agent
+    recalling — it must not bump decay/access (and keeps this ungated GET from being a write)."""
+    result = memory.search(
+        query, k=k, reinforce=False, as_of=as_of, include_archived=as_of is not None
+    )
     hits: list[SearchHitDict] = []
     for h in result.hits:
         sig = h.signals
@@ -268,8 +287,11 @@ class _Handler(BaseHTTPRequestHandler):
         elif path == "/api/memory-field":
             self._json(200, memory_field_payload(memory))
         elif path == "/api/search":
-            q = (parse_qs(parsed.query).get("q") or [""])[0].strip()
-            self._json(200, search_payload(memory, q) if q else {"query": "", "hits": []})
+            qs = parse_qs(parsed.query)
+            q = (qs.get("q") or [""])[0].strip()
+            as_of = _parse_iso((qs.get("as_of") or [""])[0])  # optional time-travel point
+            res = search_payload(memory, q, as_of=as_of) if q else {"query": "", "hits": []}
+            self._json(200, res)
         elif path.startswith("/api/fact/") and path.endswith("/history"):
             fid = path[len("/api/fact/") : -len("/history")]
             hist = fact_history_payload(memory, fid)
