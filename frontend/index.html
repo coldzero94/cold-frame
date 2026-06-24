@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>Coldframe</title>
+    <!-- p5 as a same-origin CLASSIC script (vendored in public/, shipped in the wheel — no CDN).
+         Classic (non-module) so its UMD global-detect uses `this`=window and never hits the
+         `Function("return this")` eval fallback that a strict CSP (no 'unsafe-eval') blocks. -->
+    <script src="/p5.min.js"></script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

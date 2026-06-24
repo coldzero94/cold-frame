@@ -1,0 +1,29 @@
+{
+  "name": "coldframe-ui",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "description": "Coldframe local web UI — Vite + Vue 3 SPA. Built into ../cold_frame/ui/_dist and shipped in the wheel (no Node for users).",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "node scripts/vendor-p5.mjs && vite",
+    "build": "node scripts/vendor-p5.mjs && vite build && node scripts/restore-gitkeep.mjs",
+    "typecheck": "vue-tsc --noEmit"
+  },
+  "dependencies": {
+    "p5": "^1.11.3",
+    "vue": "^3.5.13",
+    "vue-router": "^4.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "@types/p5": "^1.7.6",
+    "@vitejs/plugin-vue": "^5.2.1",
+    "typescript": "^5.7.2",
+    "unocss": "^0.65.1",
+    "vite": "^5.4.11",
+    "vue-tsc": "^2.1.10"
+  }
+}
