@@ -17,20 +17,26 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import sys
 from collections.abc import Callable
+from contextlib import suppress
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, cast
+from typing import TypedDict, cast
 from urllib.parse import urlparse
 
 from cold_frame.api import Memory
 from cold_frame.branding import UI_HOST, UI_PORT, UI_PORTFILE
 from cold_frame.exceptions import NoteNotFound
-from cold_frame.models import Note
+from cold_frame.models import Band, MemoryTypeLiteral, Note, StatusLiteral
+from cold_frame.observability import get_logger
 from cold_frame.read.strength import compute_strength
 
-_ALLOWED_HOSTS = frozenset({"localhost", "127.0.0.1"})
-_BAND_GLYPH = {"evergreen": "🌳", "budding": "🌿", "fading": "🌱"}
+_log = get_logger(__name__)
+
+# DNS-rebind allowlist tracks the bind address (branding indirection, §4): if UI_HOST moves, the
+# allowlist moves with it. ``localhost`` is a stable second alias for the same loopback bind.
+_ALLOWED_HOSTS = frozenset({"localhost", UI_HOST})
 
 # The CI-built SPA bundle (Vite output, shipped in the wheel via [tool.hatch ... artifacts]).
 _DIST = Path(__file__).parent / "_dist"
@@ -55,8 +61,57 @@ def _spa_built() -> bool:
     return (_DIST / "index.html").is_file()
 
 
+# ── payload shapes (TypedDicts = the canonical Python-side JSON contract the TS mirrors;
+# mypy --strict then catches a dropped/misspelled key here, which dict[str, Any] would hide) ──
+class _StrengthDict(TypedDict):
+    value: float
+    band: Band
+    at_risk: bool
+
+
+class NoteBriefDict(TypedDict):
+    id: str
+    content: str
+    memory_type: MemoryTypeLiteral
+    status: StatusLiteral
+    confidence: float
+    strength: _StrengthDict
+
+
+class _SourceDict(TypedDict):
+    kind: str
+    ref: str
+    role: str | None
+    observed_at: str
+
+
+class _EdgeDict(TypedDict):
+    src: str
+    dst: str
+    relation: str
+
+
+class FactDetailDict(NoteBriefDict):
+    sources: list[_SourceDict]
+    valid_at: str | None
+    edges: list[_EdgeDict]
+
+
+class FieldNoteDict(TypedDict):
+    id: str
+    content: str
+    type: MemoryTypeLiteral
+    s: float
+    band: Band
+    atRisk: bool
+    importance: float
+    access: int
+    pinned: bool
+    ageDays: int
+
+
 # ── payload builders (pure; testable without HTTP) ───────────────────────────
-def _note_brief(memory: Memory, note: Note) -> dict[str, Any]:
+def _note_brief(memory: Memory, note: Note) -> NoteBriefDict:
     s = compute_strength(note, memory._clock.now())
     return {
         "id": note.id,
@@ -68,20 +123,20 @@ def _note_brief(memory: Memory, note: Note) -> dict[str, Any]:
     }
 
 
-def notes_payload(memory: Memory) -> dict[str, Any]:
+def notes_payload(memory: Memory) -> dict[str, list[NoteBriefDict]]:
     notes = memory.list_active(limit=200)
     return {"notes": [_note_brief(memory, n) for n in notes]}
 
 
-def memory_field_payload(memory: Memory) -> dict[str, Any]:
+def memory_field_payload(memory: Memory) -> dict[str, list[FieldNoteDict]]:
     """The compact per-note shape the p5.js MemoryField hero viz consumes (matches
     ``prototype/gen_sample.py``): position is derived client-side from ``id`` (spatial-memory
     law), heat from ``s``/``band``, flicker from ``atRisk``, the glass frame from ``pinned``."""
     now = memory._clock.now()
-    out: list[dict[str, Any]] = []
+    out: list[FieldNoteDict] = []
     for n in memory.list_active(limit=200):
         s = compute_strength(n, now)
-        last = n.last_accessed or n.created_at
+        last = n.last_accessed or n.created_at  # fresh notes have no last_accessed
         out.append(
             {
                 "id": n.id,
@@ -93,28 +148,30 @@ def memory_field_payload(memory: Memory) -> dict[str, Any]:
                 "importance": n.importance,
                 "access": n.access_count,
                 "pinned": n.pinned,
-                "ageDays": max(0, (now - last).days),
+                "ageDays": max(0, (now - last).days),  # clamp negative clock skew
             }
         )
     return {"notes": out}
 
 
-def fact_payload(memory: Memory, fact_id: str) -> dict[str, Any] | None:
+def fact_payload(memory: Memory, fact_id: str) -> FactDetailDict | None:
     try:
         note = memory.get(fact_id)
     except NoteNotFound:
         return None
     brief = _note_brief(memory, note)
-    brief["sources"] = [
-        {"kind": s.kind, "ref": s.ref, "role": s.role, "observed_at": s.observed_at.isoformat()}
-        for s in note.sources
-    ]
-    brief["valid_at"] = note.valid_at.isoformat() if note.valid_at else None
-    brief["edges"] = [
-        {"src": e.src_id, "dst": e.dst_id, "relation": e.relation}
-        for e in memory.neighbors(fact_id)
-    ]
-    return brief
+    return {
+        **brief,
+        "sources": [
+            {"kind": s.kind, "ref": s.ref, "role": s.role, "observed_at": s.observed_at.isoformat()}
+            for s in note.sources
+        ],
+        "valid_at": note.valid_at.isoformat() if note.valid_at else None,
+        "edges": [
+            {"src": e.src_id, "dst": e.dst_id, "relation": e.relation}
+            for e in memory.neighbors(fact_id)
+        ],
+    }
 
 
 # ── server + handler ─────────────────────────────────────────────────────────
@@ -124,6 +181,12 @@ class _UIServer(ThreadingHTTPServer):
     def __init__(self, addr: tuple[str, int], memory: Memory) -> None:
         super().__init__(addr, _Handler)
         self.memory = memory
+
+    def handle_error(self, request: object, client_address: object) -> None:
+        # Override the stdlib default (raw traceback to stderr) so an unexpected handler error logs
+        # only the exception TYPE through the redacting logger — never a path or content (I16).
+        exc = sys.exc_info()[1]
+        _log.warning("ui_handler_error", extra={"exc_type": type(exc).__name__})
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -147,7 +210,10 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(200, memory_field_payload(memory))
         elif path.startswith("/api/fact/"):
             data = fact_payload(memory, path[len("/api/fact/") :])
-            self._json(200, data) if data is not None else self._json(404, {"error": "not_found"})
+            if data is not None:
+                self._json(200, data)
+            else:
+                self._json(404, {"error": "not_found"})
         elif path == "/api/health":
             self._json(200, dict(memory.health()))
         elif path.startswith("/api/"):
@@ -173,9 +239,15 @@ class _Handler(BaseHTTPRequestHandler):
         ctype = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
         if ctype.startswith("text/") or ctype in ("application/javascript", "application/json"):
             ctype += "; charset=utf-8"
-        self._send_bytes(200, target.read_bytes(), ctype, _STRICT_CSP)
+        try:
+            body = target.read_bytes()
+        except OSError as exc:  # TOCTOU/permission/IO — fail with a real 500, not a dropped conn
+            _log.warning("ui_static_read_failed", extra={"errno": exc.errno})  # id/errno only (I16)
+            self._json(500, {"error": "asset_unavailable"})
+            return
+        self._send_bytes(200, body, ctype, _STRICT_CSP)
 
-    def _json(self, code: int, obj: dict[str, Any]) -> None:
+    def _json(self, code: int, obj: object) -> None:
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
         self._send_bytes(code, body, "application/json; charset=utf-8", _STRICT_CSP)
 
@@ -189,7 +261,8 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Security-Policy", csp)
         self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
-        self.wfile.write(body)
+        with suppress(BrokenPipeError, ConnectionError):  # client navigated away mid-response
+            self.wfile.write(body)
 
     def log_message(self, *args: object) -> None:  # silence default stderr access logging
         pass
