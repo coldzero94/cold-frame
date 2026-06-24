@@ -91,7 +91,10 @@ onBeforeUnmount(() => {
     </div>
 
     <!-- legend (read-only; reflects the live snapshot) — hidden when the field is empty -->
-    <div v-if="notes.length" class="absolute top-5 left-6 text-[13px] select-none pointer-events-none">
+    <div
+      v-if="notes.length"
+      class="absolute top-5 left-6 max-w-[55%] text-[13px] select-none pointer-events-none"
+    >
       <div class="text-[12px] tracking-[0.08em] text-dim mb-3">YOUR MEMORY FIELD</div>
       <div class="flex items-center gap-2 mb-1.5" style="color: #f0cf8e">
         <span class="legend-dot" />Evergreen<span class="ml-2 text-dim font-mono">{{ counts.evergreen }}</span>

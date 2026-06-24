@@ -53,9 +53,13 @@ watch(
     <EmptyState />
   </div>
 
+  <!-- desktop: list + detail side-by-side. mobile: one at a time (list, tap → detail). -->
   <div v-else class="flex h-full">
     <!-- list -->
-    <div class="w-[420px] flex-shrink-0 border-r border-line overflow-auto p-4">
+    <div
+      class="w-full sm:w-[420px] sm:flex-shrink-0 border-r border-line overflow-auto p-4"
+      :class="route.params.id ? 'hidden sm:block' : ''"
+    >
       <div class="flex items-baseline justify-between mb-3 px-1">
         <span class="text-[12px] tracking-wide text-dim">WHAT I KNOW ABOUT YOU NOW</span>
         <span v-if="!loading && !error && total" class="text-[11px] text-dim font-mono">
@@ -84,7 +88,13 @@ watch(
     </div>
 
     <!-- detail -->
-    <div class="flex-1 min-w-0 overflow-auto p-7">
+    <div
+      class="flex-1 min-w-0 overflow-auto p-7"
+      :class="route.params.id ? '' : 'hidden sm:block'"
+    >
+      <RouterLink to="/inspector" class="sm:hidden inline-block mb-4 text-dim text-[13px] no-underline">
+        ← all memories
+      </RouterLink>
       <div v-if="detailError" class="text-ember h-full flex items-center justify-center">
         couldn't load this memory — {{ detailError }}
       </div>
