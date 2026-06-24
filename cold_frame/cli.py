@@ -36,6 +36,7 @@ _SUBCOMMANDS: tuple[str, ...] = (
     "ui",
     "mcp",
     "setup",
+    "purge",
 )
 
 
@@ -212,6 +213,25 @@ def _cmd_setup(args: argparse.Namespace) -> int:
     print(f'  {PKG} search "coffee"')
     print(f"  {PKG} ui        # browse your memory at {branding.ui_base_url()}")
     return 0
+
+
+def _cmd_purge(args: argparse.Namespace) -> int:
+    """Hard-scrub a secret/PII note from every grain + VACUUM + grep-verify (NOT revivable)."""
+    if not args.id:
+        print("purge: provide a note id")
+        return 1
+    if not args.force:  # destructive + irreversible → never on a bare invocation
+        print(f"purge permanently scrubs {args.id} (not revivable) — re-run with --force")
+        return 1
+    mem = _memory(args)
+    resolved = _resolve_id(mem, args.id)
+    if resolved is None:
+        print(f"not found (or ambiguous prefix): {args.id}")
+        return 1
+    report = mem.purge(resolved, cascade=args.cascade)
+    status = "clean" if report.grep_clean else "RESIDUE FOUND"
+    print(f"purged {resolved[:8]}: scrubbed {report.rows_scrubbed} row(s), grep={status}")
+    return 0 if report.grep_clean else 1
 
 
 def _cmd_doctor(args: argparse.Namespace) -> int:
@@ -415,6 +435,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_ui.set_defaults(func=_cmd_ui)
     sub.add_parser("mcp", help="run the MCP stdio server").set_defaults(func=_cmd_mcp)
     sub.add_parser("setup", help="first-run setup").set_defaults(func=_cmd_setup)
+    p_purge = sub.add_parser("purge", help="hard-scrub a secret/PII note (irreversible)")
+    p_purge.add_argument("id", nargs="?", help="note id (or unique prefix)")
+    p_purge.add_argument("--force", action="store_true", help="confirm the irreversible scrub")
+    p_purge.add_argument("--cascade", action="store_true", help="also purge derived summaries")
+    p_purge.set_defaults(func=_cmd_purge)
 
     for name in _SUBCOMMANDS:  # default any not-yet-wired subcommand to the stub handler
         if not callable(sub.choices[name].get_default("func")):

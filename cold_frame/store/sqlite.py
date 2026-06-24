@@ -1082,9 +1082,98 @@ class SQLiteStore(Store):
         finally:
             out.close()
 
-    # ── secret hard-purge ───────────────────────────────────────────────────
+    # ── secret hard-purge (the ONE append-only carve-out, I2/I17/§7) ─────────
+    def _purge_targets(self, id: str, *, cascade: bool) -> list[str]:
+        """The id plus, if cascade, every note derived FROM it (BFS over ``derived_from``
+        edges where the target is the dst) so a secret can't be reconstructed from a summary."""
+        if not self.get_notes([id]):
+            raise NoteNotFound(id)
+        targets, frontier, seen = [id], [id], {id}
+        while cascade and frontier:
+            edges = self.neighbors(frontier, relations=["derived_from"])
+            frontier = [e.src_id for e in edges if e.dst_id in seen and e.src_id not in seen]
+            for nid in frontier:
+                seen.add(nid)
+                targets.append(nid)
+        return targets
+
     def purge(self, id: str, *, cascade: bool = False) -> PurgeReport:
-        raise NotImplementedError
+        targets = self._purge_targets(id, cascade=cascade)
+        notes = self.get_notes(targets)
+        # the plaintext we must prove gone afterwards (content is the secret; context may echo it)
+        needles = [s for n in notes for s in (n.content, n.context) if s]
+        rows = 0
+        now = self._clock.now()
+        with self._txn(f"purge({id})"):  # all grain-scrubbing in ONE txn (I3)
+            for n in notes:
+                rowid = int(
+                    self._conn.execute("SELECT rowid FROM notes WHERE id=?", (n.id,)).fetchone()[0]
+                )
+                # external-content FTS5 has no FK cascade: drop the indexed terms explicitly
+                self._conn.execute(
+                    "INSERT INTO note_fts(note_fts, rowid, content, keywords, tags) "
+                    "VALUES ('delete', ?, ?, ?, ?)",
+                    (rowid, n.content, json.dumps(n.keywords), json.dumps(n.tags)),
+                )
+                self._conn.execute("DELETE FROM note_history WHERE id=?", (n.id,))  # no FK cascade
+                # DELETE notes cascades note_vec / edges / sources / access_log (ON DELETE CASCADE)
+                rows += self._conn.execute("DELETE FROM notes WHERE id=?", (n.id,)).rowcount
+                # scrub the append-only event payloads for this note — the documented carve-out:
+                # the audit ROW stays (op/ts/id), but the content-bearing payload/hash is gone.
+                rows += self._conn.execute(
+                    "UPDATE events SET payload='', content_hash=NULL "
+                    "WHERE entity='note' AND entity_id=?",
+                    (n.id,),
+                ).rowcount
+                self._record_purge_event(n.id, ts=now)  # content-free tombstone of the purge
+            # job payloads can embed content (e.g. a queued summary) — scrub any that do
+            for jid, payload in self._conn.execute("SELECT id, payload FROM jobs").fetchall():
+                scrubbed = payload
+                for needle in needles:
+                    if needle and needle in scrubbed:
+                        scrubbed = scrubbed.replace(needle, "")
+                if scrubbed != payload:
+                    self._conn.execute("UPDATE jobs SET payload=? WHERE id=?", (scrubbed, jid))
+                    rows += 1
+        # compact so freed pages (zeroed by secure_delete=ON) leave no recoverable residue, then
+        # flush to the main db and truncate the WAL before grep-verifying the live files (§7).
+        self._conn.execute("INSERT INTO note_fts(note_fts) VALUES ('optimize')")
+        self._conn.execute("VACUUM")
+        self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        return PurgeReport(
+            note_id=id,
+            rows_scrubbed=rows,
+            grep_clean=self._grep_clean(needles),
+            vacuumed=True,
+        )
+
+    def _record_purge_event(self, entity_id: str, *, ts: datetime) -> None:
+        """Append a content-free ``purge`` event (audit that a scrub happened, no payload)."""
+        self.append_event(
+            Event(
+                event_id=self._new_id(),
+                device_id=self.get_meta("device_id") or "",
+                hlc=self._next_hlc(),
+                entity="note",
+                entity_id=entity_id,
+                op="purge",
+                content_hash=None,
+                payload="",
+                ts=ts,
+            )
+        )
+
+    def _grep_clean(self, needles: list[str]) -> bool:
+        """True iff none of ``needles`` (plaintext) survives in the live ``.db``/``.db-wal``.
+        Honest scope (§7): the live DB only — OS snapshots/backups/free-list aren't covered."""
+        if self._db_path == ":memory:":
+            return True  # no on-disk file → no recoverable residue (rows already gone from RAM)
+        blobs = b"".join(
+            Path(p).read_bytes()
+            for p in (self._db_path, f"{self._db_path}-wal")
+            if Path(p).exists()
+        )
+        return all(needle.encode("utf-8") not in blobs for needle in needles if needle)
 
     # ── housekeeping ─────────────────────────────────────────────────────────
     def doctor(self) -> dict[str, Any]:

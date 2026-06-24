@@ -15,7 +15,7 @@ import numpy as np
 import pytest
 from cold_frame.exceptions import NoteNotFound, StoreError
 from cold_frame.llm.base import EmbedderMeta, HashEmbedder
-from cold_frame.models import Note, Scope, Source
+from cold_frame.models import Edge, Note, Scope, Source
 from cold_frame.store.sqlite import SQLiteStore
 
 _INSTANT = datetime(2026, 6, 21, 12, 0, 0, tzinfo=UTC)
@@ -280,6 +280,75 @@ def test_backup_before_upgrade_snapshots_the_db(db_path: str) -> None:
 def test_fresh_migrate_creates_no_backup(db_path: str) -> None:
     SQLiteStore(db_path, embedder=HashEmbedder()).migrate()  # current 0 → 1: a fresh install
     assert not list(Path(db_path).parent.glob("*.bak.*"))  # nothing to protect yet
+
+
+# ── secret hard-purge (I2/I17/§7 — the ONE append-only carve-out) ─────────────
+_SECRET = "AKIA-EXAMPLE-supersecret-token-7f3a9b2c1d4e — do not leak"
+
+
+def _db_bytes(db_path: str) -> bytes:
+    """Raw bytes of the live DB + its WAL (the honest-scope grep target)."""
+    blob = Path(db_path).read_bytes()
+    wal = Path(f"{db_path}-wal")
+    return blob + (wal.read_bytes() if wal.exists() else b"")
+
+
+def test_purge_leaves_no_residue(store: SQLiteStore, db_path: str) -> None:
+    store.add_note(_note("s1", _SECRET), HashEmbedder().embed_one(_SECRET))
+    store.reinforce(["s1"], now=_INSTANT)  # leave an access_log row to also be cascaded
+    assert _SECRET.encode() in _db_bytes(db_path)  # sanity: plaintext IS on disk pre-purge
+
+    report = store.purge("s1")
+
+    assert report.grep_clean is True and report.vacuumed
+    assert report.rows_scrubbed >= 1
+    assert store.get_notes(["s1"]) == []  # the note is gone (NOT revivable, unlike archive)
+    assert _SECRET.encode() not in _db_bytes(db_path)  # no residue in the live files
+    # every searchable grain is gone → the doctor count invariant still holds (I10)
+    assert _count(store, "notes") == _count(store, "note_fts") == _count(store, "note_vec") == 0
+    # the audit trail records the purge but carries NO content (payload scrubbed)
+    purge_events = [e for e in store.iter_events() if e.op == "purge"]
+    assert purge_events and all(e.payload == "" for e in store.iter_events())
+
+
+def test_purge_event_payloads_are_scrubbed(store: SQLiteStore, db_path: str) -> None:
+    store.add_note(_note("s2", _SECRET), HashEmbedder().embed_one(_SECRET))
+    store.purge("s2")
+    # the create event row survives (append-only audit) but its content-bearing payload is gone
+    rows = store._conn.execute("SELECT op, payload, content_hash FROM events").fetchall()
+    assert rows and all(r["payload"] == "" and r["content_hash"] is None for r in rows)
+
+
+def test_purge_cascade_removes_derivatives(store: SQLiteStore, db_path: str) -> None:
+    # a semantic summary S derived_from the secret episodic note X — purging X (cascade) must
+    # also remove S, else the secret survives in its derivative.
+    store.add_note(_note("x", _SECRET), HashEmbedder().embed_one(_SECRET))
+    summary = _SECRET + " (summarized)"
+    store.add_note(
+        _note("s", summary).model_copy(update={"memory_type": "semantic"}),
+        HashEmbedder().embed_one(summary),
+    )
+    store.add_edge(Edge(src_id="s", dst_id="x", relation="derived_from", created_at=_INSTANT))
+
+    store.purge("x", cascade=True)
+    assert store.get_notes(["x", "s"]) == []  # both gone
+    assert _SECRET.encode() not in _db_bytes(db_path)
+
+
+def test_purge_without_cascade_keeps_derivatives(store: SQLiteStore) -> None:
+    store.add_note(_note("x2", "a base fact about pizza"), HashEmbedder().embed_one("pizza"))
+    store.add_note(
+        _note("s2", "derived pizza summary").model_copy(update={"memory_type": "semantic"}),
+        HashEmbedder().embed_one("derived"),
+    )
+    store.add_edge(Edge(src_id="s2", dst_id="x2", relation="derived_from", created_at=_INSTANT))
+    store.purge("x2")  # cascade=False
+    assert [n.id for n in store.get_notes(["x2", "s2"])] == ["s2"]  # only the target is purged
+
+
+def test_purge_unknown_raises(store: SQLiteStore) -> None:
+    with pytest.raises(NoteNotFound):
+        store.purge("ghost")
 
 
 def test_iter_events_yields_in_hlc_order(store: SQLiteStore) -> None:

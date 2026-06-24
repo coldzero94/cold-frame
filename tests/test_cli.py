@@ -187,6 +187,23 @@ def test_cli_path_multi_hop_and_max_hops(cli_db: Path, capsys: pytest.CaptureFix
     assert "<-[relates_to]" in capsys.readouterr().out
 
 
+def test_cli_purge_requires_force(cli_db: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    from cold_frame.api import Memory
+
+    m = Memory(str(cli_db))
+    fid = m.create_fact("unique-purgeable-phrase-xyz-77").added[0].id
+    m.close()
+
+    assert main(["purge", fid]) == 1  # destructive: a bare invocation refuses
+    assert "--force" in capsys.readouterr().out
+    assert main(["show", fid]) == 0  # still there
+    capsys.readouterr()
+
+    assert main(["purge", fid, "--force"]) == 0
+    assert "scrubbed" in capsys.readouterr().out
+    assert main(["show", fid]) == 1  # now permanently gone (not revivable)
+
+
 def test_cli_show_ambiguous_prefix(cli_db: Path, capsys: pytest.CaptureFixture[str]) -> None:
     from cold_frame.api import Memory
     from cold_frame.llm.base import HashEmbedder

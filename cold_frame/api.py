@@ -40,7 +40,7 @@ from cold_frame.observability import get_logger
 from cold_frame.procedural.optimize import ProceduralOptimizer
 from cold_frame.read.retrieve import RetrievePipeline
 from cold_frame.read.strength import compute_strength
-from cold_frame.store.base import Job
+from cold_frame.store.base import Job, PurgeReport
 from cold_frame.store.sqlite import SQLiteStore
 from cold_frame.write.core import WriteCore
 from cold_frame.write.extract import extract
@@ -255,12 +255,21 @@ class Memory:
     def delete(self, id: str, *, force: bool = False) -> None:
         """Permanently remove a note + its searchable grains (NOT revivable). Requires
         ``force=True`` — use ``forget`` to archive (revivable) instead. The local append-only
-        event log keeps prior payloads; a full content scrub is ``purge`` (planned)."""
+        event log KEEPS prior payloads (an audit trail); to also scrub the content out of the
+        event log + VACUUM the free-list, use ``purge`` (the secret/PII carve-out)."""
         if not force:
             raise ValueError(
                 "delete() permanently removes a note — pass force=True, or use forget() to archive"
             )
         self._store.delete(id)
+
+    def purge(self, id: str, *, cascade: bool = False) -> PurgeReport:
+        """Secret/PII hard-purge — the ONE append-only carve-out (I2/I17/§7). Scrubs the note
+        out of EVERY grain incl. the event-log payload, VACUUMs the free-list, then grep-verifies
+        the plaintext is gone from the live ``.db``/``.db-wal`` (honest scope: live files only,
+        not OS snapshots/backups). ``cascade=True`` also purges notes derived FROM this one so a
+        secret can't survive in a summary. NOT revivable. Returns a ``PurgeReport`` proof."""
+        return self._store.purge(id, cascade=cascade)
 
     def pin(self, id: str) -> Note:
         self._store.set_pinned(id, True)  # exempt from decay/archive (I13)
