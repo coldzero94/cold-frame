@@ -127,7 +127,7 @@ Implement strictly in order. **A phase is "done" only when its mapped eval suite
 | **P5 procedural** | gradient optimize + var-healer | the prompt self-improves; f-string vars preserved (`VarHealerError` on drop); `warrants_adjustment=False` ⇒ no edit. |
 | **P6 agentic write** | self-edit tools (common WriteCore) | **Gate: run dedup+freshness suites THROUGH the self-edit tool path** (op routed via `memory_tools`) — proves the single WriteCore (I15). |
 
-**Always-on reliability gates (every PR):** jobs lease/reclaim/backoff/idempotency, Store partial-write rollback + `PRAGMA integrity_check`. *(The admission/secret gates `test_purge_leaves_no_residue`, `test_no_secret_to_remote`, `test_admission_tiebreak_rejects_remote_llm` are **DEFERRED with I6/I7 per D25** — they apply when admission lands in v1.1/hosted, not v1. `test_logs_have_no_content` SHOULD still land: the redact filter is the one built control.)*
+**Always-on reliability gates (every PR):** jobs lease/reclaim/backoff/idempotency, Store partial-write rollback + `PRAGMA integrity_check`. *(`test_purge_leaves_no_residue` is **DONE** — `Store.purge` scrubs every grain (incl. event-log payload, the I2/I17 carve-out) + VACUUM + grep-verifies the plaintext is gone from the live `.db`/`.db-wal` (honest scope: live files only; the SQLCipher crypto-shred variant stays deferred). The admission/remote gates `test_no_secret_to_remote`, `test_admission_tiebreak_rejects_remote_llm` are **DEFERRED with I6/I7 per D25** — they apply when admission lands in v1.1/hosted. `test_logs_have_no_content` is landed: the redact filter is the one built control.)*
 
 ---
 

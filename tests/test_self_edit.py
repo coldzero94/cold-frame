@@ -118,6 +118,15 @@ def test_memory_delete_requires_force(db_path: str, frozen_clock: FrozenClock) -
         m.get(fid)  # permanently gone (not revivable, unlike forget)
 
 
+def test_purge_facade_scrubs_and_is_not_revivable(db_path: str, frozen_clock: FrozenClock) -> None:
+    m = _mem(db_path, frozen_clock)
+    fid = m.create_fact("remember-this-unique-token-abc987").added[0].id
+    report = m.purge(fid)  # the secret/PII carve-out (I2/§7)
+    assert report.grep_clean and report.vacuumed
+    with pytest.raises(NoteNotFound):
+        m.get(fid)  # gone for good — unlike forget (archive), purge is NOT revivable
+
+
 def test_update_fact_unknown_id_raises(db_path: str, frozen_clock: FrozenClock) -> None:
     m = _mem(db_path, frozen_clock)
     with pytest.raises(NoteNotFound):
