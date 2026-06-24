@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import http.client
 import json
 import socket
+import subprocess
+import sys
 import threading
 import urllib.error
 import urllib.request
@@ -121,6 +124,7 @@ def test_static_spa_serving_history_fallback_and_strict_csp(
         asset = urllib.request.urlopen(f"http://127.0.0.1:{port}/a.js")
         assert b"console.log" in asset.read()
         assert "javascript" in asset.headers["Content-Type"]
+        assert "default-src 'self'" in asset.headers["Content-Security-Policy"]  # strict on assets
         # a client-side route (no such file) falls back to index.html (SPA history routing)
         deep = urllib.request.urlopen(f"http://127.0.0.1:{port}/inspector/abc")
         assert b"SPA" in deep.read()
@@ -134,6 +138,61 @@ def test_inline_fallback_when_no_bundle(running_ui: int) -> None:
     resp = urllib.request.urlopen(f"http://127.0.0.1:{running_ui}/")
     assert b"cold-frame" in resp.read().lower()
     assert "unsafe-inline" in resp.headers["Content-Security-Policy"]  # scoped relax for inline
+
+
+def test_static_serving_rejects_path_traversal(
+    memory: Memory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # a real bundle must be present, else _serve_static (and its traversal guard) is never reached
+    dist = tmp_path / "_dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("<div id=app>SPA</div>")
+    (tmp_path / "secret.txt").write_text("OUTSIDE-ROOT")  # sibling of _dist, must never leak
+    monkeypatch.setattr(ui, "_DIST", dist)
+    server, port = _run_server(memory)
+    try:
+        # raw http.client: urllib normalizes the ../ away client-side, so the guard never sees it
+        conn = http.client.HTTPConnection("127.0.0.1", port)
+        conn.putrequest("GET", "/../secret.txt", skip_host=True)
+        conn.putheader("Host", f"127.0.0.1:{port}")
+        conn.endheaders()
+        resp = conn.getresponse()
+        body = resp.read()
+        assert resp.status == 403  # path-traversal guard (server.py _serve_static)
+        assert b"OUTSIDE-ROOT" not in body  # the sibling file is never disclosed
+        conn.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+_GUARD = Path(__file__).resolve().parents[1] / "scripts" / "check_ui_bundle.py"
+
+
+def _run_guard(tmp: Path, *, index: str | None) -> subprocess.CompletedProcess[str]:
+    """Run the release guard against a temp tree (only .gitkeep, or an index.html)."""
+    dist = tmp / "cold_frame" / "ui" / "_dist"
+    dist.mkdir(parents=True)
+    (dist / ".gitkeep").touch()
+    if index is not None:
+        (dist / "index.html").write_text(index)
+    (tmp / "scripts").mkdir()
+    (tmp / "scripts" / "check_ui_bundle.py").write_text(_GUARD.read_text())
+    return subprocess.run(
+        [sys.executable, "scripts/check_ui_bundle.py"], cwd=tmp, capture_output=True, text=True
+    )
+
+
+def test_ui_bundle_guard_fails_on_placeholder_and_passes_on_real(tmp_path: Path) -> None:
+    # only .gitkeep → loud fail (a release would ship a blank UI)
+    miss = _run_guard(tmp_path / "a", index=None)
+    assert miss.returncode != 0 and "UI bundle missing" in (miss.stdout + miss.stderr)
+    # index.html without the asset graph → still fails (a half-built bundle)
+    half = _run_guard(tmp_path / "b", index="<html>no assets</html>")
+    assert half.returncode != 0
+    # a real bundle (references assets/) → passes
+    ok = _run_guard(tmp_path / "c", index='<script src="/assets/index.js"></script>')
+    assert ok.returncode == 0
 
 
 def test_server_rejects_foreign_host_header(running_ui: int) -> None:
