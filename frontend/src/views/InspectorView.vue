@@ -1,15 +1,17 @@
 <script setup lang="ts">
 import { onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { api, type FactDetail, type NoteBrief } from '@/api'
+import { api, type Band, type FactDetail, type NoteBrief } from '@/api'
 
 const route = useRoute()
 const notes = ref<NoteBrief[]>([])
 const detail = ref<FactDetail | null>(null)
 const loading = ref(true)
 const error = ref('')
+const detailError = ref('')
 
-const GLYPH: Record<string, string> = { evergreen: '🌳', budding: '🌿', fading: '🌱' }
+// Record<Band> (not Record<string>) so the glyph table is proven exhaustive against the union.
+const GLYPH: Record<Band, string> = { evergreen: '🌳', budding: '🌿', fading: '🌱' }
 
 onMounted(async () => {
   try {
@@ -24,7 +26,18 @@ onMounted(async () => {
 watch(
   () => route.params.id,
   async (id) => {
-    detail.value = id ? await api.fact(String(id)).catch(() => null) : null
+    detailError.value = ''
+    if (!id) {
+      detail.value = null
+      return
+    }
+    try {
+      detail.value = await api.fact(String(id))
+    } catch (e) {
+      // surface it (mirrors the list path) — never swallow a 500/network error to a blank pane
+      detail.value = null
+      detailError.value = String(e)
+    }
   },
   { immediate: true },
 )
@@ -59,7 +72,10 @@ watch(
 
     <!-- detail -->
     <div class="flex-1 min-w-0 overflow-auto p-7">
-      <div v-if="!detail" class="text-dim h-full flex items-center justify-center">
+      <div v-if="detailError" class="text-ember h-full flex items-center justify-center">
+        couldn't load this memory — {{ detailError }}
+      </div>
+      <div v-else-if="!detail" class="text-dim h-full flex items-center justify-center">
         Select a memory to see its provenance.
       </div>
       <div v-else class="max-w-[640px]">

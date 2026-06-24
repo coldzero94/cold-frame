@@ -1,14 +1,17 @@
-// Typed client for the local read-only JSON API (cold_frame/ui/server.py). The SHAPES here are
-// the stable seam: the same /api/memory-field contract drives the prototype validation and the
-// live MemoryField component, so a server-side shape change fails the TS build at the boundary.
+// Typed client for the local read-only JSON API (cold_frame/ui/server.py). These interfaces
+// MIRROR the server's TypedDict payload shapes (NoteBriefDict / FieldNoteDict / FactDetailDict);
+// a shape change the UI consumes fails the vue-tsc build at the read site. The unions below match
+// the Python Literals (models.py Band / MemoryTypeLiteral / StatusLiteral) one-to-one.
 
 export type Band = 'evergreen' | 'budding' | 'fading'
+export type MemoryType = 'semantic' | 'episodic' | 'procedural'
+export type Status = 'active' | 'archived' | 'deleted'
 
 /** One note as the p5 MemoryField viz consumes it (GET /api/memory-field). */
 export interface FieldNote {
   id: string
   content: string
-  type: string
+  type: MemoryType
   s: number
   band: Band
   atRisk: boolean
@@ -22,10 +25,10 @@ export interface FieldNote {
 export interface NoteBrief {
   id: string
   content: string
-  memory_type: string
-  status: string
+  memory_type: MemoryType
+  status: Status
   confidence: number
-  strength: { value: number; band: string; at_risk: boolean }
+  strength: { value: number; band: Band; at_risk: boolean }
 }
 
 /** Full fact detail with provenance + edges (GET /api/fact/{id}). */

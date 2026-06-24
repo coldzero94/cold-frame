@@ -4,7 +4,8 @@ import vue from '@vitejs/plugin-vue'
 import UnoCSS from 'unocss/vite'
 
 // Build the SPA into the Python package's _dist/ so the wheel ships it (artifacts include).
-// p5 + Vue are BUNDLED into the output (no externals, no CDN) so the runtime fetches nothing — I5.
+// Vue + the app are bundled; p5 is vendored into public/ (emitted as a same-origin _dist/p5.min.js
+// asset by vendor-p5.mjs, not an external/CDN). Every runtime fetch is same-origin — I5.
 export default defineConfig({
   plugins: [vue(), UnoCSS()],
   base: '/',

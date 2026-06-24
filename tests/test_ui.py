@@ -11,6 +11,7 @@ import threading
 import urllib.error
 import urllib.request
 from collections.abc import Iterator
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -44,6 +45,65 @@ def test_memory_field_payload_shape(memory: Memory) -> None:
     assert n["band"] in {"evergreen", "budding", "fading"}
     assert isinstance(n["atRisk"], bool) and isinstance(n["pinned"], bool)
     assert 0.0 <= n["s"] <= 1.0 and n["ageDays"] >= 0
+
+
+def test_memory_field_payload_reflects_pinned(memory: Memory) -> None:
+    fid = memory.add("keep me warm under glass").added[0].id
+    memory.pin(fid)  # the field viz keys the cold-frame hexagon on this
+    assert ui.memory_field_payload(memory)["notes"][0]["pinned"] is True
+
+
+def test_memory_field_payload_threads_fading_and_at_risk(memory: Memory) -> None:
+    fid = memory.add("a decayed, low-confidence memory").added[0].id
+    now = memory._clock.now()
+    # paint a decayed/stale/low-confidence note so strength → fading band + at_risk overlay
+    memory._store._conn.execute(
+        "UPDATE notes SET importance=?, decay_S=?, last_accessed=?, confidence=? WHERE id=?",
+        (0.1, 5.0, (now - timedelta(days=120)).isoformat(), 0.2, fid),
+    )
+    memory._store._conn.commit()
+    n = ui.memory_field_payload(memory)["notes"][0]
+    assert n["band"] == "fading" and n["atRisk"] is True  # the wiring, not the formula
+    assert n["ageDays"] >= 120  # threaded off last_accessed
+
+
+def test_memory_field_age_days_uses_created_at_and_clamps(memory: Memory) -> None:
+    now = memory._clock.now()
+    # (a) no last_accessed → ageDays computed off created_at
+    a = memory.add("never re-accessed").added[0].id
+    memory._store._conn.execute(
+        "UPDATE notes SET created_at=?, last_accessed=NULL WHERE id=?",
+        ((now - timedelta(days=30)).isoformat(), a),
+    )
+    # (b) last_accessed in the FUTURE (clock skew) → negative delta → clamped to 0
+    b = memory.add("a future-stamped note").added[0].id
+    memory._store._conn.execute(
+        "UPDATE notes SET last_accessed=? WHERE id=?", ((now + timedelta(days=3)).isoformat(), b)
+    )
+    memory._store._conn.commit()
+    by_id = {n["id"]: n for n in ui.memory_field_payload(memory)["notes"]}
+    assert by_id[a]["ageDays"] == 30  # created_at fallback used
+    assert by_id[b]["ageDays"] == 0  # max(0, negative) clamp held
+
+
+def test_csp_split_is_scoped_to_script_and_style_only() -> None:
+    strict, fallback = ui._STRICT_CSP, ui._FALLBACK_CSP
+    assert strict != fallback
+    assert "'unsafe-inline'" not in strict  # the strict path never allows inline
+
+    def directive(csp: str, name: str) -> str:
+        for part in (p.strip() for p in csp.split(";")):
+            if part.startswith(name + " "):
+                return part
+        return ""
+
+    # the fallback relaxes ONLY script-src AND style-src (both, not just one) to 'unsafe-inline'
+    assert "'unsafe-inline'" in directive(fallback, "script-src")
+    assert "'unsafe-inline'" in directive(fallback, "style-src")
+    # every OTHER directive is byte-identical → the relaxation never widened connect/frame/base
+    for name in ("default-src", "img-src", "connect-src", "frame-ancestors", "base-uri"):
+        assert directive(strict, name) == directive(fallback, name)
+        assert "'unsafe-inline'" not in directive(fallback, name)
 
 
 def test_fact_payload_includes_provenance_and_unknown_is_none(memory: Memory) -> None:
@@ -114,8 +174,14 @@ def test_static_spa_serving_history_fallback_and_strict_csp(
     dist.mkdir()
     (dist / "index.html").write_text('<!doctype html><div id=app>SPA</div><script src="/a.js">')
     (dist / "a.js").write_text("console.log('app')")
+    (dist / "s.css").write_text("body{color:#fff}")
+    (dist / "icon.png").write_bytes(b"\x89PNG\r\n\x1a\n")  # minimal PNG header
     monkeypatch.setattr(ui, "_DIST", dist)  # pretend a real bundle is built
     server, port = _run_server(memory)
+
+    def ctype(p: str) -> str:
+        return urllib.request.urlopen(f"http://127.0.0.1:{port}{p}").headers["Content-Type"]
+
     try:
         root = urllib.request.urlopen(f"http://127.0.0.1:{port}/")
         assert b"SPA" in root.read()
@@ -125,6 +191,9 @@ def test_static_spa_serving_history_fallback_and_strict_csp(
         assert b"console.log" in asset.read()
         assert "javascript" in asset.headers["Content-Type"]
         assert "default-src 'self'" in asset.headers["Content-Security-Policy"]  # strict on assets
+        # mimetypes: CSS must be text/css+charset (else nosniff refuses it); PNG binary, no charset
+        assert ctype("/s.css") == "text/css; charset=utf-8"
+        assert ctype("/icon.png") == "image/png"
         # a client-side route (no such file) falls back to index.html (SPA history routing)
         deep = urllib.request.urlopen(f"http://127.0.0.1:{port}/inspector/abc")
         assert b"SPA" in deep.read()
