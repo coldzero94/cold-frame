@@ -1061,6 +1061,15 @@ class SQLiteStore(Store):
                     (_to_iso(ra), error, _to_iso(now), id),
                 )
 
+    def pending_count(self, kind: str | None = None) -> int:
+        sql = "SELECT COUNT(*) AS n FROM jobs WHERE status='pending'"
+        params: tuple[str, ...] = ()
+        if kind is not None:
+            sql += " AND kind=?"
+            params = (kind,)
+        row = self._conn.execute(sql, params).fetchone()
+        return int(row["n"])
+
     # ── event log / export ──────────────────────────────────────────────────
     def append_event(self, ev: Event) -> None:
         # Co-write only: called INSIDE add_note/update_note/supersede's txn, never alone.

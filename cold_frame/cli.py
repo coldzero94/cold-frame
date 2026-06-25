@@ -238,8 +238,11 @@ def _cmd_purge(args: argparse.Namespace) -> int:
 
 
 def _cmd_doctor(args: argparse.Namespace) -> int:
-    h = _memory(args).health()
+    mem = _memory(args)
+    h = mem.health()
+    pending_caps = mem._store.pending_count("capture")  # auto-capture queue depth (D26)
     print(f"db: {h['db_path']}")
+    print(f"auto-capture: {pending_caps} pending (drains when Claude Code uses Coldframe)")
     print(f"notes={h['notes']} fts={h['fts']} vec={h['vec']}  (match={h['counts_match']})")
     print(f"integrity_check={h['integrity']}  fts_integrity={h['fts_integrity']}")
     print(f"embedder={h['embedder_id']} dim={h['dim']}  stale_vectors={h['stale_vectors']}")
@@ -306,7 +309,9 @@ def _hook_present(entries: object, cmd: str) -> bool:
     return False
 
 
-# (settings event, matcher, `hook` subcommand) — recall on SessionStart, capture on Stop (D26).
+# (settings event, matcher, `hook` subcommand) — recall on SessionStart, capture on Stop. Stop fires
+# every turn-end, so capture is already continuous (the watermark advances); a PreCompact boundary
+# would add nothing here (and the transcript-rewrite-on-compact edge needs watermark handling first).
 _HOOK_WIRING: tuple[tuple[str, str, str], ...] = (
     ("SessionStart", "startup|resume", "session-start"),
     ("Stop", "", "stop"),
