@@ -73,9 +73,24 @@ def _host_sample(system: str, user: str) -> str:
 
 
 # ── sync tool logic (the single implementation; fully testable offline) ───────
+# Auto-capture (D26) drains here: the hook only ENQUEUES; the host model is reachable ONLY inside a
+# live MCP request (_host_sample returns "" otherwise), so capture-extraction piggybacks on a tool
+# call. Bounded so it never noticeably delays the agent's actual request.
+_CAPTURE_DRAIN_MAX = 2
+
+
+def _drain_captures(mem: Memory) -> None:
+    """Drain pending capture jobs while this request is live → extraction uses the host model via
+    sampling (D26). Best-effort: a drain hiccup must never fail the agent's tool call."""
+    try:
+        mem.run_pending_jobs(max_jobs=_CAPTURE_DRAIN_MAX)
+    except Exception as exc:  # content-free (I16); the durable queue retries
+        _log.warning("capture_drain_failed", extra={"exc_type": type(exc).__name__})
+
+
 def _search_impl(mem: Memory, query: str, k: int = 10) -> dict[str, Any]:
     res = mem.search(query, k=k)
-    return {
+    out: dict[str, Any] = {
         "hits": [
             {
                 "id": h.note.id,
@@ -87,6 +102,8 @@ def _search_impl(mem: Memory, query: str, k: int = 10) -> dict[str, Any]:
         ],
         "used": res.used_tokens or 0,
     }
+    _drain_captures(mem)  # piggyback auto-capture extraction on this live request
+    return out
 
 
 def _add_impl(mem: Memory, text: str) -> dict[str, Any]:
@@ -94,13 +111,15 @@ def _add_impl(mem: Memory, text: str) -> dict[str, Any]:
     # host via sampling inside commit; if extraction were LLM-driven, a sampling miss would drop
     # the fact entirely — naive keeps it, and the judges degrade safely.
     res = mem.add(text, raw=True)
-    return {
+    out = {
         "added": [
             {"id": n.id, "content": n.content, "deeplink": fact_deeplink(n.id)} for n in res.added
         ],
         "held": [n.id for n in res.held],
         "blocked": [b.reason for b in res.blocked],
     }
+    _drain_captures(mem)  # also drain pending captures on an explicit add
+    return out
 
 
 def _self_edit_impl(mem: Memory, name: str, args: dict[str, object]) -> dict[str, Any]:

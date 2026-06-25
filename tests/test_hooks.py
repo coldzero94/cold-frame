@@ -57,10 +57,16 @@ def test_hook_install_is_idempotent(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     Memory(db).close()
     assert main(["--db", db, "hook", "install", "--project"]) == 0
     sp = tmp_path / ".claude" / "settings.json"
-    entries = json.loads(sp.read_text())["hooks"]["SessionStart"]
-    assert any("hook session-start" in h["command"] for e in entries for h in e["hooks"])
+    hooks = json.loads(sp.read_text())["hooks"]
+    assert any(
+        "hook session-start" in h["command"] for e in hooks["SessionStart"] for h in e["hooks"]
+    )
+    assert any(
+        "hook stop" in h["command"] for e in hooks["Stop"] for h in e["hooks"]
+    )  # capture too
     assert main(["--db", db, "hook", "install", "--project"]) == 0  # again → no duplicate
-    assert len(json.loads(sp.read_text())["hooks"]["SessionStart"]) == 1
+    after = json.loads(sp.read_text())["hooks"]
+    assert len(after["SessionStart"]) == 1 and len(after["Stop"]) == 1
 
 
 def test_hook_install_preserves_existing_settings(
@@ -160,4 +166,19 @@ def test_hook_stop_enqueues_capture(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert not mem.list_active()  # nothing captured yet — pending
     mem.run_pending_jobs()  # the drain (a worker / MCP server) does the extraction
     assert any("vim" in n.content for n in mem.list_active())
+    mem.close()
+
+
+def test_mcp_search_drains_pending_captures(tmp_path: Path) -> None:
+    # P2 loop-closer: a live MCP tool call drains pending capture jobs (in prod the host model
+    # extracts; here llm=None → naive — the point is the DRAIN WIRING fires inside the tool).
+    from cold_frame.mcp import _search_impl
+
+    t = tmp_path / "t.jsonl"
+    _write_transcript(t, [("user", "I deploy with ship.sh in production now")])
+    mem = Memory(str(tmp_path / "m.db"))
+    mem.enqueue_capture(str(t), "s")
+    assert not mem.list_active()  # enqueued, not yet drained
+    _search_impl(mem, "anything")  # the tool call piggybacks the capture drain
+    assert any("ship.sh" in n.content for n in mem.list_active())
     mem.close()
