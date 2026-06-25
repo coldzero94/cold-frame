@@ -15,7 +15,7 @@ from datetime import datetime
 from typing import Literal, TypedDict, cast, get_args
 
 from cold_frame.branding import DB_PATH
-from cold_frame.constants import CONSOLIDATE_EVERY_N_WRITES
+from cold_frame.constants import CONSOLIDATE_EVERY_N_WRITES, DEDUP_AUTO_MERGE
 from cold_frame.exceptions import EmbedderMismatchError, NoteNotFound, ToolError
 from cold_frame.forget.consolidate import Consolidator
 from cold_frame.forget.worker import Worker
@@ -212,18 +212,34 @@ class Memory:
             dedup_key=f"capture:{session_id}",
         )
 
+    def _novel_messages(self, msgs: list[Msg], scope: Scope) -> list[Msg]:
+        """Layer-B novelty pre-filter (D26): drop a turn already represented by a near-identical
+        active note (cosine ≥ DEDUP_AUTO_MERGE) so we skip paying to extract known content. A
+        multi-fact turn dilutes below the threshold (so it survives); only near-pure restatements
+        are dropped — which DEDUP would collapse anyway, just more expensively."""
+        out: list[Msg] = []
+        for m in msgs:
+            emb = self._embedder.embed_one(m["content"])
+            hits = self._store.knn(emb, 1, scope=scope, statuses=["active"])
+            if hits and hits[0][1] >= DEDUP_AUTO_MERGE:
+                continue  # already known
+            out.append(m)
+        return out
+
     def _run_capture_job(self, job: Job) -> None:
-        """Read NEW user messages since the watermark → Layer-A filtered → the ONE WriteCore via
-        add(infer=True): ADMISSION→DEDUP→CONFLICT→PERSIST + durability gate keep the DB lean (D26).
-        Watermark advances only after add() so a crash re-presents a span that DEDUP collapses."""
+        """Read NEW user messages since the watermark → Layer-A (in the reader) → Layer-B novelty →
+        the ONE WriteCore via add(infer=True): ADMISSION→DEDUP→CONFLICT→PERSIST + durability gate
+        keep the DB lean (D26). Watermark advances only after add() so a crash re-presents a span
+        that DEDUP collapses."""
         sid = str(job.payload.get("session_id", ""))
         path = str(job.payload.get("transcript_path", ""))
         wkey = f"hook:watermark:{sid}"
         since = int(self._store.get_meta(wkey) or "0")
         msgs, new_line = read_user_messages(path, since)
+        msgs = self._novel_messages(msgs, self._default_scope)  # skip extraction for known content
         if msgs:
             # source=None → the engine builds per-message provenance (I14). A `cc:{sid}` session tag
-            # for anti-dossier visibility is a P2 refinement once source plumbing is threaded.
+            # for anti-dossier visibility is a later refinement once source plumbing is threaded.
             self.add(msgs, infer=True)
         self._store.set_meta(wkey, str(new_line))
 

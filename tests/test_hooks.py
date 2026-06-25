@@ -182,3 +182,14 @@ def test_mcp_search_drains_pending_captures(tmp_path: Path) -> None:
     _search_impl(mem, "anything")  # the tool call piggybacks the capture drain
     assert any("ship.sh" in n.content for n in mem.list_active())
     mem.close()
+
+
+def test_layer_b_novelty_drops_known_keeps_new(tmp_path: Path) -> None:
+    # P3a: a turn near-identical to an active note is dropped pre-extraction; a new one survives.
+    mem = Memory(str(tmp_path / "m.db"))
+    mem.add("I deploy with ship.sh in production")
+    known = {"role": "user", "content": "I deploy with ship.sh in production"}
+    fresh = {"role": "user", "content": "My cat is named Mocha"}
+    filtered = mem._novel_messages([known, fresh], mem._default_scope)
+    assert filtered == [fresh]  # the restatement is skipped, the new fact survives
+    mem.close()

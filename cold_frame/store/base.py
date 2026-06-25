@@ -290,6 +290,11 @@ class Store(ABC):
         """Reschedule (attempts<max → pending+backoff) or dead-letter; fenced on ``worker``."""
         ...
 
+    @abstractmethod
+    def pending_count(self, kind: str | None = None) -> int:
+        """Count pending jobs (optionally of one ``kind``) — observability for doctor (I12)."""
+        ...
+
     # ── event log / export (D17) ────────────────────────────────────────────
     @abstractmethod
     def append_event(self, ev: Event) -> None:
