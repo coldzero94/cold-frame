@@ -19,6 +19,7 @@ from cold_frame.constants import CONSOLIDATE_EVERY_N_WRITES
 from cold_frame.exceptions import EmbedderMismatchError, NoteNotFound, ToolError
 from cold_frame.forget.consolidate import Consolidator
 from cold_frame.forget.worker import Worker
+from cold_frame.integrations.claude_code import read_user_messages
 from cold_frame.llm.base import LLM, Clock, Embedder, HashEmbedder, SystemClock
 from cold_frame.models import (
     AddResult,
@@ -136,7 +137,8 @@ class Memory:
             self._store, clock=self._clock, worker_id=f"worker-{self._new_id()[:8]}"
         )
         self._job_handlers: dict[str, Callable[[Job], None]] = {
-            "consolidate": self._run_consolidate_job
+            "consolidate": self._run_consolidate_job,
+            "capture": self._run_capture_job,  # auto-capture from a Claude Code transcript (D26)
         }
 
     # ── write ────────────────────────────────────────────────────────────
@@ -199,6 +201,31 @@ class Memory:
     def _run_consolidate_job(self, job: Job) -> None:
         scope = Scope(**job.payload.get("scope", {}))
         self._consolidator.consolidate(scope=scope)  # idempotent/convergent (at-least-once safe)
+
+    # ── auto-capture (D26): enqueue a transcript pointer; drain extracts via THIS Memory's llm ──
+    def enqueue_capture(self, transcript_path: str, session_id: str) -> None:
+        """Queue a Claude Code transcript span for auto-capture (debounced per session). The hook
+        calls this — fast, no extraction; the drain (where an LLM is reachable) does the work."""
+        self._store.enqueue(
+            "capture",
+            {"transcript_path": transcript_path, "session_id": session_id},
+            dedup_key=f"capture:{session_id}",
+        )
+
+    def _run_capture_job(self, job: Job) -> None:
+        """Read NEW user messages since the watermark → Layer-A filtered → the ONE WriteCore via
+        add(infer=True): ADMISSION→DEDUP→CONFLICT→PERSIST + durability gate keep the DB lean (D26).
+        Watermark advances only after add() so a crash re-presents a span that DEDUP collapses."""
+        sid = str(job.payload.get("session_id", ""))
+        path = str(job.payload.get("transcript_path", ""))
+        wkey = f"hook:watermark:{sid}"
+        since = int(self._store.get_meta(wkey) or "0")
+        msgs, new_line = read_user_messages(path, since)
+        if msgs:
+            # source=None → the engine builds per-message provenance (I14). A `cc:{sid}` session tag
+            # for anti-dossier visibility is a P2 refinement once source plumbing is threaded.
+            self.add(msgs, infer=True)
+        self._store.set_meta(wkey, str(new_line))
 
     def _supersede_text(
         self,

@@ -12,6 +12,7 @@ import argparse
 import json
 import os
 import sqlite3
+import sys
 from collections import Counter
 from collections.abc import Sequence
 from pathlib import Path
@@ -339,8 +340,23 @@ def _cmd_hook_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_hook_capture(args: argparse.Namespace) -> int:
+    """Capture-commit hook (Stop / PreCompact): enqueue the session's transcript span for auto-
+    capture and return immediately (no extraction here — that drains where an LLM is reachable).
+    Fast + fail-silent: a hook must never block or crash the session (D26)."""
+    try:
+        payload = json.loads(sys.stdin.read() or "{}")
+        tp = str(payload.get("transcript_path", ""))
+        sid = str(payload.get("session_id", ""))
+        if tp and sid:
+            _memory(args).enqueue_capture(tp, sid)
+    except Exception:  # fail-silent: never break the session on a capture hiccup
+        return 0
+    return 0
+
+
 def _cmd_hook_help(args: argparse.Namespace) -> int:
-    print(f"usage: {PKG} hook {{session-start|install|status}}")
+    print(f"usage: {PKG} hook {{session-start|stop|install|status}}")
     return 1
 
 
@@ -546,6 +562,9 @@ def build_parser() -> argparse.ArgumentParser:
     hook_sub.add_parser("session-start", help="emit recall context for a new session").set_defaults(
         func=_cmd_hook_session_start
     )
+    hook_sub.add_parser(
+        "stop", help="enqueue the session transcript for auto-capture"
+    ).set_defaults(func=_cmd_hook_capture)
     p_hi = hook_sub.add_parser("install", help="wire the recall hook into Claude Code settings")
     p_hi.add_argument(
         "--project", action="store_true", help="install into ./.claude (else ~/.claude)"
