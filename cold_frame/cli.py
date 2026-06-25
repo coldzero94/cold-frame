@@ -306,36 +306,54 @@ def _hook_present(entries: object, cmd: str) -> bool:
     return False
 
 
+# (settings event, matcher, `hook` subcommand) — recall on SessionStart, capture on Stop (D26).
+_HOOK_WIRING: tuple[tuple[str, str, str], ...] = (
+    ("SessionStart", "startup|resume", "session-start"),
+    ("Stop", "", "stop"),
+)
+
+
 def _cmd_hook_install(args: argparse.Namespace) -> int:
     path = _settings_path(user=not args.project)
-    cmd = f"{PKG} hook session-start"
     try:
         settings = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
     except (OSError, ValueError):
         print(f"{PKG}: couldn't read {path} — fix or remove it, then retry")
         return 1
-    entries = settings.setdefault("hooks", {}).setdefault("SessionStart", [])
-    if _hook_present(entries, cmd):
+    hooks = settings.setdefault("hooks", {})
+    added: list[str] = []
+    for event, matcher, sub in _HOOK_WIRING:
+        cmd = f"{PKG} hook {sub}"
+        entries = hooks.setdefault(event, [])
+        if _hook_present(entries, cmd):  # idempotent
+            continue
+        entries.append({"matcher": matcher, "hooks": [{"type": "command", "command": cmd}]})
+        added.append(event)
+    if not added:
         print(f"already installed → {path}")
         return 0
-    entries.append({"matcher": "startup|resume", "hooks": [{"type": "command", "command": cmd}]})
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
-    print(f"installed SessionStart recall hook → {path}\n  {cmd}")
+    print(f"installed {', '.join(added)} hook(s) → {path}")
+    print("  recall on session start; auto-capture drains while Claude Code uses Coldframe's tools")
     return 0
 
 
 def _cmd_hook_status(args: argparse.Namespace) -> int:
-    cmd = f"{PKG} hook session-start"
     for scope, user in (("user", True), ("project", False)):
         path = _settings_path(user=user)
         try:
             settings = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
         except (OSError, ValueError):
             settings = {}
-        entries = settings.get("hooks", {}).get("SessionStart", [])
-        wired = _hook_present(entries, cmd)
-        print(f"{scope:8} {path}: {'✓ recall hook installed' if wired else '— not installed'}")
+        hooks = settings.get("hooks", {}) if isinstance(settings.get("hooks"), dict) else {}
+        wired = [
+            event
+            for event, _m, sub in _HOOK_WIRING
+            if _hook_present(hooks.get(event, []), f"{PKG} hook {sub}")
+        ]
+        state = ("✓ " + "+".join(wired)) if wired else "— not installed"
+        print(f"{scope:8} {path}: {state}")
     print(f"install with: {PKG} hook install")
     return 0
 

@@ -68,20 +68,27 @@ So in a Claude Code session you can just say:
 and the answer comes from your own memory file. Corrections supersede the old fact instead of
 duplicating it, so the memory stays clean over time.
 
-### Auto-recall on a new session (opt-in)
+### Automatic memory (opt-in)
 
-Install the SessionStart hook and Claude Code opens each session already knowing your durable
-memories — no need to ask:
+One command wires Coldframe into Claude Code's hooks so memory happens *automatically* — you don't
+have to tell it to remember, and you don't have to ask it to recall:
 
 ```bash
-cold-frame hook install      # wires a SessionStart recall hook into ~/.claude/settings.json
-cold-frame hook status       # check it's wired
+cold-frame hook install      # wires recall + capture hooks into ~/.claude/settings.json
+cold-frame hook status       # check what's wired
 ```
 
-> **Where Coldframe is heading (D26):** *automatic* memory is the goal — capture happening as you
-> work, not only when the agent calls `add_memory`. Auto-**recall** (above) is live; auto-**capture**
-> via hooks is in progress, designed to ride the same forgetting/dedup engine so the DB stays lean
-> instead of mindlessly accumulating. Today, capture is still the agent's tool-calls + `cold-frame add`.
+- **Auto-recall** — a SessionStart hook injects your strongest durable memories at the top of each
+  new session, so the agent opens already knowing you.
+- **Auto-capture** — a Stop hook enqueues each turn's transcript; the extraction runs on **Claude
+  Code's own model** (via MCP sampling — no extra key) as the agent uses Coldframe, pulling out the
+  durable facts you stated and dropping the chatter.
+
+> **Why it doesn't bloat (D26):** auto-capture funnels through the *same* engine as everything else —
+> a salience pre-filter, then the durability gate (ephemeral dropped, low-confidence held for
+> review), dedup (no duplicates), deterministic supersede (corrections replace, not pile up), and
+> forgetting + per-scope caps. Automatic, but still *owned*: every auto-fact is visible and editable
+> in the UI / Triage, nothing is captured opaquely.
 
 > Works with any MCP client (not just Claude Code) — it's a standard stdio MCP server.
 
