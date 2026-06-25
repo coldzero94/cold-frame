@@ -280,3 +280,27 @@ def test_hook_install_handles_unwritable_settings(
     db = str(tmp_path / "m.db")
     Memory(db).close()
     assert main(["--db", db, "hook", "install", "--project"]) == 1
+
+
+def test_auto_capture_does_not_bloat_on_repetition(tmp_path: Path) -> None:
+    # regression baseline (dogfood POSITIVE): re-stating the same facts across sessions must NOT
+    # grow the active set — the anti-bloat claim. Attack bloat at admission, not the growth curve.
+    facts = [
+        "I prefer dark roast coffee",
+        "I deploy with ship.sh always",
+        "My database is Postgres",
+    ]
+    mem = Memory(str(tmp_path / "m.db"))
+    t1 = tmp_path / "s1.jsonl"
+    _write_transcript(t1, [("user", f) for f in facts])
+    mem.enqueue_capture(str(t1), "s1")
+    mem.run_pending_jobs()
+    n1 = len(mem.list_active())
+    assert n1 == 3
+    for i in (2, 3, 4):  # later sessions re-state the SAME facts → flat (dedup + Layer-B collapse)
+        ti = tmp_path / f"s{i}.jsonl"
+        _write_transcript(ti, [("user", f) for f in facts])
+        mem.enqueue_capture(str(ti), f"s{i}")
+        mem.run_pending_jobs()
+    assert len(mem.list_active()) == n1  # no turn-proportional bloat
+    mem.close()
