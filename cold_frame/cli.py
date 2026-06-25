@@ -275,13 +275,17 @@ def _cmd_hook_session_start(args: argparse.Namespace) -> int:
     error it emits nothing and exits 0 — a hook must never block the session (D26)."""
     try:
         mem = _memory(args)
-        lines: list[str] = []
-        for n in mem.list_active(sort="importance", limit=_RECALL_K * 3):
-            if mem.strength(n.id).band == "fading":
-                continue  # inject durable beliefs, not what's already cooling toward forgetting
-            lines.append(f"- {n.content}")
-            if len(lines) >= _RECALL_K:
-                break
+        # rank by COMPUTED strength (importance + retrievability + access), not flat importance,
+        # so repeated/reinforced beliefs surface; skip the fading band.
+        ranked = sorted(
+            (
+                (mem.strength(n.id), n)
+                for n in mem.list_active(sort="importance", limit=_RECALL_K * 6)
+            ),
+            key=lambda sn: sn[0].value,
+            reverse=True,
+        )
+        lines = [f"- {n.content}" for s, n in ranked if s.band != "fading"][:_RECALL_K]
         if not lines:
             return 0  # silence > noise: nothing worth surfacing
         ctx = (
@@ -311,7 +315,7 @@ def _hook_present(entries: object, cmd: str) -> bool:
 
 # (settings event, matcher, `hook` subcommand) — recall on SessionStart, capture on Stop. Stop fires
 # every turn-end, so capture is already continuous (the watermark advances); a PreCompact boundary
-# would add nothing here (and the transcript-rewrite-on-compact edge needs watermark handling first).
+# adds nothing here (compaction shrink is handled by the watermark-reset in read_user_messages).
 _HOOK_WIRING: tuple[tuple[str, str, str], ...] = (
     ("SessionStart", "startup|resume", "session-start"),
     ("Stop", "", "stop"),

@@ -193,3 +193,44 @@ def test_layer_b_novelty_drops_known_keeps_new(tmp_path: Path) -> None:
     filtered = mem._novel_messages([known, fresh], mem._default_scope)
     assert filtered == [fresh]  # the restatement is skipped, the new fact survives
     mem.close()
+
+
+# ── dogfooding fixes (D26): compaction-loss, durability gate, max-len ──
+def test_capture_survives_transcript_compaction(tmp_path: Path) -> None:
+    # CRITICAL: a compacted (shortened) transcript must not freeze the watermark above EOF and lose
+    # every later fact. After a shrink, re-scan from 0 (dedup collapses carry-over).
+    t = tmp_path / "t.jsonl"
+    _write_transcript(t, [("user", "I deploy with ship.sh now"), ("user", "I use Postgres 16")])
+    mem = Memory(str(tmp_path / "m.db"))
+    mem.enqueue_capture(str(t), "sess1")
+    mem.run_pending_jobs()
+    n_before = len(mem.list_active())
+    # Claude Code compacts: the transcript is rewritten SHORTER, with a brand-new fact
+    _write_transcript(t, [("user", "I switched the cache to Redis")])
+    mem.enqueue_capture(str(t), "sess1")
+    mem.run_pending_jobs()
+    assert any("Redis" in n.content for n in mem.list_active())  # NOT lost after compaction
+    assert len(mem.list_active()) >= n_before
+    mem.close()
+
+
+def test_layer_a_drops_task_requests_and_questions(tmp_path: Path) -> None:
+    t = tmp_path / "t.jsonl"
+    _write_transcript(
+        t,
+        [
+            ("user", "I deploy with ship.sh now"),  # durable fact → keep
+            ("user", "can you run the tests again and show the output"),  # task-request → drop
+            ("user", "show me the diff before you commit anything"),  # imperative → drop
+            ("user", "how do I configure the linter here"),  # question → drop
+            ("user", "My database is Postgres 16 in production"),  # durable fact → keep
+        ],
+    )
+    texts = [m["content"] for m in read_user_messages(t, 0)[0]]
+    assert texts == ["I deploy with ship.sh now", "My database is Postgres 16 in production"]
+
+
+def test_layer_a_drops_oversized_paste(tmp_path: Path) -> None:
+    t = tmp_path / "t.jsonl"
+    _write_transcript(t, [("user", "x" * 50_000)])  # a pasted blob, not a stated fact
+    assert read_user_messages(t, 0)[0] == []
