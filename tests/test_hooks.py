@@ -247,7 +247,7 @@ def test_readd_reinforces_existing_note(tmp_path: Path) -> None:
 
 
 def test_capture_restatement_reinforces_via_layer_b(tmp_path: Path) -> None:
-    # dogfood fix: Layer-B drops the restatement but now reinforces the matched note (repetition counts).
+    # dogfood fix: Layer-B drops the restatement but reinforces the matched note (repeats count).
     mem = Memory(str(tmp_path / "m.db"))
     fid = mem.add("I prefer dark roast coffee always").added[0].id
     a0 = mem.get(fid).access_count
@@ -257,3 +257,26 @@ def test_capture_restatement_reinforces_via_layer_b(tmp_path: Path) -> None:
     mem.run_pending_jobs()
     assert mem.get(fid).access_count > a0  # the repeat bumped the existing note
     mem.close()
+
+
+def test_doctor_flags_dead_jobs_as_problem(tmp_path: Path) -> None:
+    # dogfood fix: doctor must not stay green while capture jobs die. dead jobs → PROBLEMS (exit 1).
+    db = str(tmp_path / "m.db")
+    mem = Memory(db)
+    mem._store.enqueue("capture", {"x": 1}, dedup_key="k")
+    mem._store._conn.execute("UPDATE jobs SET status='dead'")
+    mem._store._conn.commit()
+    assert mem._store.dead_count() == 1 and mem._store.pending_count("capture") == 0
+    mem.close()
+    assert main(["--db", db, "doctor"]) == 1  # not "ok"
+
+
+def test_hook_install_handles_unwritable_settings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # a read-only / managed .claude must yield a clean exit 1, not a PermissionError traceback.
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".claude").write_text("not a directory")  # mkdir(.claude) will fail
+    db = str(tmp_path / "m.db")
+    Memory(db).close()
+    assert main(["--db", db, "hook", "install", "--project"]) == 1

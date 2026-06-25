@@ -1070,6 +1070,18 @@ class SQLiteStore(Store):
         row = self._conn.execute(sql, params).fetchone()
         return int(row["n"])
 
+    def dead_count(self) -> int:
+        return int(
+            self._conn.execute("SELECT COUNT(*) AS n FROM jobs WHERE status='dead'").fetchone()["n"]
+        )
+
+    def oldest_pending_age(self, *, now: datetime) -> float | None:
+        row = self._conn.execute(
+            "SELECT MIN(created_at) AS oldest FROM jobs WHERE status='pending'"
+        ).fetchone()
+        oldest = row["oldest"] if row else None
+        return None if not oldest else (now - _from_iso(str(oldest))).total_seconds()
+
     # ── event log / export ──────────────────────────────────────────────────
     def append_event(self, ev: Event) -> None:
         # Co-write only: called INSIDE add_note/update_note/supersede's txn, never alone.
