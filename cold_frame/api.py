@@ -218,12 +218,16 @@ class Memory:
         multi-fact turn dilutes below the threshold (so it survives); only near-pure restatements
         are dropped — which DEDUP would collapse anyway, just more expensively."""
         out: list[Msg] = []
+        known: list[str] = []
         for m in msgs:
             emb = self._embedder.embed_one(m["content"])
             hits = self._store.knn(emb, 1, scope=scope, statuses=["active"])
             if hits and hits[0][1] >= DEDUP_AUTO_MERGE:
-                continue  # already known
+                known.append(hits[0][0])  # restatement → reinforce here (it never reaches commit)
+                continue
             out.append(m)
+        if known:  # Layer-B drops before WriteCore, so reinforce repetition here too (dogfood fix)
+            self._store.reinforce(known, now=self._clock.now())
         return out
 
     def _run_capture_job(self, job: Job) -> None:

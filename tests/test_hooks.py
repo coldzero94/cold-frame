@@ -234,3 +234,26 @@ def test_layer_a_drops_oversized_paste(tmp_path: Path) -> None:
     t = tmp_path / "t.jsonl"
     _write_transcript(t, [("user", "x" * 50_000)])  # a pasted blob, not a stated fact
     assert read_user_messages(t, 0)[0] == []
+
+
+def test_readd_reinforces_existing_note(tmp_path: Path) -> None:
+    # dogfood fix: a restatement via the WriteCore path reinforces the survivor (was a no-op).
+    mem = Memory(str(tmp_path / "m.db"))
+    fid = mem.add("I deploy with ship.sh in production").added[0].id
+    a0 = mem.get(fid).access_count
+    mem.add("I deploy with ship.sh in production")  # exact restate → dedup → reinforce
+    assert mem.get(fid).access_count > a0
+    mem.close()
+
+
+def test_capture_restatement_reinforces_via_layer_b(tmp_path: Path) -> None:
+    # dogfood fix: Layer-B drops the restatement but now reinforces the matched note (repetition counts).
+    mem = Memory(str(tmp_path / "m.db"))
+    fid = mem.add("I prefer dark roast coffee always").added[0].id
+    a0 = mem.get(fid).access_count
+    t = tmp_path / "t.jsonl"
+    _write_transcript(t, [("user", "I prefer dark roast coffee always")])
+    mem.enqueue_capture(str(t), "s")
+    mem.run_pending_jobs()
+    assert mem.get(fid).access_count > a0  # the repeat bumped the existing note
+    mem.close()
