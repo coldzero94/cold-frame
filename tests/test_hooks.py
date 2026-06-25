@@ -76,3 +76,88 @@ def test_hook_install_preserves_existing_settings(
     s = json.loads(sp.read_text())
     assert s["model"] == "opus"  # untouched
     assert "Stop" in s["hooks"] and "SessionStart" in s["hooks"]  # merged, not clobbered
+
+
+# ── P1 auto-capture (D26): transcript → Layer-A filter → enqueue → drain → WriteCore ──
+import io  # noqa: E402
+
+from cold_frame.integrations.claude_code import read_user_messages  # noqa: E402
+
+
+def _write_transcript(path: Path, turns: list[tuple[str, str]]) -> None:
+    """Write a Claude Code-shaped transcript .jsonl. turns = [(type, text)]; type ∈ user/assistant/
+    tool_result (tool_result arrives under role=user with a tool_result content block)."""
+    lines = []
+    for typ, text in turns:
+        if typ == "tool_result":
+            msg = {"role": "user", "content": [{"type": "tool_result", "text": text}]}
+            lines.append(json.dumps({"type": "user", "message": msg}))
+        else:
+            msg = {"role": typ, "content": [{"type": "text", "text": text}]}
+            lines.append(json.dumps({"type": typ, "message": msg}))
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def test_layer_a_filter_keeps_only_user_text(tmp_path: Path) -> None:
+    t = tmp_path / "t.jsonl"
+    _write_transcript(
+        t,
+        [
+            ("user", "I deploy with ship.sh now"),
+            ("assistant", "Got it, I will remember that going forward"),
+            ("tool_result", "exit code 0, build succeeded"),
+            ("user", "ok"),  # below _MIN_CHARS
+            ("user", "My database is Postgres 16 in production"),
+        ],
+    )
+    msgs, watermark = read_user_messages(t, 0)
+    texts = [m["content"] for m in msgs]
+    assert texts == ["I deploy with ship.sh now", "My database is Postgres 16 in production"]
+    assert watermark == 5  # all lines consumed → next read starts after them
+
+
+def test_capture_extracts_user_facts_through_writecore(tmp_path: Path) -> None:
+    t = tmp_path / "t.jsonl"
+    _write_transcript(
+        t,
+        [
+            ("user", "I deploy with ship.sh now"),
+            ("assistant", "Understood, noting that for later"),
+            ("user", "My database is Postgres 16 in production"),
+        ],
+    )
+    mem = Memory(str(tmp_path / "m.db"))  # llm=None → naive on the Layer-A-filtered user msgs
+    mem.enqueue_capture(str(t), "sess1")
+    mem.run_pending_jobs()
+    contents = [n.content for n in mem.list_active()]
+    assert any("ship.sh" in c for c in contents)
+    assert any("Postgres" in c for c in contents)
+    assert not any("noting that for later" in c for c in contents)  # assistant turn dropped
+    assert int(mem._store.get_meta("hook:watermark:sess1") or "0") == 3
+    mem.close()
+
+
+def test_capture_is_idempotent(tmp_path: Path) -> None:
+    t = tmp_path / "t.jsonl"
+    _write_transcript(t, [("user", "I prefer dark roast coffee always")])
+    mem = Memory(str(tmp_path / "m.db"))
+    mem.enqueue_capture(str(t), "s"), mem.run_pending_jobs()
+    n1 = len(mem.list_active())
+    mem.enqueue_capture(str(t), "s"), mem.run_pending_jobs()  # re-drain same span
+    assert len(mem.list_active()) == n1  # watermark + dedup → no duplicate
+    mem.close()
+
+
+def test_hook_stop_enqueues_capture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    t = tmp_path / "t.jsonl"
+    _write_transcript(t, [("user", "I use vim with tabs everywhere")])
+    db = str(tmp_path / "m.db")
+    Memory(db).close()
+    payload = json.dumps({"transcript_path": str(t), "session_id": "sess1"})
+    monkeypatch.setattr("sys.stdin", io.StringIO(payload))
+    assert main(["--db", db, "hook", "stop"]) == 0  # hook only enqueues (no drain)
+    mem = Memory(db)
+    assert not mem.list_active()  # nothing captured yet — pending
+    mem.run_pending_jobs()  # the drain (a worker / MCP server) does the extraction
+    assert any("vim" in n.content for n in mem.list_active())
+    mem.close()
