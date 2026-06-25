@@ -17,6 +17,43 @@ if TYPE_CHECKING:
     from cold_frame.api import Msg  # type-only — a runtime import would cycle
 
 _MIN_CHARS = 12  # drop trivially short user turns ("ok", "yes", "thanks", "go on")
+_MAX_CHARS = (
+    4000  # skip pasted blobs (logs/files/stack traces) — almost never a stated durable fact
+)
+
+# Leading words that mark a turn as a task-REQUEST (imperative), not a durable fact about the user.
+# Deterministic durability heuristic for the offline path, which (unlike the LLM extractor) has no
+# durability gate — without this, "run the tests again" gets stored as a permanent "user fact".
+_COMMAND_VERBS = frozenset(
+    {
+        "run", "show", "fix", "check", "look", "give", "tell", "explain", "find", "open",
+        "write", "create", "make", "add", "list", "search", "read", "edit", "remove", "update",
+        "change", "refactor", "implement", "generate", "test", "build", "commit", "push",
+        "install", "rename", "move", "delete", "print", "help", "review", "try", "use",
+    }
+)
+_REQUEST_PREFIXES = (
+    "can you",
+    "could you",
+    "would you",
+    "please ",
+    "let's ",
+    "lets ",
+    "how do",
+    "what",
+)
+
+
+def _is_durable_user_fact(text: str) -> bool:
+    """Layer-A salience: keep declarative first-person-ish statements; drop questions, imperatives/
+    task-requests, trivially short turns, and oversized pastes. Heuristic + deterministic."""
+    if not (_MIN_CHARS <= len(text) <= _MAX_CHARS):
+        return False
+    t = text.strip().lower()
+    if t.endswith("?") or t.startswith(_REQUEST_PREFIXES):
+        return False
+    first = t.split(maxsplit=1)[0] if t else ""
+    return first not in _COMMAND_VERBS
 
 
 def _user_text(message: object) -> str:
@@ -36,23 +73,24 @@ def _user_text(message: object) -> str:
     return ""
 
 
-def read_user_messages(
-    transcript_path: str | Path, since_line: int = 0
-) -> tuple[list[Msg], int]:
+def read_user_messages(transcript_path: str | Path, since_line: int = 0) -> tuple[list[Msg], int]:
     """Read NEW user-message text from a Claude Code transcript JSONL after line ``since_line``.
 
     Returns ``(messages, new_line_count)``; the count is the watermark for the next read so capture
-    is incremental + idempotent on an append-only transcript. Only user-role text survives Layer-A
-    (assistant turns, tool noise, and sub-``_MIN_CHARS`` turns are dropped); the extractor's
-    durability gate + dedup do the rest. Never raises — a malformed line is skipped.
+    is incremental + idempotent. CRITICAL: if the file is now SHORTER than the watermark (Claude
+    Code compacted/rotated the transcript), reset to a full re-scan — else every post-compaction
+    fact is silently lost forever. DEDUP + Layer-B collapse any carry-over, so a re-scan is safe.
+    Layer-A keeps only durable user-stated facts (see _is_durable_user_fact); never raises.
     """
     p = Path(transcript_path)
     if not p.is_file():
         return [], since_line
+    lines = p.read_text(encoding="utf-8").splitlines()
+    total = len(lines)
+    start = 0 if total < since_line else since_line  # shrink/rotation → re-scan the whole file
     msgs: list[Msg] = []
-    line_no = since_line
-    for line_no, raw in enumerate(p.read_text(encoding="utf-8").splitlines(), start=1):
-        if line_no <= since_line or not raw.strip():
+    for raw in lines[start:]:
+        if not raw.strip():
             continue
         try:
             ev = json.loads(raw)
@@ -61,6 +99,6 @@ def read_user_messages(
         if not isinstance(ev, dict) or ev.get("type") != "user":
             continue  # assistant / tool_result / metadata lines are not user-stated facts
         text = _user_text(ev.get("message"))
-        if text and len(text) >= _MIN_CHARS:
+        if _is_durable_user_fact(text):
             msgs.append({"role": "user", "content": text})
-    return msgs, max(line_no, since_line)
+    return msgs, total

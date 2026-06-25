@@ -295,6 +295,16 @@ class Store(ABC):
         """Count pending jobs (optionally of one ``kind``) — observability for doctor (I12)."""
         ...
 
+    @abstractmethod
+    def dead_count(self) -> int:
+        """Count dead-lettered jobs (exhausted retries) — a doctor health signal (CLAUDE.md §8)."""
+        ...
+
+    @abstractmethod
+    def oldest_pending_age(self, *, now: datetime) -> float | None:
+        """Age in seconds of the oldest pending job, or None if none — a 'not draining' signal."""
+        ...
+
     # ── event log / export (D17) ────────────────────────────────────────────
     @abstractmethod
     def append_event(self, ev: Event) -> None:

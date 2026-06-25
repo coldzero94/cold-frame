@@ -193,3 +193,114 @@ def test_layer_b_novelty_drops_known_keeps_new(tmp_path: Path) -> None:
     filtered = mem._novel_messages([known, fresh], mem._default_scope)
     assert filtered == [fresh]  # the restatement is skipped, the new fact survives
     mem.close()
+
+
+# ── dogfooding fixes (D26): compaction-loss, durability gate, max-len ──
+def test_capture_survives_transcript_compaction(tmp_path: Path) -> None:
+    # CRITICAL: a compacted (shortened) transcript must not freeze the watermark above EOF and lose
+    # every later fact. After a shrink, re-scan from 0 (dedup collapses carry-over).
+    t = tmp_path / "t.jsonl"
+    _write_transcript(t, [("user", "I deploy with ship.sh now"), ("user", "I use Postgres 16")])
+    mem = Memory(str(tmp_path / "m.db"))
+    mem.enqueue_capture(str(t), "sess1")
+    mem.run_pending_jobs()
+    n_before = len(mem.list_active())
+    # Claude Code compacts: the transcript is rewritten SHORTER, with a brand-new fact
+    _write_transcript(t, [("user", "I switched the cache to Redis")])
+    mem.enqueue_capture(str(t), "sess1")
+    mem.run_pending_jobs()
+    assert any("Redis" in n.content for n in mem.list_active())  # NOT lost after compaction
+    assert len(mem.list_active()) >= n_before
+    mem.close()
+
+
+def test_layer_a_drops_task_requests_and_questions(tmp_path: Path) -> None:
+    t = tmp_path / "t.jsonl"
+    _write_transcript(
+        t,
+        [
+            ("user", "I deploy with ship.sh now"),  # durable fact → keep
+            ("user", "can you run the tests again and show the output"),  # task-request → drop
+            ("user", "show me the diff before you commit anything"),  # imperative → drop
+            ("user", "how do I configure the linter here"),  # question → drop
+            ("user", "My database is Postgres 16 in production"),  # durable fact → keep
+        ],
+    )
+    texts = [m["content"] for m in read_user_messages(t, 0)[0]]
+    assert texts == ["I deploy with ship.sh now", "My database is Postgres 16 in production"]
+
+
+def test_layer_a_drops_oversized_paste(tmp_path: Path) -> None:
+    t = tmp_path / "t.jsonl"
+    _write_transcript(t, [("user", "x" * 50_000)])  # a pasted blob, not a stated fact
+    assert read_user_messages(t, 0)[0] == []
+
+
+def test_readd_reinforces_existing_note(tmp_path: Path) -> None:
+    # dogfood fix: a restatement via the WriteCore path reinforces the survivor (was a no-op).
+    mem = Memory(str(tmp_path / "m.db"))
+    fid = mem.add("I deploy with ship.sh in production").added[0].id
+    a0 = mem.get(fid).access_count
+    mem.add("I deploy with ship.sh in production")  # exact restate → dedup → reinforce
+    assert mem.get(fid).access_count > a0
+    mem.close()
+
+
+def test_capture_restatement_reinforces_via_layer_b(tmp_path: Path) -> None:
+    # dogfood fix: Layer-B drops the restatement but reinforces the matched note (repeats count).
+    mem = Memory(str(tmp_path / "m.db"))
+    fid = mem.add("I prefer dark roast coffee always").added[0].id
+    a0 = mem.get(fid).access_count
+    t = tmp_path / "t.jsonl"
+    _write_transcript(t, [("user", "I prefer dark roast coffee always")])
+    mem.enqueue_capture(str(t), "s")
+    mem.run_pending_jobs()
+    assert mem.get(fid).access_count > a0  # the repeat bumped the existing note
+    mem.close()
+
+
+def test_doctor_flags_dead_jobs_as_problem(tmp_path: Path) -> None:
+    # dogfood fix: doctor must not stay green while capture jobs die. dead jobs → PROBLEMS (exit 1).
+    db = str(tmp_path / "m.db")
+    mem = Memory(db)
+    mem._store.enqueue("capture", {"x": 1}, dedup_key="k")
+    mem._store._conn.execute("UPDATE jobs SET status='dead'")
+    mem._store._conn.commit()
+    assert mem._store.dead_count() == 1 and mem._store.pending_count("capture") == 0
+    mem.close()
+    assert main(["--db", db, "doctor"]) == 1  # not "ok"
+
+
+def test_hook_install_handles_unwritable_settings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # a read-only / managed .claude must yield a clean exit 1, not a PermissionError traceback.
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".claude").write_text("not a directory")  # mkdir(.claude) will fail
+    db = str(tmp_path / "m.db")
+    Memory(db).close()
+    assert main(["--db", db, "hook", "install", "--project"]) == 1
+
+
+def test_auto_capture_does_not_bloat_on_repetition(tmp_path: Path) -> None:
+    # regression baseline (dogfood POSITIVE): re-stating the same facts across sessions must NOT
+    # grow the active set — the anti-bloat claim. Attack bloat at admission, not the growth curve.
+    facts = [
+        "I prefer dark roast coffee",
+        "I deploy with ship.sh always",
+        "My database is Postgres",
+    ]
+    mem = Memory(str(tmp_path / "m.db"))
+    t1 = tmp_path / "s1.jsonl"
+    _write_transcript(t1, [("user", f) for f in facts])
+    mem.enqueue_capture(str(t1), "s1")
+    mem.run_pending_jobs()
+    n1 = len(mem.list_active())
+    assert n1 == 3
+    for i in (2, 3, 4):  # later sessions re-state the SAME facts → flat (dedup + Layer-B collapse)
+        ti = tmp_path / f"s{i}.jsonl"
+        _write_transcript(ti, [("user", f) for f in facts])
+        mem.enqueue_capture(str(ti), f"s{i}")
+        mem.run_pending_jobs()
+    assert len(mem.list_active()) == n1  # no turn-proportional bloat
+    mem.close()

@@ -80,6 +80,9 @@ class WriteCore:
             kind, payload = self._classify(cand, emb, scope)
             if kind == "dedup":
                 deduped.append(str(payload))  # non-destructive: drop the dup, existing stays
+                # a restatement IS a reinforcement signal — bump the survivor so "the user keeps
+                # saying this" raises its strength + resists forgetting (dogfood fix).
+                self._store.reinforce([str(payload)], now=cand.created_at)
             elif kind == "supersede":
                 self._store.supersede(str(payload), cand, emb)
                 superseded.append(str(payload))

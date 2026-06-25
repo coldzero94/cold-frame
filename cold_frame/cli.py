@@ -241,8 +241,15 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     mem = _memory(args)
     h = mem.health()
     pending_caps = mem._store.pending_count("capture")  # auto-capture queue depth (D26)
+    dead = mem._store.dead_count()
+    oldest_age = mem._store.oldest_pending_age(now=mem._clock.now())
+    stale_backlog = oldest_age is not None and oldest_age > 86_400  # jobs not draining for >1 day
     print(f"db: {h['db_path']}")
-    print(f"auto-capture: {pending_caps} pending (drains when Claude Code uses Coldframe)")
+    print(f"auto-capture: {pending_caps} pending, {dead} dead (drains as you use Coldframe)")
+    if stale_backlog:  # the silent-capture-failure signal: enqueued but nothing is draining
+        print(f"  → captures not draining for >{int(oldest_age // 3600)}h — run '{PKG} worker'")
+    if dead:
+        print(f"  → {dead} dead job(s) — check logs; capture/maintenance is failing")
     print(f"notes={h['notes']} fts={h['fts']} vec={h['vec']}  (match={h['counts_match']})")
     print(f"integrity_check={h['integrity']}  fts_integrity={h['fts_integrity']}")
     print(f"embedder={h['embedder_id']} dim={h['dim']}  stale_vectors={h['stale_vectors']}")
@@ -254,6 +261,8 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
         and h["integrity"] == "ok"
         and h["fts_integrity"] == "ok"
         and h["stale_vectors"] == 0
+        and dead == 0
+        and not stale_backlog
     )
     print("ok" if ok else "PROBLEMS FOUND")
     return 0 if ok else 1
@@ -275,13 +284,17 @@ def _cmd_hook_session_start(args: argparse.Namespace) -> int:
     error it emits nothing and exits 0 — a hook must never block the session (D26)."""
     try:
         mem = _memory(args)
-        lines: list[str] = []
-        for n in mem.list_active(sort="importance", limit=_RECALL_K * 3):
-            if mem.strength(n.id).band == "fading":
-                continue  # inject durable beliefs, not what's already cooling toward forgetting
-            lines.append(f"- {n.content}")
-            if len(lines) >= _RECALL_K:
-                break
+        # rank by COMPUTED strength (importance + retrievability + access), not flat importance,
+        # so repeated/reinforced beliefs surface; skip the fading band.
+        ranked = sorted(
+            (
+                (mem.strength(n.id), n)
+                for n in mem.list_active(sort="importance", limit=_RECALL_K * 6)
+            ),
+            key=lambda sn: sn[0].value,
+            reverse=True,
+        )
+        lines = [f"- {n.content}" for s, n in ranked if s.band != "fading"][:_RECALL_K]
         if not lines:
             return 0  # silence > noise: nothing worth surfacing
         ctx = (
@@ -311,7 +324,7 @@ def _hook_present(entries: object, cmd: str) -> bool:
 
 # (settings event, matcher, `hook` subcommand) — recall on SessionStart, capture on Stop. Stop fires
 # every turn-end, so capture is already continuous (the watermark advances); a PreCompact boundary
-# would add nothing here (and the transcript-rewrite-on-compact edge needs watermark handling first).
+# adds nothing here (compaction shrink is handled by the watermark-reset in read_user_messages).
 _HOOK_WIRING: tuple[tuple[str, str, str], ...] = (
     ("SessionStart", "startup|resume", "session-start"),
     ("Stop", "", "stop"),
@@ -337,8 +350,14 @@ def _cmd_hook_install(args: argparse.Namespace) -> int:
     if not added:
         print(f"already installed → {path}")
         return 0
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
+    try:  # a read-only / managed ~/.claude must not greet onboarding with a raw traceback
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
+    except OSError as exc:
+        print(
+            f"{PKG}: couldn't write {path} ({exc.strerror or exc}) — check permissions, then retry"
+        )
+        return 1
     print(f"installed {', '.join(added)} hook(s) → {path}")
     print("  recall on session start; auto-capture drains while Claude Code uses Coldframe's tools")
     return 0
