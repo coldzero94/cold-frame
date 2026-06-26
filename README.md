@@ -27,9 +27,12 @@ the web UI) is an opt-in extra, so a plain install stays tiny.
 Once the name clears (see Status), the shipping paths are `uv tool install "cold-frame[mcp]"`
 (or `pipx`) for an isolated CLI on your PATH, and a Homebrew tap for macOS/Linux
 (`brew install <org>/coldframe/cold-frame`) — the formula + release procedure are ready in
-[`packaging/homebrew/`](packaging/homebrew/). Docker is intentionally not a target for the local
-tool: the MCP server is a stdio subprocess Claude Code spawns and your memory is a local file you
-own, so a container would only get in the way (it fits the future hosted server layer, not this).
+[`packaging/homebrew/`](packaging/homebrew/). For users with **no Python at all**, a single
+self-contained binary (CLI + MCP server in one ~20 MB file) builds via
+[`packaging/standalone/`](packaging/standalone/) for GitHub Releases. Docker is intentionally not a
+target for the local tool: the MCP server is a stdio subprocess Claude Code spawns and your memory
+is a local file you own, so a container would only get in the way (it fits the future hosted server
+layer, not this).
 
 ---
 

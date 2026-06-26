@@ -19,3 +19,6 @@ frontend/public/p5.min.js
 # but keep the dir present via .gitkeep so the wheel build never breaks in dev.
 cold_frame/ui/_dist/*
 !cold_frame/ui/_dist/.gitkeep
+
+# standalone binary build output (PyInstaller; platform-specific, built in CI)
+dist-bin/
