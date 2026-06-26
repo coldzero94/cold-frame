@@ -480,3 +480,67 @@ def test_read_user_messages_never_raises_on_bad_encoding(tmp_path: Path) -> None
     t.write_bytes(good.encode("utf-8") + b"\n\xff\xfe garbage bytes \x80\n")
     msgs, _ = read_user_messages(t, 0)  # must not raise on the non-UTF-8 line
     assert any("Postgres" in m["content"] for m in msgs)
+
+
+def test_full_capture_loop_with_llm_routing_and_extraction(tmp_path: Path) -> None:
+    # closes review gap G1/G4: the capture drain with a real extracting+classifying LLM, end-to-end,
+    # routing two facts into two tiers. A host-model stand-in implements the real LLM seam.
+    import re
+
+    from cold_frame.integrations.claude_code import GLOBAL_KEY, project_key
+    from cold_frame.llm.base import LLM, LLMResult, TaskTag
+    from cold_frame.models import Scope
+    from cold_frame.prompts.extract import ExtractedFact, ExtractionOutput
+    from cold_frame.prompts.scope import ScopeVerdict
+
+    class _LoopLLM(LLM):
+        name = "loop"
+
+        def __init__(self) -> None:
+            self.used: set[str] = set()
+
+        @property
+        def is_local(self) -> bool:
+            return False
+
+        def complete(  # type: ignore[no-untyped-def]
+            self, *, task, system, user, schema=None, temperature=0.0, max_tokens=1024
+        ):
+            self.used.add(task.value)
+            if task == TaskTag.SCOPE_CLASSIFY:
+                lines = [ln for ln in user.splitlines() if re.match(r"^\d+\.", ln)]
+                stmts = [re.sub(r"^\d+\.\s*", "", ln).strip() for ln in lines]
+                tiers = ["global" if s.lower().startswith("i ") else "project" for s in stmts]
+                return LLMResult(parsed=ScopeVerdict(tiers=tiers), model=self.name)
+            if task == TaskTag.EXTRACT:
+                m = re.search(r"## New Messages\n(.*?)\n\n## Observation", user, re.DOTALL)
+                msgs = json.loads(m.group(1)) if m else []
+                facts = [
+                    ExtractedFact(
+                        text=x["content"],
+                        memory_type="semantic",
+                        confidence=0.85,
+                        durability="durable",
+                    )
+                    for x in msgs
+                ]
+                return LLMResult(parsed=ExtractionOutput(facts=facts), model=self.name)
+            return LLMResult(parsed=None, model=self.name)
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    llm = _LoopLLM()
+    mem = Memory(str(tmp_path / "m.db"), llm=llm)
+    t = tmp_path / "t.jsonl"
+    _write_transcript(
+        t, [("user", "this repo uses pnpm not npm"), ("user", "I prefer dark roast coffee")]
+    )
+    mem.enqueue_capture(str(t), "s", str(repo))
+    mem.run_pending_jobs()
+    assert {"scope_classify", "extract"} <= llm.used  # the LLM drove routing AND extraction
+    proj = [n.content for n in mem.list_active(scope=Scope(agent_id=project_key(str(repo))))]
+    glob = [n.content for n in mem.list_active(scope=Scope(agent_id=GLOBAL_KEY))]
+    assert any("pnpm" in c for c in proj) and not any("pnpm" in c for c in glob)  # project → repo
+    assert any("dark roast" in c for c in glob)  # personal fact → global tier
+    assert not any("dark roast" in c for c in proj)
+    mem.close()
