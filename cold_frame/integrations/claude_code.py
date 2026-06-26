@@ -145,13 +145,28 @@ _REQUEST_PREFIXES = (
 )
 
 
+# Harness-injected blocks that arrive as type=user but are NOT user-stated facts: slash commands,
+# bash tool I/O, task notifications, interrupt markers. Live dogfooding on a real transcript showed
+# these leaking through (`<command-name>/effort</command-name>`, `<bash-input>code .`, …) — pure
+# noise/bloat. A turn containing any of these markers is dropped.
+_HARNESS_MARKERS = (
+    "<command-name>", "<command-message>", "<local-command-stdout>", "<local-command-caveat>",
+    "<bash-input>", "<bash-stdout>", "<bash-stderr>", "<task-notification>", "[request interrupted",
+)
+
+
 def _is_durable_user_fact(text: str) -> bool:
     """Layer-A salience: keep declarative first-person-ish statements; drop questions, imperatives/
-    task-requests, trivially short turns, and oversized pastes. Heuristic + deterministic."""
+    task-requests, harness/slash/bash noise, trivially short turns, and oversized pastes.
+    Heuristic + deterministic. NOTE: the imperative filter is English-only — a non-English task
+    request can slip through to the naive backstop; the agent-push path (the agent extracts) is the
+    quality answer for non-English, and dedup absorbs the overlap (D26)."""
     if not (_MIN_CHARS <= len(text) <= _MAX_CHARS):
         return False
     t = text.strip().lower()
     if t.endswith("?") or t.startswith(_REQUEST_PREFIXES):
+        return False
+    if any(marker in t for marker in _HARNESS_MARKERS):
         return False
     first = t.split(maxsplit=1)[0] if t else ""
     return first not in _COMMAND_VERBS

@@ -96,9 +96,12 @@ cold-frame hook status       # check what's wired
 - **Auto-recall** — a SessionStart hook injects your strongest durable memories at the top of each
   new session, so the agent opens already knowing you; a UserPromptSubmit hook adds memories relevant
   to the *current* prompt (gated on a real lexical match, so it adds signal, not per-turn noise).
-- **Auto-capture** — a Stop hook enqueues each turn's transcript; the extraction runs on **Claude
-  Code's own model** (via MCP sampling — no extra key) as the agent uses Coldframe, pulling out the
-  durable facts you stated and dropping the chatter.
+- **Auto-capture** — Claude Code itself extracts the durable facts you state and calls `add_memory`,
+  driven by a managed CLAUDE.md directive `hook install` adds (no extra key — the agent uses its own
+  model). A Stop hook also enqueues each turn as a deterministic **coverage backstop** (a keyless
+  naive extraction), and dedup merges the two so nothing is lost and the agent's higher-quality
+  capture wins. *(Why not MCP sampling? Claude Code doesn't support it — so the agent pushes facts
+  to the tool rather than the tool pulling the model.)*
 - **Per-project + global** — facts are tagged by **git project** (remote URL, else repo root), so a
   repo's conventions stay in that repo; clear personal facts ("I prefer…", "my name…") go to a global
   tier recalled everywhere. A new session recalls *this project ∪ global*.

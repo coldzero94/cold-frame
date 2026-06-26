@@ -9,6 +9,7 @@ core; ``main()`` reports a clean install hint when the SDK is absent.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -231,13 +232,16 @@ def build_server(memory: Memory | None = None) -> Any:  # noqa: ANN401 - FastMCP
     global _MEMORY, _SERVER
     server = FastMCP(MCP_ID)
     _SERVER = server
-    # default: ride on the host's model via MCP sampling (no own key/endpoint) — degrade-safe.
-    # The server's cwd is the project Claude Code launched it in, so scope it to that project's
-    # tier (D26): search/add/self-edit default to this project, recall-style search adds global.
+    # Scope the server to its project tier (D26). Claude Code does NOT reliably pass the project cwd
+    # to an MCP subprocess (#42687 — os.getcwd() may be a cache dir), so prefer the PROJECT_ROOT env
+    # the user sets at `claude mcp add --env PROJECT_ROOT="$PWD"`; fall back to cwd. (SamplingLLM is
+    # kept for the dedup/conflict judges + future clients; Claude Code can't service sampling today,
+    # so it degrades to the deterministic engine — the agent-push directive does the real capture.)
     if memory is not None:
         _MEMORY = memory
     else:
-        scope = Scope(agent_id=project_key(str(Path.cwd())))
+        root = os.environ.get("PROJECT_ROOT") or str(Path.cwd())
+        scope = Scope(agent_id=project_key(root))
         _MEMORY = Memory(llm=SamplingLLM(_host_sample), default_scope=scope)
     server.tool()(search_memory)
     server.tool()(add_memory)
