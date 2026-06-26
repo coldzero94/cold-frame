@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [{ "type": "command", "command": "cold-frame hook session-start" }]
+      }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [{ "type": "command", "command": "cold-frame hook user-prompt" }] }
+    ],
+    "Stop": [
+      { "hooks": [{ "type": "command", "command": "cold-frame hook stop" }] }
+    ]
+  }
+}

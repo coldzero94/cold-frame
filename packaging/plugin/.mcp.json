@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "cold-frame": {
+      "command": "cold-frame",
+      "args": ["mcp"],
+      "env": { "PROJECT_ROOT": "${CLAUDE_PROJECT_DIR}" }
+    }
+  }
+}

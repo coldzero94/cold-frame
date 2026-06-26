@@ -56,9 +56,15 @@ matters at the start of each session and captures the durable facts as you work,
 needed:
 
 ```bash
-cold-frame hook install                       # recall + capture hooks (~/.claude)
-claude mcp add cold-frame -- cold-frame mcp    # the capture drain + memory tools
+claude plugin install coldframe        # bundles the MCP server + recall/capture hooks + capture skill
 ```
+
+One install — no per-machine `CLAUDE.md` or `settings.json` editing. The plugin (in
+[`packaging/plugin/`](packaging/plugin/)) auto-starts the memory server, wires recall + capture, and
+ships the capture skill so Claude itself remembers durable facts *during your normal session* — using
+the Claude you already pay for, **no API key, no extra metered cost**. A keyless deterministic
+backstop guarantees coverage. (No plugin? `cold-frame hook install` wires the same via `~/.claude` as
+a fallback.)
 
 That's the whole setup. See [Automatic memory](#automatic-memory-opt-in) below for how it stays
 lean instead of hoarding everything.
