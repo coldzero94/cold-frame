@@ -9,6 +9,7 @@ server). Other subcommands remain stubs until their phase. The DB location resol
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import sqlite3
@@ -404,6 +405,70 @@ _HOOK_WIRING: tuple[tuple[str, str, str], ...] = (
 )
 
 
+# ── managed CLAUDE.md capture directive (D26 agent-push: the agent extracts + calls add_memory) ──
+# Claude Code does NOT support MCP sampling (#1785), so the server can't "pull" the host model. We
+# flip to push: a standing instruction tells the agent to capture durable facts via the add_memory
+# tool with its own model. Soft (model-discretionary) but high-compliance as a standing rule; the
+# Stop-hook naive enqueue stays as the deterministic coverage backstop, and dedup merges the two.
+_CLAUDE_MD_BEGIN = "<!-- coldframe:begin (managed by cold-frame; delete to disable) -->"
+_CLAUDE_MD_END = "<!-- coldframe:end -->"
+_CAPTURE_DIRECTIVE = """## Memory (Coldframe)
+
+This workspace has persistent memory via Coldframe. Recall is automatic (injected at session start
+and per prompt) — you don't need to search unless asked what you remember. Your job is capture:
+
+- When the user states a DURABLE fact — a preference, decision, convention, identity/contact detail,
+  or a correction of something stated earlier — silently call the `add_memory` tool with one
+  concise, self-contained fact. Capture and continue; don't announce it or ask permission.
+- Do NOT capture transient task requests, questions, chit-chat, or anything secret/credential-like.
+"""
+
+
+def _claude_md_path(*, user: bool) -> Path:
+    """The CLAUDE.md the managed capture directive lives in: ~/.claude (user) or ./ (project)."""
+    return (Path.home() / ".claude" / "CLAUDE.md") if user else (Path.cwd() / "CLAUDE.md")
+
+
+def _upsert_managed_block(path: Path) -> str:
+    """Insert/refresh the marker-delimited capture directive in ``path`` (idempotent). Returns
+    'added' | 'updated' | 'unchanged' | 'error'."""
+    block = f"{_CLAUDE_MD_BEGIN}\n{_CAPTURE_DIRECTIVE}{_CLAUDE_MD_END}\n"
+    try:
+        existing = path.read_text(encoding="utf-8") if path.exists() else ""
+    except OSError:
+        return "error"
+    b, e = existing.find(_CLAUDE_MD_BEGIN), existing.find(_CLAUDE_MD_END)
+    if b != -1 and e != -1:  # replace the managed region in place
+        tail = existing[e + len(_CLAUDE_MD_END) :].lstrip("\n")
+        new = existing[:b] + block + (("\n" + tail) if tail else "")
+    else:  # append, separated by a blank line
+        sep = "" if not existing else ("\n" if existing.endswith("\n") else "\n\n")
+        new = existing + sep + block
+    if new == existing:
+        return "unchanged"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(new, encoding="utf-8")
+    except OSError:
+        return "error"
+    return "added" if b == -1 else "updated"
+
+
+def _remove_managed_block(path: Path) -> bool:
+    """Strip the managed directive from ``path``; True if something was removed."""
+    try:
+        existing = path.read_text(encoding="utf-8") if path.exists() else ""
+    except OSError:
+        return False
+    b, e = existing.find(_CLAUDE_MD_BEGIN), existing.find(_CLAUDE_MD_END)
+    if b == -1 or e == -1:
+        return False
+    after = existing[e + len(_CLAUDE_MD_END) :].lstrip("\n")
+    new = (existing[:b].rstrip("\n") + "\n" + after).strip()
+    path.write_text((new + "\n") if new else "", encoding="utf-8")
+    return True
+
+
 def _cmd_hook_install(args: argparse.Namespace) -> int:
     path = _settings_path(user=not args.project)
     try:
@@ -420,19 +485,55 @@ def _cmd_hook_install(args: argparse.Namespace) -> int:
             continue
         entries.append({"matcher": matcher, "hooks": [{"type": "command", "command": cmd}]})
         added.append(event)
-    if not added:
-        print(f"already installed → {path}")
-        return 0
-    try:  # a read-only / managed ~/.claude must not greet onboarding with a raw traceback
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
-    except OSError as exc:
-        print(
-            f"{PKG}: couldn't write {path} ({exc.strerror or exc}) — check permissions, then retry"
-        )
-        return 1
-    print(f"installed {', '.join(added)} hook(s) → {path}")
-    print("  recall on session start; auto-capture drains while Claude Code uses Coldframe's tools")
+    if added:
+        try:  # a read-only / managed ~/.claude must not greet onboarding with a raw traceback
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
+        except OSError as exc:
+            print(f"{PKG}: couldn't write {path} ({exc.strerror or exc}) — check permissions")
+            return 1
+        print(f"installed {', '.join(added)} hook(s) → {path}")
+    else:
+        print(f"hooks already wired → {path}")
+    # the agent-push capture directive (D26): the agent extracts + calls add_memory itself
+    md_path = _claude_md_path(user=not args.project)
+    md_status = _upsert_managed_block(md_path)
+    if md_status == "error":
+        print(f"{PKG}: couldn't write {md_path} — check permissions (hooks still wired)")
+    else:
+        print(f"capture directive {md_status} → {md_path}")
+    print("  recall: SessionStart + UserPromptSubmit · capture: the agent calls add_memory")
+    mcp_add = f'claude mcp add {branding.MCP_ID} --env PROJECT_ROOT="$PWD" -- {PKG} mcp'
+    print(f"  connect the server: {mcp_add}")
+    return 0
+
+
+def _cmd_hook_uninstall(args: argparse.Namespace) -> int:
+    """Remove Coldframe's hooks + the managed CLAUDE.md capture directive (DB untouched)."""
+    path = _settings_path(user=not args.project)
+    try:
+        settings = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except (OSError, ValueError):
+        settings = {}
+    hooks = settings.get("hooks", {})
+    removed: list[str] = []
+    if isinstance(hooks, dict):
+        for event, _matcher, sub in _HOOK_WIRING:
+            cmd = f"{PKG} hook {sub}"
+            entries = hooks.get(event)
+            if not isinstance(entries, list):
+                continue
+            kept = [e for e in entries if not _hook_present([e], cmd)]
+            if len(kept) != len(entries):
+                removed.append(event)
+            hooks[event] = kept
+        if settings:
+            with contextlib.suppress(OSError):
+                path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
+    md_removed = _remove_managed_block(_claude_md_path(user=not args.project))
+    directive = "removed" if md_removed else "none"
+    print(f"removed hooks: {', '.join(removed) or 'none'}; capture directive: {directive}")
+    print("  (your memory DB is untouched — `cold-frame` still works directly)")
     return 0
 
 
@@ -451,7 +552,11 @@ def _cmd_hook_status(args: argparse.Namespace) -> int:
         ]
         state = ("✓ " + "+".join(wired)) if wired else "— not installed"
         print(f"{scope:8} {path}: {state}")
-    print(f"install with: {PKG} hook install")
+        md = _claude_md_path(user=user)
+        md_text = md.read_text(encoding="utf-8", errors="ignore") if md.exists() else ""
+        has_directive = _CLAUDE_MD_BEGIN in md_text
+        print(f"{'':8} {md}: {'✓ capture directive' if has_directive else '— no directive'}")
+    print(f"install with: {PKG} hook install   (remove with: {PKG} hook uninstall)")
     return 0
 
 
@@ -473,7 +578,7 @@ def _cmd_hook_capture(args: argparse.Namespace) -> int:
 
 
 def _cmd_hook_help(args: argparse.Namespace) -> int:
-    print(f"usage: {PKG} hook {{session-start|user-prompt|stop|install|status}}")
+    print(f"usage: {PKG} hook {{session-start|user-prompt|stop|install|uninstall|status}}")
     return 1
 
 
@@ -690,6 +795,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--project", action="store_true", help="install into ./.claude (else ~/.claude)"
     )
     p_hi.set_defaults(func=_cmd_hook_install)
+    p_hu = hook_sub.add_parser("uninstall", help="remove the hooks + capture directive")
+    p_hu.add_argument("--project", action="store_true", help="from ./.claude (else ~/.claude)")
+    p_hu.set_defaults(func=_cmd_hook_uninstall)
     hook_sub.add_parser("status", help="show whether the recall hook is installed").set_defaults(
         func=_cmd_hook_status
     )

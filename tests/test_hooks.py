@@ -652,3 +652,37 @@ def test_anti_bloat_at_scale(tmp_path: Path) -> None:
     assert active <= len(universe) + 5  # bounded by distinct facts, not turn count
     assert active < turns_total // 10  # clearly sublinear in turns
     mem.close()
+
+
+def test_hook_install_adds_managed_capture_directive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    db = str(tmp_path / "m.db")
+    Memory(db).close()
+    assert main(["--db", db, "hook", "install", "--project"]) == 0
+    md = tmp_path / "CLAUDE.md"
+    text = md.read_text()
+    assert "coldframe:begin" in text and "coldframe:end" in text
+    assert "add_memory" in text  # the agent-push capture directive
+    assert main(["--db", db, "hook", "install", "--project"]) == 0  # idempotent
+    assert md.read_text().count("coldframe:begin") == 1  # no duplicate block
+    assert main(["--db", db, "hook", "uninstall", "--project"]) == 0
+    assert "coldframe:begin" not in md.read_text()  # removable
+
+
+def test_managed_block_preserves_existing_claude_md(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    md = tmp_path / "CLAUDE.md"
+    md.write_text("# My project rules\n\nUse tabs, not spaces.\n")
+    db = str(tmp_path / "m.db")
+    Memory(db).close()
+    main(["--db", db, "hook", "install", "--project"])
+    t = md.read_text()
+    assert "My project rules" in t and "Use tabs, not spaces." in t  # preserved
+    assert "coldframe:begin" in t
+    main(["--db", db, "hook", "uninstall", "--project"])
+    t2 = md.read_text()
+    assert "My project rules" in t2 and "coldframe:begin" not in t2  # block gone, rules kept
