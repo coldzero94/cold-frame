@@ -689,8 +689,19 @@ def _cmd_import(args: argparse.Namespace) -> int:
 
 
 def _cmd_worker(args: argparse.Namespace) -> int:
-    """Drain the durable jobs queue (consolidation + dead-letter recovery, I12)."""
-    mem = _memory(args)
+    """Drain the durable jobs queue (consolidation + dead-letter recovery, I12). When the `claude`
+    CLI is on PATH, captures extract via the user's Claude session (headless `claude -p` — no API
+    key, billed to the subscription); otherwise naive (D26 agent-push alternative)."""
+    from cold_frame.llm.claude_cli import ClaudeCliLLM
+
+    extractor = ClaudeCliLLM() if ClaudeCliLLM.available() else None
+    mem = Memory(_resolve_db(args), llm=extractor)
+    _OPENED.append(mem)
+    print(
+        f"{PKG} worker: extraction via the claude CLI (session auth, no key)"
+        if extractor is not None
+        else f"{PKG} worker: claude CLI not found on PATH → naive extraction"
+    )
     if args.once:
         ran = mem.run_pending_jobs()
         print(f"worker: ran {ran} job(s)")
