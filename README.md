@@ -41,14 +41,19 @@ No setup, no key. Your facts are saved the moment you add them.
 
 ## Use it from Claude Code
 
-This is the point. Register cold-frame once and Claude Code gains persistent memory across
-sessions:
+This is the point. Two commands give Claude Code persistent, **automatic** memory — it recalls what
+matters at the start of each session and captures the durable facts as you work, no "remember this"
+needed:
 
 ```bash
-claude mcp add cold-frame -- cold-frame mcp
+cold-frame hook install                       # recall + capture hooks (~/.claude)
+claude mcp add cold-frame -- cold-frame mcp    # the capture drain + memory tools
 ```
 
-Now the agent has six memory tools:
+That's the whole setup. See [Automatic memory](#automatic-memory-opt-in) below for how it stays
+lean instead of hoarding everything.
+
+You also get six explicit memory tools, for when you want to drive memory by hand:
 
 | tool | what it does |
 |------|--------------|

@@ -638,8 +638,7 @@ def test_anti_bloat_at_scale(tmp_path: Path) -> None:
     chatter = ["run the tests again", "what does this do?", "show me the diff", "fix it", "ok"]
     mem = Memory(str(tmp_path / "m.db"))
     turns_total = 1200
-    sess = 0
-    for _start in range(0, turns_total, 12):
+    for sess, _start in enumerate(range(0, turns_total, 12)):
         batch = []
         for _ in range(12):
             r = rng.random()
@@ -648,7 +647,6 @@ def test_anti_bloat_at_scale(tmp_path: Path) -> None:
         _write_transcript(t, [("user", x) for x in batch])
         mem.enqueue_capture(str(t), f"s{sess}", "/work/repo")
         mem.run_pending_jobs()
-        sess += 1
     active = len(mem.list_active(limit=100_000))
     print(f"\n  {turns_total} turns -> {active} active (universe={len(universe)})")
     assert active <= len(universe) + 5  # bounded by distinct facts, not turn count

@@ -44,6 +44,11 @@ cold-frame = "cold_frame.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["cold_frame"]
+# Keep the distributed wheel small + runtime-only. Exclude DEV/DESIGN assets that ship by default
+# under packages=["cold_frame"]: the prototype design assets (a 677 KB PNG + mock HTML — 84% of an
+# unfiltered wheel) and the eval harness + golden datasets (imported only by tests, never at
+# runtime — verified). A plain `pip install cold-frame` should not pull design mocks or test data.
+exclude = ["cold_frame/ui/prototype", "cold_frame/eval"]
 # Ship the CI-built SPA bundle (cold_frame/ui/_dist/*) even though it is git-ignored:
 # ``artifacts`` un-ignores these build outputs for packaging without the double-add that
 # force-include hits on the tracked .gitkeep. No matches (dev, pre-build) → nothing added,
