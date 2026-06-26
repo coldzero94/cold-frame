@@ -21,6 +21,8 @@ from cold_frame import __version__, branding
 from cold_frame.api import Memory
 from cold_frame.branding import PKG
 from cold_frame.exceptions import NoteNotFound
+from cold_frame.integrations.claude_code import GLOBAL_KEY, project_key
+from cold_frame.models import Scope
 
 _SUBCOMMANDS: tuple[str, ...] = (
     "add",
@@ -78,7 +80,9 @@ def _cmd_add(args: argparse.Namespace) -> int:
     if not args.text:
         print(f'{PKG}: add requires text (usage: {PKG} add "...")')
         return 1
-    res = _memory(args).add(args.text, raw=args.raw)
+    # a manual CLI add is a deliberate, cross-project statement → the GLOBAL tier (recalled
+    # everywhere), distinct from auto-capture's per-project tagging (D26).
+    res = _memory(args).add(args.text, raw=args.raw, scope=Scope(agent_id=GLOBAL_KEY))
     for note in res.added:
         print(f"+ {note.id[:8]}  {note.content}")
     for note in res.held:
@@ -247,7 +251,8 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     print(f"db: {h['db_path']}")
     print(f"auto-capture: {pending_caps} pending, {dead} dead (drains as you use Coldframe)")
     if stale_backlog:  # the silent-capture-failure signal: enqueued but nothing is draining
-        print(f"  → captures not draining for >{int(oldest_age // 3600)}h — run '{PKG} worker'")
+        hrs = int((oldest_age or 0) // 3600)
+        print(f"  → captures not draining for >{hrs}h — run '{PKG} worker'")
     if dead:
         print(f"  → {dead} dead job(s) — check logs; capture/maintenance is failing")
     print(f"notes={h['notes']} fts={h['fts']} vec={h['vec']}  (match={h['counts_match']})")
@@ -278,21 +283,37 @@ def _settings_path(*, user: bool) -> Path:
     return base / ".claude" / "settings.json"
 
 
+def _hook_stdin() -> dict[str, object]:
+    """The hook's JSON payload (cwd/session_id/transcript_path) — empty on a tty or any error so a
+    hook never blocks or crashes."""
+    if sys.stdin.isatty():
+        return {}
+    try:
+        data = json.loads(sys.stdin.read() or "{}")
+    except (ValueError, OSError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 def _cmd_hook_session_start(args: argparse.Namespace) -> int:
     """SessionStart recall hook: emit the strongest durable memories as additionalContext so a new
     Claude Code session opens already knowing the user. Read-only (no reinforce, no write); on ANY
     error it emits nothing and exits 0 — a hook must never block the session (D26)."""
     try:
+        cwd = str(_hook_stdin().get("cwd", ""))
         mem = _memory(args)
-        # rank by COMPUTED strength (importance + retrievability + access), not flat importance,
-        # so repeated/reinforced beliefs surface; skip the fading band.
+        # recall this project's memories + the global tier (D26). Rank by COMPUTED strength
+        # (importance + retrievability + access), not flat importance; skip the fading band.
+        tiers = list(dict.fromkeys([project_key(cwd), GLOBAL_KEY]))  # dedup if outside any project
+        notes = [
+            n
+            for t in tiers
+            for n in mem.list_active(
+                scope=Scope(agent_id=t), sort="importance", limit=_RECALL_K * 6
+            )
+        ]
         ranked = sorted(
-            (
-                (mem.strength(n.id), n)
-                for n in mem.list_active(sort="importance", limit=_RECALL_K * 6)
-            ),
-            key=lambda sn: sn[0].value,
-            reverse=True,
+            ((mem.strength(n.id), n) for n in notes), key=lambda sn: sn[0].value, reverse=True
         )
         lines = [f"- {n.content}" for s, n in ranked if s.band != "fading"][:_RECALL_K]
         if not lines:
@@ -387,11 +408,11 @@ def _cmd_hook_capture(args: argparse.Namespace) -> int:
     capture and return immediately (no extraction here — that drains where an LLM is reachable).
     Fast + fail-silent: a hook must never block or crash the session (D26)."""
     try:
-        payload = json.loads(sys.stdin.read() or "{}")
+        payload = _hook_stdin()
         tp = str(payload.get("transcript_path", ""))
         sid = str(payload.get("session_id", ""))
         if tp and sid:
-            _memory(args).enqueue_capture(tp, sid)
+            _memory(args).enqueue_capture(tp, sid, str(payload.get("cwd", "")))
     except Exception:  # fail-silent: never break the session on a capture hiccup
         return 0
     return 0

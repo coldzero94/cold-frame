@@ -19,7 +19,12 @@ from cold_frame.constants import CONSOLIDATE_EVERY_N_WRITES, DEDUP_AUTO_MERGE
 from cold_frame.exceptions import EmbedderMismatchError, NoteNotFound, ToolError
 from cold_frame.forget.consolidate import Consolidator
 from cold_frame.forget.worker import Worker
-from cold_frame.integrations.claude_code import read_user_messages
+from cold_frame.integrations.claude_code import (
+    GLOBAL_KEY,
+    is_global_fact,
+    project_key,
+    read_user_messages,
+)
 from cold_frame.llm.base import LLM, Clock, Embedder, HashEmbedder, SystemClock
 from cold_frame.models import (
     AddResult,
@@ -203,12 +208,13 @@ class Memory:
         self._consolidator.consolidate(scope=scope)  # idempotent/convergent (at-least-once safe)
 
     # ── auto-capture (D26): enqueue a transcript pointer; drain extracts via THIS Memory's llm ──
-    def enqueue_capture(self, transcript_path: str, session_id: str) -> None:
-        """Queue a Claude Code transcript span for auto-capture (debounced per session). The hook
-        calls this — fast, no extraction; the drain (where an LLM is reachable) does the work."""
+    def enqueue_capture(self, transcript_path: str, session_id: str, cwd: str = "") -> None:
+        """Queue a Claude Code transcript span for auto-capture (debounced per session). ``cwd`` is
+        carried so the drain can tag captures with the git-based project scope (D26). The hook calls
+        this — fast, no extraction; the drain (where an LLM is reachable) does the work."""
         self._store.enqueue(
             "capture",
-            {"transcript_path": transcript_path, "session_id": session_id},
+            {"transcript_path": transcript_path, "session_id": session_id, "cwd": cwd},
             dedup_key=f"capture:{session_id}",
         )
 
@@ -237,14 +243,22 @@ class Memory:
         that DEDUP collapses."""
         sid = str(job.payload.get("session_id", ""))
         path = str(job.payload.get("transcript_path", ""))
+        pkey = project_key(str(job.payload.get("cwd", "")))  # git-based project tag (D26)
         wkey = f"hook:watermark:{sid}"
         since = int(self._store.get_meta(wkey) or "0")
         msgs, new_line = read_user_messages(path, since)
-        msgs = self._novel_messages(msgs, self._default_scope)  # skip extraction for known content
-        if msgs:
-            # source=None → the engine builds per-message provenance (I14). A `cc:{sid}` session tag
-            # for anti-dossier visibility is a later refinement once source plumbing is threaded.
-            self.add(msgs, infer=True)
+        # route each turn: clear personal facts → the GLOBAL tier (recalled everywhere); the rest →
+        # this project's tag (isolated). The tier rides the scope's agent_id (no schema change).
+        by_tier: dict[str, list[Msg]] = {}
+        for m in msgs:
+            by_tier.setdefault(GLOBAL_KEY if is_global_fact(m["content"]) else pkey, []).append(m)
+        for tier, tier_msgs in by_tier.items():
+            scope = Scope(agent_id=tier)
+            fresh = self._novel_messages(tier_msgs, scope)  # Layer-B novelty WITHIN the tier
+            if fresh:
+                self.add(
+                    fresh, infer=True, scope=scope
+                )  # source=None → per-message provenance (I14)
         self._store.set_meta(wkey, str(new_line))
 
     def _supersede_text(
