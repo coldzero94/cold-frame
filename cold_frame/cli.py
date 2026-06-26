@@ -280,6 +280,9 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
 
 # ── Claude Code hooks (auto-recall / capture, D26) ───────────────────────────
 _RECALL_K = 7  # SessionStart digest: inject up to K strongest durable beliefs
+_PROMPT_RECALL_K = 3  # UserPromptSubmit: tighter — at most K hits per prompt (avoid per-turn noise)
+_PROMPT_MIN_QUERY = 8  # don't query on a trivially short prompt
+_PROMPT_SCORE_FLOOR = 0.02  # drop weak fused scores (pure-vector noise sits below a lexical match)
 
 
 def _settings_path(*, user: bool) -> Path:
@@ -338,6 +341,45 @@ def _cmd_hook_session_start(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_hook_user_prompt(args: argparse.Namespace) -> int:
+    """UserPromptSubmit incremental recall (D26): search this project + global for memories relevant
+    to the CURRENT prompt and inject the top few. Tighter + gated vs session-start (a lexical/BM25
+    signal AND a score floor) so it adds signal, not per-turn noise. Read-only (reinforce=False);
+    fail-silent — a hook must never block the session."""
+    try:
+        payload = _hook_stdin()
+        query = str(payload.get("prompt", "")).strip()
+        if len(query) < _PROMPT_MIN_QUERY:
+            return 0
+        cwd = str(payload.get("cwd", ""))
+        mem = _memory(args)
+        tiers = list(dict.fromkeys([project_key(cwd), GLOBAL_KEY]))
+        best: dict[str, object] = {}
+        for t in tiers:
+            for h in mem.search(
+                query, scope=Scope(agent_id=t), k=_PROMPT_RECALL_K, reinforce=False
+            ).hits:
+                # require a lexical (BM25) overlap AND a non-trivial fused score → real relevance,
+                # not pure embedding noise that would fire on every unrelated prompt.
+                if h.signals.bm25 is None or h.score < _PROMPT_SCORE_FLOOR:
+                    continue
+                if h.note.id not in best or h.score > best[h.note.id].score:  # type: ignore[attr-defined]
+                    best[h.note.id] = h
+        top = sorted(best.values(), key=lambda h: h.score, reverse=True)[:_PROMPT_RECALL_K]  # type: ignore[attr-defined]
+        if not top:
+            return 0
+        ctx = "Possibly relevant memory (Coldframe):\n" + "\n".join(
+            f"- {h.note.content}" for h in top  # type: ignore[attr-defined]
+        )
+        ev = "UserPromptSubmit"
+        out = {"hookSpecificOutput": {"hookEventName": ev, "additionalContext": ctx}}
+        print(json.dumps(out))
+    except Exception as exc:  # fail-silent; content-free breadcrumb to stderr (I16)
+        _log.warning("hook_user_prompt_failed", extra={"exc_type": type(exc).__name__})
+        return 0
+    return 0
+
+
 def _hook_present(entries: object, cmd: str) -> bool:
     """True if our hook command is already wired in a settings SessionStart entry list."""
     if not isinstance(entries, list):
@@ -356,6 +398,7 @@ def _hook_present(entries: object, cmd: str) -> bool:
 # adds nothing here (compaction shrink is handled by the watermark-reset in read_user_messages).
 _HOOK_WIRING: tuple[tuple[str, str, str], ...] = (
     ("SessionStart", "startup|resume", "session-start"),
+    ("UserPromptSubmit", "", "user-prompt"),
     ("Stop", "", "stop"),
 )
 
@@ -429,7 +472,7 @@ def _cmd_hook_capture(args: argparse.Namespace) -> int:
 
 
 def _cmd_hook_help(args: argparse.Namespace) -> int:
-    print(f"usage: {PKG} hook {{session-start|stop|install|status}}")
+    print(f"usage: {PKG} hook {{session-start|user-prompt|stop|install|status}}")
     return 1
 
 
@@ -635,6 +678,9 @@ def build_parser() -> argparse.ArgumentParser:
     hook_sub.add_parser("session-start", help="emit recall context for a new session").set_defaults(
         func=_cmd_hook_session_start
     )
+    hook_sub.add_parser(
+        "user-prompt", help="emit recall relevant to the current prompt"
+    ).set_defaults(func=_cmd_hook_user_prompt)
     hook_sub.add_parser(
         "stop", help="enqueue the session transcript for auto-capture"
     ).set_defaults(func=_cmd_hook_capture)

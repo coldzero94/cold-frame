@@ -79,7 +79,8 @@ cold-frame hook status       # check what's wired
 ```
 
 - **Auto-recall** — a SessionStart hook injects your strongest durable memories at the top of each
-  new session, so the agent opens already knowing you.
+  new session, so the agent opens already knowing you; a UserPromptSubmit hook adds memories relevant
+  to the *current* prompt (gated on a real lexical match, so it adds signal, not per-turn noise).
 - **Auto-capture** — a Stop hook enqueues each turn's transcript; the extraction runs on **Claude
   Code's own model** (via MCP sampling — no extra key) as the agent uses Coldframe, pulling out the
   durable facts you stated and dropping the chatter.

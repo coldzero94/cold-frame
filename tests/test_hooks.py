@@ -67,9 +67,13 @@ def test_hook_install_is_idempotent(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert any(
         "hook stop" in h["command"] for e in hooks["Stop"] for h in e["hooks"]
     )  # capture too
+    assert any(
+        "hook user-prompt" in h["command"] for e in hooks["UserPromptSubmit"] for h in e["hooks"]
+    )  # incremental recall too
     assert main(["--db", db, "hook", "install", "--project"]) == 0  # again → no duplicate
     after = json.loads(sp.read_text())["hooks"]
     assert len(after["SessionStart"]) == 1 and len(after["Stop"]) == 1
+    assert len(after["UserPromptSubmit"]) == 1
 
 
 def test_hook_install_preserves_existing_settings(
@@ -576,3 +580,43 @@ def test_capture_tier_failure_is_isolated_and_advances_watermark(
     assert any("dark roast" in c for c in glob)  # the global tier committed
     assert int(mem._store.get_meta("hook:watermark:s") or "0") == 2  # advanced past both lines
     mem.close()
+
+
+def test_hook_user_prompt_injects_relevant_recall(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from cold_frame.integrations.claude_code import GLOBAL_KEY
+    from cold_frame.models import Scope
+
+    db = str(tmp_path / "m.db")
+    mem = Memory(db)
+    mem.add("I deploy this service with ship.sh to fly.io", scope=Scope(agent_id=GLOBAL_KEY))
+    mem.add("I prefer dark roast coffee", scope=Scope(agent_id=GLOBAL_KEY))
+    mem.close()
+    # a prompt about deploying → the ship.sh memory is surfaced; coffee is not
+    prompt = json.dumps({"prompt": "how should I deploy this"})
+    monkeypatch.setattr("sys.stdin", io.StringIO(prompt))
+    assert main(["--db", db, "hook", "user-prompt"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
+    ctx = out["hookSpecificOutput"]["additionalContext"]
+    assert "ship.sh" in ctx
+
+
+def test_hook_user_prompt_silent_on_unrelated_and_short(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from cold_frame.integrations.claude_code import GLOBAL_KEY
+    from cold_frame.models import Scope
+
+    db = str(tmp_path / "m.db")
+    mem = Memory(db)
+    mem.add("I deploy with ship.sh to fly.io", scope=Scope(agent_id=GLOBAL_KEY))
+    mem.close()
+    unrelated = json.dumps({"prompt": "quantum chromodynamics lecture"})
+    monkeypatch.setattr("sys.stdin", io.StringIO(unrelated))
+    assert main(["--db", db, "hook", "user-prompt"]) == 0
+    assert capsys.readouterr().out.strip() == ""  # no lexical overlap → no per-turn noise
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"prompt": "hi"})))  # too short
+    assert main(["--db", db, "hook", "user-prompt"]) == 0
+    assert capsys.readouterr().out.strip() == ""
