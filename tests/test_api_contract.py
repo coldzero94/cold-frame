@@ -24,6 +24,7 @@ def _literal_domains(ann: object) -> list[frozenset[object]]:
         domains.extend(_literal_domains(arg))
     return domains
 
+
 _SCHEMA = Path(__file__).resolve().parents[1] / "frontend" / "src" / "api.schema.json"
 
 

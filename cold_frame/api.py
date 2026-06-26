@@ -250,10 +250,15 @@ class Memory:
                 user=build_scope_user(texts),
                 schema=ScopeVerdict,
             ).parsed
-        except Exception:  # any LLM/bridge failure → degrade to the deterministic heuristic
+        except Exception as exc:  # any LLM/bridge failure → degrade to the heuristic, but log it
+            # content-free (I16): a chronic failure here means the LLM classifier is silently dead
+            # and the heuristic is masking it — surface the breadcrumb so it's diagnosable.
+            _log.warning("scope_classify_failed", extra={"exc_type": type(exc).__name__})
             parsed = None
         if isinstance(parsed, ScopeVerdict) and len(parsed.tiers) == len(texts):
             return [t == "global" for t in parsed.tiers]
+        if parsed is not None:  # well-formed call but the reply didn't line up → heuristic fallback
+            _log.warning("scope_classify_len_mismatch", extra={"n_texts": len(texts)})
         return [is_global_fact(t) for t in texts]
 
     def _run_capture_job(self, job: Job) -> None:

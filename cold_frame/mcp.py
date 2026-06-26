@@ -9,12 +9,15 @@ core; ``main()`` reports a clean install hint when the SDK is absent.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from cold_frame.api import Memory
 from cold_frame.branding import MCP_ID, PKG, fact_deeplink
 from cold_frame.exceptions import ColdFrameError, StoreError, mcp_code_for
+from cold_frame.integrations.claude_code import GLOBAL_KEY, project_key
 from cold_frame.llm.sampling import SamplingLLM
+from cold_frame.models import Scope
 from cold_frame.observability import get_logger
 
 _log = get_logger(__name__)
@@ -88,8 +91,28 @@ def _drain_captures(mem: Memory) -> None:
         _log.warning("capture_drain_failed", extra={"exc_type": type(exc).__name__})
 
 
+def _scope_tiers(mem: Memory) -> list[Scope]:
+    """This project's scope + the global tier (D26) — dedup'd when the server runs outside a repo
+    (project_key → GLOBAL_KEY). Mirrors the SessionStart recall so the tool path can't leak across
+    projects (the default Scope(agent_id=None) would match EVERY project's tier)."""
+    project = mem._default_scope
+    scopes = [project]
+    if project.agent_id != GLOBAL_KEY:
+        scopes.append(Scope(agent_id=GLOBAL_KEY))
+    return scopes
+
+
 def _search_impl(mem: Memory, query: str, k: int = 10) -> dict[str, Any]:
-    res = mem.search(query, k=k)
+    # search THIS project + global, never the default all-tiers scope (cross-project leak, D26).
+    best: dict[str, Any] = {}
+    used = 0
+    for scope in _scope_tiers(mem):
+        res = mem.search(query, k=k, scope=scope)
+        used += res.used_tokens or 0
+        for h in res.hits:
+            if h.note.id not in best or h.score > best[h.note.id].score:
+                best[h.note.id] = h
+    top = sorted(best.values(), key=lambda h: h.score, reverse=True)[:k]
     out: dict[str, Any] = {
         "hits": [
             {
@@ -98,9 +121,9 @@ def _search_impl(mem: Memory, query: str, k: int = 10) -> dict[str, Any]:
                 "score": h.score,
                 "deeplink": fact_deeplink(h.note.id),
             }
-            for h in res.hits
+            for h in top
         ],
-        "used": res.used_tokens or 0,
+        "used": used,
     }
     _drain_captures(mem)  # piggyback auto-capture extraction on this live request
     return out
@@ -109,8 +132,11 @@ def _search_impl(mem: Memory, query: str, k: int = 10) -> dict[str, Any]:
 def _add_impl(mem: Memory, text: str) -> dict[str, Any]:
     # raw=True: the agent's text IS the fact (naive). Smart dedup/conflict still rides on the
     # host via sampling inside commit; if extraction were LLM-driven, a sampling miss would drop
-    # the fact entirely — naive keeps it, and the judges degrade safely.
-    res = mem.add(text, raw=True)
+    # the fact entirely — naive keeps it, and the judges degrade safely. Tier it like auto-capture
+    # (global vs this project) so an agent-asserted fact is recalled in the right scope (D26).
+    is_global = mem._classify_tiers([text])[0]
+    scope = Scope(agent_id=GLOBAL_KEY) if is_global else mem._default_scope
+    res = mem.add(text, raw=True, scope=scope)
     out = {
         "added": [
             {"id": n.id, "content": n.content, "deeplink": fact_deeplink(n.id)} for n in res.added
@@ -205,8 +231,14 @@ def build_server(memory: Memory | None = None) -> Any:  # noqa: ANN401 - FastMCP
     global _MEMORY, _SERVER
     server = FastMCP(MCP_ID)
     _SERVER = server
-    # default: ride on the host's model via MCP sampling (no own key/endpoint) — degrade-safe
-    _MEMORY = memory if memory is not None else Memory(llm=SamplingLLM(_host_sample))
+    # default: ride on the host's model via MCP sampling (no own key/endpoint) — degrade-safe.
+    # The server's cwd is the project Claude Code launched it in, so scope it to that project's
+    # tier (D26): search/add/self-edit default to this project, recall-style search adds global.
+    if memory is not None:
+        _MEMORY = memory
+    else:
+        scope = Scope(agent_id=project_key(str(Path.cwd())))
+        _MEMORY = Memory(llm=SamplingLLM(_host_sample), default_scope=scope)
     server.tool()(search_memory)
     server.tool()(add_memory)
     for tool in (create_fact, update_fact, supersede, forget):  # self-edit tools (one WriteCore)

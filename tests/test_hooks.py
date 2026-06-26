@@ -378,3 +378,105 @@ def test_classify_tiers_falls_back_to_heuristic_offline(tmp_path: Path) -> None:
     mem = Memory(str(tmp_path / "m.db"))  # llm=None → deterministic heuristic
     assert mem._classify_tiers(["I prefer dark roast", "this repo uses pnpm"]) == [True, False]
     mem.close()
+
+
+# ── PR-review fixes: MCP scope isolation, recall scoping, doctor stale-backlog, fallbacks ──
+def test_mcp_search_does_not_leak_across_projects(tmp_path: Path) -> None:
+    # C1 regression: the MCP tool path must scope to its project + global, never all tiers.
+    from cold_frame.integrations.claude_code import GLOBAL_KEY
+    from cold_frame.mcp import _search_impl
+    from cold_frame.models import Scope
+
+    mem = Memory(str(tmp_path / "m.db"), default_scope=Scope(agent_id="proj:A"))
+    mem.add("apple alpha aardvark", scope=Scope(agent_id="proj:A"))
+    mem.add("banana bravo beetle", scope=Scope(agent_id="proj:B"))
+    mem.add("cherry charlie cobra", scope=Scope(agent_id=GLOBAL_KEY))
+    contents = " ".join(h["content"] for h in _search_impl(mem, "apple banana cherry")["hits"])
+    assert "apple" in contents  # this project
+    assert "cherry" in contents  # global tier
+    assert "banana" not in contents  # project B must NOT leak through the tool path
+    mem.close()
+
+
+def test_session_start_recall_is_project_scoped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # confidentiality: recall in project A must not surface project B's facts.
+    from cold_frame.integrations.claude_code import project_key
+    from cold_frame.models import Scope
+
+    dir_a, dir_b = tmp_path / "repoA", tmp_path / "repoB"
+    dir_a.mkdir()
+    dir_b.mkdir()
+    db = str(tmp_path / "m.db")
+    mem = Memory(db)
+    mem.add("alpha apricot lives in repo A", scope=Scope(agent_id=project_key(str(dir_a))))
+    mem.add("bravo banana lives in repo B", scope=Scope(agent_id=project_key(str(dir_b))))
+    mem.close()
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"cwd": str(dir_a)})))
+    assert main(["--db", db, "hook", "session-start"]) == 0
+    ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
+    assert "apricot" in ctx  # this project's fact
+    assert "banana" not in ctx  # repo B's fact must not leak into repo A's recall
+
+
+def test_end_to_end_capture_then_recall_same_project(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # the actual product loop: a Stop-hook capture resurfaces in a later session's recall.
+    dir_a = tmp_path / "repoA"
+    dir_a.mkdir()
+    db = str(tmp_path / "m.db")
+    Memory(db).close()
+    t = tmp_path / "t.jsonl"
+    _write_transcript(t, [("user", "I deploy this repo with ship.sh nightly")])
+    payload = {"transcript_path": str(t), "session_id": "s", "cwd": str(dir_a)}
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+    assert main(["--db", db, "hook", "stop"]) == 0  # enqueue
+    mem = Memory(db)
+    mem.run_pending_jobs()  # drain (a worker)
+    mem.close()
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"cwd": str(dir_a)})))
+    assert main(["--db", db, "hook", "session-start"]) == 0
+    ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
+    assert "ship.sh" in ctx  # captured in repo A → recalled in repo A
+
+
+def test_doctor_flags_stale_pending_backlog(tmp_path: Path) -> None:
+    db = str(tmp_path / "m.db")
+    mem = Memory(db)
+    mem._store.enqueue("capture", {"x": 1}, dedup_key="k")
+    mem._store._conn.execute("UPDATE jobs SET created_at = ?", ("2020-01-01T00:00:00Z",))
+    mem._store._conn.commit()
+    assert (mem._store.oldest_pending_age(now=mem._clock.now()) or 0) > 86_400
+    mem.close()
+    assert main(["--db", db, "doctor"]) == 1  # stale backlog → PROBLEMS
+
+
+def test_oldest_pending_age_none_when_empty(tmp_path: Path) -> None:
+    mem = Memory(str(tmp_path / "m.db"))
+    assert mem._store.oldest_pending_age(now=mem._clock.now()) is None
+    mem.close()
+
+
+def test_classify_tiers_falls_back_on_length_mismatch(tmp_path: Path) -> None:
+    from cold_frame.eval.harness import LlmScriptEntry, ScriptedLLM
+    from cold_frame.llm.base import TaskTag
+
+    # LLM returns 1 label for 2 inputs → mismatch → safe degrade to the heuristic.
+    script = [
+        LlmScriptEntry(
+            task=TaskTag.SCOPE_CLASSIFY, match={"any": True}, returns={"tiers": ["global"]}
+        )
+    ]
+    mem = Memory(str(tmp_path / "m.db"), llm=ScriptedLLM(script))
+    assert mem._classify_tiers(["I prefer dark roast", "this repo uses pnpm"]) == [True, False]
+    mem.close()
+
+
+def test_read_user_messages_never_raises_on_bad_encoding(tmp_path: Path) -> None:
+    t = tmp_path / "t.jsonl"
+    good = json.dumps({"type": "user", "message": {"role": "user", "content": "I use Postgres 16"}})
+    t.write_bytes(good.encode("utf-8") + b"\n\xff\xfe garbage bytes \x80\n")
+    msgs, _ = read_user_messages(t, 0)  # must not raise on the non-UTF-8 line
+    assert any("Postgres" in m["content"] for m in msgs)

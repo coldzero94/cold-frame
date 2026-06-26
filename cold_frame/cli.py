@@ -23,6 +23,9 @@ from cold_frame.branding import PKG
 from cold_frame.exceptions import NoteNotFound
 from cold_frame.integrations.claude_code import GLOBAL_KEY, project_key
 from cold_frame.models import Scope
+from cold_frame.observability import get_logger
+
+_log = get_logger(__name__)
 
 _SUBCOMMANDS: tuple[str, ...] = (
     "add",
@@ -250,9 +253,11 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     stale_backlog = oldest_age is not None and oldest_age > 86_400  # jobs not draining for >1 day
     print(f"db: {h['db_path']}")
     print(f"auto-capture: {pending_caps} pending, {dead} dead (drains as you use Coldframe)")
-    if stale_backlog:  # the silent-capture-failure signal: enqueued but nothing is draining
+    if (
+        stale_backlog
+    ):  # the silent-stall signal: oldest_pending_age spans ALL job kinds, not capture
         hrs = int((oldest_age or 0) // 3600)
-        print(f"  → captures not draining for >{hrs}h — run '{PKG} worker'")
+        print(f"  → jobs not draining for >{hrs}h — run '{PKG} worker'")
     if dead:
         print(f"  → {dead} dead job(s) — check logs; capture/maintenance is failing")
     print(f"notes={h['notes']} fts={h['fts']} vec={h['vec']}  (match={h['counts_match']})")
@@ -325,7 +330,10 @@ def _cmd_hook_session_start(args: argparse.Namespace) -> int:
         )
         out = {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": ctx}}
         print(json.dumps(out))
-    except Exception:  # a hook failure must degrade to a silent no-op, never crash the session
+    except Exception as exc:  # a hook failure must degrade to a silent no-op, never crash a session
+        # ...but this read path has no jobs/doctor backstop, so log a content-free breadcrumb (I16)
+        # to stderr (stdout carries the hook JSON) — else "Claude forgot me" is undebuggable.
+        _log.warning("hook_session_start_failed", extra={"exc_type": type(exc).__name__})
         return 0
     return 0
 
@@ -404,16 +412,18 @@ def _cmd_hook_status(args: argparse.Namespace) -> int:
 
 
 def _cmd_hook_capture(args: argparse.Namespace) -> int:
-    """Capture-commit hook (Stop / PreCompact): enqueue the session's transcript span for auto-
-    capture and return immediately (no extraction here — that drains where an LLM is reachable).
-    Fast + fail-silent: a hook must never block or crash the session (D26)."""
+    """Capture-commit hook (Stop): enqueue the session's transcript span for auto-capture and return
+    immediately (no extraction here — that drains where an LLM is reachable). The same handler could
+    serve a PreCompact hook, but only Stop is wired today (see _HOOK_WIRING). Fast + fail-silent: a
+    hook must never block or crash the session (D26)."""
     try:
         payload = _hook_stdin()
         tp = str(payload.get("transcript_path", ""))
         sid = str(payload.get("session_id", ""))
         if tp and sid:
             _memory(args).enqueue_capture(tp, sid, str(payload.get("cwd", "")))
-    except Exception:  # fail-silent: never break the session on a capture hiccup
+    except Exception as exc:  # fail-silent: never break the session on a capture hiccup
+        _log.warning("hook_capture_failed", extra={"exc_type": type(exc).__name__})  # content-free
         return 0
     return 0
 

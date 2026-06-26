@@ -3,8 +3,9 @@
 The hook enqueues a transcript POINTER; the drain calls this to read only the NEW user-message text
 since the watermark. Layer-A is the cheap, deterministic, zero-LLM front line of the anti-bloat
 design: keep the user's stated facts/decisions/corrections, drop assistant output, tool_use/
-tool_result noise, and trivially short turns — so the LLM extractor + durability gate downstream
-only ever see a small, salient slice. Stdlib only (json + pathlib); no heavy deps (I9).
+tool_result noise, trivially short turns, oversized pastes, and (in _is_durable_user_fact) questions
+and imperative task-requests — so the LLM extractor + durability gate downstream only ever see a
+small, salient slice. Stdlib only (json + pathlib + hashlib); no heavy deps (I9).
 """
 
 from __future__ import annotations
@@ -185,7 +186,14 @@ def read_user_messages(transcript_path: str | Path, since_line: int = 0) -> tupl
     p = Path(transcript_path)
     if not p.is_file():
         return [], since_line
-    lines = p.read_text(encoding="utf-8").splitlines()
+    try:
+        # errors="replace": a non-UTF-8 byte must not raise (the "never raises" contract); a salient
+        # fact rarely lives in the corrupt bytes. OSError (TOCTOU/permission) → no new facts, with
+        # the watermark unchanged so the next drain retries rather than skipping the span.
+        text = p.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return [], since_line
+    lines = text.splitlines()
     total = len(lines)
     start = 0 if total < since_line else since_line  # shrink/rotation → re-scan the whole file
     msgs: list[Msg] = []
