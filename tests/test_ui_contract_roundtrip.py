@@ -68,8 +68,12 @@ def test_roundtrip_guard_has_teeth(memory: Memory, monkeypatch: pytest.MonkeyPat
     memory.add("a memory")
     # a builder emitting an out-of-union band MUST be rejected — proves the guard is not a no-op
     bad = {
-        "id": "1", "content": "x", "memory_type": "semantic", "status": "active",
-        "confidence": 1.0, "strength": {"value": 0.5, "band": "WRONG", "at_risk": False},
+        "id": "1",
+        "content": "x",
+        "memory_type": "semantic",
+        "status": "active",
+        "confidence": 1.0,
+        "strength": {"value": 0.5, "band": "WRONG", "at_risk": False},
     }
     monkeypatch.setattr(ui, "_note_brief", lambda *a, **k: bad)
     with pytest.raises(ValidationError):
