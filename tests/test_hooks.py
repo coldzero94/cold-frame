@@ -193,8 +193,9 @@ def test_layer_b_novelty_drops_known_keeps_new(tmp_path: Path) -> None:
     mem.add("I deploy with ship.sh in production")
     known = {"role": "user", "content": "I deploy with ship.sh in production"}
     fresh = {"role": "user", "content": "My cat is named Mocha"}
-    filtered = mem._novel_messages([known, fresh], mem._default_scope)
-    assert filtered == [fresh]  # the restatement is skipped, the new fact survives
+    novel, known_ids = mem._novel_messages([known, fresh], mem._default_scope)
+    assert novel == [fresh]  # the restatement is skipped, the new fact survives
+    assert len(known_ids) == 1  # the matched note id is returned for the caller to reinforce
     mem.close()
 
 
@@ -543,4 +544,35 @@ def test_full_capture_loop_with_llm_routing_and_extraction(tmp_path: Path) -> No
     assert any("pnpm" in c for c in proj) and not any("pnpm" in c for c in glob)  # project → repo
     assert any("dark roast" in c for c in glob)  # personal fact → global tier
     assert not any("dark roast" in c for c in proj)
+    mem.close()
+
+
+def test_capture_tier_failure_is_isolated_and_advances_watermark(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # H2 fix: if one tier's add() raises, the other tier still commits, the job does NOT raise, and
+    # the watermark advances (no re-present → no double-reinforce on retry).
+    from cold_frame.exceptions import StoreError
+    from cold_frame.integrations.claude_code import GLOBAL_KEY
+    from cold_frame.models import Scope
+
+    mem = Memory(str(tmp_path / "m.db"))
+    t = tmp_path / "t.jsonl"
+    _write_transcript(
+        t, [("user", "I prefer dark roast coffee"), ("user", "this repo uses pnpm not npm")]
+    )
+    orig_add = mem.add
+
+    def flaky_add(messages, **kw):  # type: ignore[no-untyped-def]
+        scope = kw.get("scope")
+        if scope is not None and scope.agent_id != GLOBAL_KEY:  # the project tier blows up
+            raise StoreError("boom")
+        return orig_add(messages, **kw)
+
+    monkeypatch.setattr(mem, "add", flaky_add)
+    mem.enqueue_capture(str(t), "s", "/work/repo")
+    mem.run_pending_jobs()  # must NOT raise despite the project-tier failure
+    glob = [n.content for n in mem.list_active(scope=Scope(agent_id=GLOBAL_KEY))]
+    assert any("dark roast" in c for c in glob)  # the global tier committed
+    assert int(mem._store.get_meta("hook:watermark:s") or "0") == 2  # advanced past both lines
     mem.close()

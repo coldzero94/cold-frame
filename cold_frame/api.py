@@ -219,23 +219,23 @@ class Memory:
             dedup_key=f"capture:{session_id}",
         )
 
-    def _novel_messages(self, msgs: list[Msg], scope: Scope) -> list[Msg]:
-        """Layer-B novelty pre-filter (D26): drop a turn already represented by a near-identical
-        active note (cosine ≥ DEDUP_AUTO_MERGE) so we skip paying to extract known content. A
-        multi-fact turn dilutes below the threshold (so it survives); only near-pure restatements
-        are dropped — which DEDUP would collapse anyway, just more expensively."""
+    def _novel_messages(self, msgs: list[Msg], scope: Scope) -> tuple[list[Msg], list[str]]:
+        """Layer-B novelty pre-filter (D26): split a batch into (novel, known-note-ids).
+
+        A turn already represented by a near-identical active note (cosine ≥ DEDUP_AUTO_MERGE) is
+        dropped as known so we skip paying to extract it. Its matched id is RETURNED, not reinforced
+        here, so the caller reinforces post-commit — reinforcing before add() would double-fire on a
+        job retry. A multi-fact turn dilutes below the threshold (so it survives)."""
         out: list[Msg] = []
         known: list[str] = []
         for m in msgs:
             emb = self._embedder.embed_one(m["content"])
             hits = self._store.knn(emb, 1, scope=scope, statuses=["active"])
             if hits and hits[0][1] >= DEDUP_AUTO_MERGE:
-                known.append(hits[0][0])  # restatement → reinforce here (it never reaches commit)
+                known.append(hits[0][0])  # restatement → caller reinforces post-commit
                 continue
             out.append(m)
-        if known:  # Layer-B drops before WriteCore, so reinforce repetition here too (dogfood fix)
-            self._store.reinforce(known, now=self._clock.now())
-        return out
+        return out, known
 
     def _classify_tiers(self, texts: list[str]) -> list[bool]:
         """Per-text tier — True=global, False=project. Uses the (host-via-sampling / local) LLM when
@@ -264,8 +264,10 @@ class Memory:
     def _run_capture_job(self, job: Job) -> None:
         """Read NEW user messages since the watermark → Layer-A (in the reader) → Layer-B novelty →
         the ONE WriteCore via add(infer=True): ADMISSION→DEDUP→CONFLICT→PERSIST + durability gate
-        keep the DB lean (D26). Watermark advances only after add() so a crash re-presents a span
-        that DEDUP collapses."""
+        keep the DB lean (D26). Each tier is best-effort + isolated, and the watermark advances once
+        at the end (at-most-once): a tier that raises is logged + skipped, never aborting the other
+        tiers (which would re-present + double-reinforce on retry). A dropped tier's facts recur in
+        later turns and dedup on re-capture — a benign loss vs corrupting the strength signal."""
         sid = str(job.payload.get("session_id", ""))
         path = str(job.payload.get("transcript_path", ""))
         pkey = project_key(str(job.payload.get("cwd", "")))  # git-based project tag (D26)
@@ -279,13 +281,18 @@ class Memory:
         by_tier: dict[str, list[Msg]] = {}
         for m, is_global in zip(msgs, tiers, strict=True):
             by_tier.setdefault(GLOBAL_KEY if is_global else pkey, []).append(m)
+        reinforce_ids: list[str] = []
         for tier, tier_msgs in by_tier.items():
             scope = Scope(agent_id=tier)
-            fresh = self._novel_messages(tier_msgs, scope)  # Layer-B novelty WITHIN the tier
-            if fresh:
-                self.add(
-                    fresh, infer=True, scope=scope
-                )  # source=None → per-message provenance (I14)
+            try:
+                fresh, known = self._novel_messages(tier_msgs, scope)  # Layer-B WITHIN the tier
+                if fresh:
+                    self.add(fresh, infer=True, scope=scope)  # source=None → provenance (I14)
+                reinforce_ids.extend(known)  # only after this tier's add() actually committed
+            except Exception as exc:  # one tier's failure must not abort/re-present the others
+                _log.warning("capture_tier_failed", extra={"exc_type": type(exc).__name__})
+        if reinforce_ids:  # restatements counted ONCE, post-commit (no double-fire on retry)
+            self._store.reinforce(reinforce_ids, now=self._clock.now())
         self._store.set_meta(wkey, str(new_line))
 
     def _supersede_text(
