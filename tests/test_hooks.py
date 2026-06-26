@@ -355,3 +355,26 @@ def test_auto_capture_scopes_by_project_with_global_tier(tmp_path: Path) -> None
     assert not any("pnpm" in c for c in g_facts)  # project fact did NOT leak to global
     assert not any("pnpm" in c for c in b_facts)  # …nor to another project (isolation)
     mem.close()
+
+
+def test_classify_tiers_uses_the_llm_when_present(tmp_path: Path) -> None:
+    # the parasitic host model (or a local one) classifies tier; a ScriptedLLM stands in here.
+    from cold_frame.eval.harness import LlmScriptEntry, ScriptedLLM
+    from cold_frame.llm.base import TaskTag
+
+    script = [
+        LlmScriptEntry(
+            task=TaskTag.SCOPE_CLASSIFY,
+            match={"any": True},
+            returns={"tiers": ["global", "project"]},
+        )
+    ]
+    mem = Memory(str(tmp_path / "m.db"), llm=ScriptedLLM(script))
+    assert mem._classify_tiers(["I work at Acme", "this repo uses pnpm"]) == [True, False]
+    mem.close()
+
+
+def test_classify_tiers_falls_back_to_heuristic_offline(tmp_path: Path) -> None:
+    mem = Memory(str(tmp_path / "m.db"))  # llm=None → deterministic heuristic
+    assert mem._classify_tiers(["I prefer dark roast", "this repo uses pnpm"]) == [True, False]
+    mem.close()
