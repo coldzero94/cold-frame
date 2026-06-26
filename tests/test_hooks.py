@@ -620,3 +620,37 @@ def test_hook_user_prompt_silent_on_unrelated_and_short(
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"prompt": "hi"})))  # too short
     assert main(["--db", db, "hook", "user-prompt"]) == 0
     assert capsys.readouterr().out.strip() == ""
+
+
+@pytest.mark.slow
+def test_anti_bloat_at_scale(tmp_path: Path) -> None:
+    # the core moat claim, stress-tested: thousands of captured turns from a BOUNDED universe of
+    # durable facts (plus chatter) must keep the active set bounded by the universe, NOT the turn
+    # count. Without dedup/Layer-B/caps this would grow to thousands; with them it converges.
+    import random
+
+    rng = random.Random(42)
+    universe = [
+        f"my preferred {tool} for {task} is option {tool[:3]}{task[:2]}"
+        for tool in ("editor", "shell", "linter", "browser", "vcs", "db", "tracker", "ci")
+        for task in ("dev", "review", "deploy", "debug", "test")
+    ]  # 40 distinct durable facts
+    chatter = ["run the tests again", "what does this do?", "show me the diff", "fix it", "ok"]
+    mem = Memory(str(tmp_path / "m.db"))
+    turns_total = 1200
+    sess = 0
+    for _start in range(0, turns_total, 12):
+        batch = []
+        for _ in range(12):
+            r = rng.random()
+            batch.append(rng.choice(chatter) if r < 0.35 else rng.choice(universe))
+        t = tmp_path / f"s{sess}.jsonl"
+        _write_transcript(t, [("user", x) for x in batch])
+        mem.enqueue_capture(str(t), f"s{sess}", "/work/repo")
+        mem.run_pending_jobs()
+        sess += 1
+    active = len(mem.list_active(limit=100_000))
+    print(f"\n  {turns_total} turns -> {active} active (universe={len(universe)})")
+    assert active <= len(universe) + 5  # bounded by distinct facts, not turn count
+    assert active < turns_total // 10  # clearly sublinear in turns
+    mem.close()
