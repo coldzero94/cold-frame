@@ -51,6 +51,7 @@ class TaskTag(StrEnum):
     RERANK_JUDGE = "rerank_judge"  # read/rerank.py — LLM-boolean rerank (API path)
     GRADIENT_DIAGNOSE = "gradient_diagnose"  # procedural/optimize.py
     GRADIENT_EDIT = "gradient_edit"  # procedural/optimize.py
+    SCOPE_CLASSIFY = "scope_classify"  # api.py — global vs project tier for an auto-captured fact
 
 
 # Tasks that may ONLY run on a local LLM (I7 / I-LOCAL). Fail-closed otherwise.

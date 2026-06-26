@@ -25,7 +25,7 @@ from cold_frame.integrations.claude_code import (
     project_key,
     read_user_messages,
 )
-from cold_frame.llm.base import LLM, Clock, Embedder, HashEmbedder, SystemClock
+from cold_frame.llm.base import LLM, Clock, Embedder, HashEmbedder, SystemClock, TaskTag
 from cold_frame.models import (
     AddResult,
     ConsolidateResult,
@@ -46,6 +46,7 @@ from cold_frame.models import (
 )
 from cold_frame.observability import get_logger
 from cold_frame.procedural.optimize import ProceduralOptimizer
+from cold_frame.prompts.scope import SCOPE_SYSTEM, ScopeVerdict, build_scope_user
 from cold_frame.read.retrieve import RetrievePipeline
 from cold_frame.read.strength import compute_strength
 from cold_frame.store.base import Job, PurgeReport
@@ -236,6 +237,25 @@ class Memory:
             self._store.reinforce(known, now=self._clock.now())
         return out
 
+    def _classify_tiers(self, texts: list[str]) -> list[bool]:
+        """Per-text tier — True=global, False=project. Uses the (host-via-sampling / local) LLM when
+        present: the same parasitic model the dedup/conflict judges use classifies better than the
+        heuristic. Falls back to is_global_fact offline or on a malformed/length-mismatch reply."""
+        if self._llm is None or not texts:
+            return [is_global_fact(t) for t in texts]
+        try:
+            parsed = self._llm.complete(
+                task=TaskTag.SCOPE_CLASSIFY,
+                system=SCOPE_SYSTEM,
+                user=build_scope_user(texts),
+                schema=ScopeVerdict,
+            ).parsed
+        except Exception:  # any LLM/bridge failure → degrade to the deterministic heuristic
+            parsed = None
+        if isinstance(parsed, ScopeVerdict) and len(parsed.tiers) == len(texts):
+            return [t == "global" for t in parsed.tiers]
+        return [is_global_fact(t) for t in texts]
+
     def _run_capture_job(self, job: Job) -> None:
         """Read NEW user messages since the watermark → Layer-A (in the reader) → Layer-B novelty →
         the ONE WriteCore via add(infer=True): ADMISSION→DEDUP→CONFLICT→PERSIST + durability gate
@@ -247,11 +267,13 @@ class Memory:
         wkey = f"hook:watermark:{sid}"
         since = int(self._store.get_meta(wkey) or "0")
         msgs, new_line = read_user_messages(path, since)
-        # route each turn: clear personal facts → the GLOBAL tier (recalled everywhere); the rest →
-        # this project's tag (isolated). The tier rides the scope's agent_id (no schema change).
+        # route each turn: personal facts → the GLOBAL tier (recalled everywhere); the rest → this
+        # project's tag (isolated). The host/local LLM classifies (heuristic fallback); the tier
+        # rides the scope's agent_id (no schema change).
+        tiers = self._classify_tiers([m["content"] for m in msgs])
         by_tier: dict[str, list[Msg]] = {}
-        for m in msgs:
-            by_tier.setdefault(GLOBAL_KEY if is_global_fact(m["content"]) else pkey, []).append(m)
+        for m, is_global in zip(msgs, tiers, strict=True):
+            by_tier.setdefault(GLOBAL_KEY if is_global else pkey, []).append(m)
         for tier, tier_msgs in by_tier.items():
             scope = Scope(agent_id=tier)
             fresh = self._novel_messages(tier_msgs, scope)  # Layer-B novelty WITHIN the tier
