@@ -15,9 +15,12 @@ from cold_frame.cli import main
 
 
 def _seed(db: str) -> None:
+    from cold_frame.integrations.claude_code import GLOBAL_KEY
+    from cold_frame.models import Scope
+
     m = Memory(db)
     for t in ("I prefer dark roast coffee", "I deploy with ship.sh", "I use vim with tabs"):
-        m.add(t)
+        m.add(t, scope=Scope(agent_id=GLOBAL_KEY))  # global tier → recalled in every session
     m.close()
 
 
@@ -248,8 +251,12 @@ def test_readd_reinforces_existing_note(tmp_path: Path) -> None:
 
 def test_capture_restatement_reinforces_via_layer_b(tmp_path: Path) -> None:
     # dogfood fix: Layer-B drops the restatement but reinforces the matched note (repeats count).
+    # "I prefer…" routes to the GLOBAL tier, so seed it there (dedup/reinforce is per-tier, D26).
+    from cold_frame.integrations.claude_code import GLOBAL_KEY
+    from cold_frame.models import Scope
+
     mem = Memory(str(tmp_path / "m.db"))
-    fid = mem.add("I prefer dark roast coffee always").added[0].id
+    fid = mem.add("I prefer dark roast coffee always", scope=Scope(agent_id=GLOBAL_KEY)).added[0].id
     a0 = mem.get(fid).access_count
     t = tmp_path / "t.jsonl"
     _write_transcript(t, [("user", "I prefer dark roast coffee always")])
@@ -303,4 +310,48 @@ def test_auto_capture_does_not_bloat_on_repetition(tmp_path: Path) -> None:
         mem.enqueue_capture(str(ti), f"s{i}")
         mem.run_pending_jobs()
     assert len(mem.list_active()) == n1  # no turn-proportional bloat
+    mem.close()
+
+
+# ── project scoping (D26): git-based tag + global tier ──
+def test_project_key_is_git_remote_based(tmp_path: Path) -> None:
+    from cold_frame.integrations.claude_code import project_key
+
+    def mkrepo(p: Path, remote: str) -> Path:
+        (p / ".git").mkdir(parents=True)
+        (p / ".git" / "config").write_text(f'[remote "origin"]\n\turl = {remote}\n')
+        return p
+
+    a = mkrepo(tmp_path / "clone-a", "git@github.com:me/app.git")
+    b = mkrepo(tmp_path / "clone-b", "git@github.com:me/app.git")  # same repo, different path
+    c = mkrepo(tmp_path / "other", "git@github.com:me/other.git")
+    assert project_key(str(a)) == project_key(str(b))  # path-independent (remote-based)
+    assert project_key(str(a)) != project_key(str(c))  # different repo → different tag
+
+
+def test_auto_capture_scopes_by_project_with_global_tier(tmp_path: Path) -> None:
+    from cold_frame.integrations.claude_code import GLOBAL_KEY, project_key
+    from cold_frame.models import Scope
+
+    mem = Memory(str(tmp_path / "m.db"))
+    a_dir = tmp_path / "repoA"
+    a_dir.mkdir()
+    ta = tmp_path / "a.jsonl"
+    _write_transcript(
+        ta,
+        [
+            ("user", "this project uses pnpm not npm"),  # project fact → repoA tier
+            ("user", "I prefer dark roast coffee"),  # personal → global tier
+        ],
+    )
+    mem.enqueue_capture(str(ta), "sa", str(a_dir))
+    mem.run_pending_jobs()
+    key_a, key_b = project_key(str(a_dir)), project_key(str(tmp_path / "repoB"))
+    a_facts = [n.content for n in mem.list_active(scope=Scope(agent_id=key_a))]
+    g_facts = [n.content for n in mem.list_active(scope=Scope(agent_id=GLOBAL_KEY))]
+    b_facts = [n.content for n in mem.list_active(scope=Scope(agent_id=key_b))]
+    assert any("pnpm" in c for c in a_facts)  # project fact lives in repoA
+    assert any("dark roast" in c for c in g_facts)  # personal fact is global
+    assert not any("pnpm" in c for c in g_facts)  # project fact did NOT leak to global
+    assert not any("pnpm" in c for c in b_facts)  # …nor to another project (isolation)
     mem.close()

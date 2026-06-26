@@ -9,12 +9,79 @@ only ever see a small, salient slice. Stdlib only (json + pathlib); no heavy dep
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from cold_frame.api import Msg  # type-only — a runtime import would cycle
+
+# ── git-based project tag + global/project tiering (D26 project scoping) ──────
+GLOBAL_KEY = "global"  # the scope (agent_id) tier for cross-project facts (recalled everywhere)
+
+# Clear personal identity/preference leads → a GLOBAL fact (recalled in every project).
+# Conservative: anything else stays project-scoped, so a project fact can't leak to other repos.
+_GLOBAL_LEADS = (
+    "i prefer ",
+    "i like ",
+    "i love ",
+    "i hate ",
+    "i am a ",
+    "i'm a ",
+    "my name",
+    "call me ",
+    "i live ",
+    "i work at ",
+    "my email",
+    "my phone",
+    "i'm allergic",
+    "i am allergic",
+    "i always ",
+    "i usually ",
+    "i never ",
+)
+
+
+def _git_remote(config_text: str) -> str | None:
+    """Pull remote.origin.url out of a .git/config (stable across clone location / path)."""
+    in_origin = False
+    for line in config_text.splitlines():
+        s = line.strip()
+        if s.startswith("["):
+            in_origin = s.replace(" ", "").replace('"', "").lower() == "[remoteorigin]"
+        elif in_origin and s.lower().startswith("url"):
+            return s.split("=", 1)[1].strip()
+    return None
+
+
+def _project_basis(cwd: str) -> str:
+    """The stable identity of the project at ``cwd``: git remote URL → git repo root → cwd."""
+    d = Path(cwd)
+    for parent in (d, *d.parents):
+        gitdir = parent / ".git"
+        if gitdir.exists():
+            cfg = gitdir / "config"
+            if gitdir.is_dir() and cfg.is_file():
+                remote = _git_remote(cfg.read_text(encoding="utf-8", errors="ignore"))
+                if remote:
+                    return remote
+            return str(parent)  # a git repo without an origin remote → the repo root path
+    return str(d)  # not a git repo → the working directory itself
+
+
+def project_key(cwd: str | None) -> str:
+    """A stable per-project scope tag from cwd (git-based, hybrid). Empty cwd → the global tier."""
+    if not cwd:
+        return GLOBAL_KEY
+    return "proj:" + hashlib.blake2b(_project_basis(cwd).encode("utf-8"), digest_size=8).hexdigest()
+
+
+def is_global_fact(text: str) -> bool:
+    """Route a captured fact to the GLOBAL tier (cross-project) vs the current project.
+    Conservative: only clear personal identity/preferences are global; the rest stays local."""
+    return text.strip().lower().startswith(_GLOBAL_LEADS)
+
 
 _MIN_CHARS = 12  # drop trivially short user turns ("ok", "yes", "thanks", "go on")
 _MAX_CHARS = (
@@ -26,10 +93,43 @@ _MAX_CHARS = (
 # durability gate — without this, "run the tests again" gets stored as a permanent "user fact".
 _COMMAND_VERBS = frozenset(
     {
-        "run", "show", "fix", "check", "look", "give", "tell", "explain", "find", "open",
-        "write", "create", "make", "add", "list", "search", "read", "edit", "remove", "update",
-        "change", "refactor", "implement", "generate", "test", "build", "commit", "push",
-        "install", "rename", "move", "delete", "print", "help", "review", "try", "use",
+        "run",
+        "show",
+        "fix",
+        "check",
+        "look",
+        "give",
+        "tell",
+        "explain",
+        "find",
+        "open",
+        "write",
+        "create",
+        "make",
+        "add",
+        "list",
+        "search",
+        "read",
+        "edit",
+        "remove",
+        "update",
+        "change",
+        "refactor",
+        "implement",
+        "generate",
+        "test",
+        "build",
+        "commit",
+        "push",
+        "install",
+        "rename",
+        "move",
+        "delete",
+        "print",
+        "help",
+        "review",
+        "try",
+        "use",
     }
 )
 _REQUEST_PREFIXES = (

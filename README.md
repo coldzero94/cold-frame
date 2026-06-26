@@ -83,6 +83,9 @@ cold-frame hook status       # check what's wired
 - **Auto-capture** — a Stop hook enqueues each turn's transcript; the extraction runs on **Claude
   Code's own model** (via MCP sampling — no extra key) as the agent uses Coldframe, pulling out the
   durable facts you stated and dropping the chatter.
+- **Per-project + global** — facts are tagged by **git project** (remote URL, else repo root), so a
+  repo's conventions stay in that repo; clear personal facts ("I prefer…", "my name…") go to a global
+  tier recalled everywhere. A new session recalls *this project ∪ global*.
 
 > **Why it doesn't bloat (D26):** auto-capture funnels through the *same* engine as everything else —
 > a salience pre-filter, then the durability gate (ephemeral dropped, low-confidence held for
