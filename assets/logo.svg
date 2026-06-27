@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="coldframe logo">
+  <title>coldframe</title>
+  <defs>
+    <radialGradient id="cf-ember" cx="50%" cy="38%" r="68%">
+      <stop offset="0%" stop-color="#ffe0b0"/>
+      <stop offset="45%" stop-color="#ff9d4d"/>
+      <stop offset="100%" stop-color="#ef5f33"/>
+    </radialGradient>
+  </defs>
+  <!-- the cold frame: a protective glass enclosure -->
+  <rect x="20" y="34" width="88" height="74" rx="13" fill="none" stroke="#38bdf8" stroke-width="4"/>
+  <!-- the slanted glass lid -->
+  <path d="M20 47 L108 30" fill="none" stroke="#38bdf8" stroke-width="4" stroke-linecap="round"/>
+  <!-- embers sheltered inside: warmth = belief strength (evergreen → budding → fading) -->
+  <circle cx="45" cy="85" r="13" fill="url(#cf-ember)"/>
+  <circle cx="75" cy="72" r="9"  fill="url(#cf-ember)" opacity="0.82"/>
+  <circle cx="93" cy="91" r="6"  fill="url(#cf-ember)" opacity="0.5"/>
+  <circle cx="61" cy="98" r="4"  fill="url(#cf-ember)" opacity="0.32"/>
+</svg>
