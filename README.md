@@ -63,7 +63,8 @@ cold-frame doctor          # health: counts, integrity, embedder
   bundled skill), with a keyless deterministic backstop so nothing is missed; dedup merges them.
 - **Stays lean** — every ~20 facts a consolidation pass decays, rolls up, and archives the weakest
   (per-scope caps), so the active set never grows without bound. Forgetting *archives* — nothing is
-  truly deleted, and obvious secrets are blocked before they ever touch disk.
+  truly deleted, and obvious secrets (API keys, tokens, private keys) are blocked before they ever
+  touch disk — though PII redaction and at-rest encryption are not yet automatic (planned).
 - **Per-project + global** — facts are tagged by git project; clear personal facts go to a global
   tier recalled everywhere.
 
@@ -82,7 +83,8 @@ print(mem.search("where do I work?").hits[0].note.content)
 past = mem.search("where do I work?", as_of=datetime(2026, 3, 1, tzinfo=UTC))  # rewind
 ```
 
-See your memory anytime: `cold-frame ui` (a read-only dashboard at `127.0.0.1:27182`).
+See and edit your memory anytime: `cold-frame ui` — a local dashboard at `127.0.0.1:27182` where
+you can browse facts and pin / correct / forget them (writes are CSRF-guarded and localhost-only).
 
 ## More
 
@@ -94,7 +96,7 @@ See your memory anytime: `cold-frame ui` (a read-only dashboard at `127.0.0.1:27
 ## Status
 
 The engine, CLI, MCP server, Claude Code plugin, secret-blocking + grep-verified hard-purge, and a
-read-only web UI are built and tested end-to-end on a fully offline gate (`ruff` + `mypy --strict` +
+local web UI are built and tested end-to-end on a fully offline gate (`ruff` + `mypy --strict` +
 ~340 deterministic mock-LLM tests green). Planned: full PII redaction + crypto-shred purge, a write
 web UI, event-log replay import, and a PyPI release (the name is pending trademark/registry clearance).
 
