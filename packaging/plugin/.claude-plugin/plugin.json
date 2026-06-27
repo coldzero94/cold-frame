@@ -3,6 +3,8 @@
   "displayName": "Coldframe Memory",
   "version": "0.1.0",
   "description": "Local-first, ownable memory for Claude Code — automatic recall + capture, one SQLite file you own. No API key.",
+  "author": { "name": "Coldframe" },
+  "license": "Apache-2.0",
   "keywords": ["memory", "recall", "local-first", "sqlite"],
   "hooks": "./hooks/hooks.json",
   "mcpServers": "./.mcp.json"

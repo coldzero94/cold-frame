@@ -1,0 +1,14 @@
+{
+  "name": "coldframe",
+  "owner": { "name": "Coldframe" },
+  "description": "Local-first, ownable memory for Claude Code — one SQLite file you own.",
+  "plugins": [
+    {
+      "name": "coldframe",
+      "source": "./packaging/plugin",
+      "description": "Automatic recall + capture for Claude Code. No API key, no extra metered cost.",
+      "license": "Apache-2.0",
+      "tags": ["memory", "recall", "local-first", "sqlite"]
+    }
+  ]
+}
