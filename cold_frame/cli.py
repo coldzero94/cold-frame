@@ -405,70 +405,9 @@ _HOOK_WIRING: tuple[tuple[str, str, str], ...] = (
 )
 
 
-# ── managed CLAUDE.md capture directive (D26 agent-push: the agent extracts + calls add_memory) ──
-# Claude Code does NOT support MCP sampling (#1785), so the server can't "pull" the host model. We
-# flip to push: a standing instruction tells the agent to capture durable facts via the add_memory
-# tool with its own model. Soft (model-discretionary) but high-compliance as a standing rule; the
-# Stop-hook naive enqueue stays as the deterministic coverage backstop, and dedup merges the two.
-_CLAUDE_MD_BEGIN = "<!-- coldframe:begin (managed by cold-frame; delete to disable) -->"
-_CLAUDE_MD_END = "<!-- coldframe:end -->"
-_CAPTURE_DIRECTIVE = """## Memory (Coldframe)
-
-This workspace has persistent memory via Coldframe. Recall is automatic (injected at session start
-and per prompt) — you don't need to search unless asked what you remember. Your job is capture:
-
-- When the user states a DURABLE fact — a preference, decision, convention, identity/contact detail,
-  or a correction of something stated earlier — silently call the `add_memory` tool with one
-  concise, self-contained fact. Capture and continue; don't announce it or ask permission.
-- Do NOT capture transient task requests, questions, chit-chat, or anything secret/credential-like.
-"""
-
-
-def _claude_md_path(*, user: bool) -> Path:
-    """The CLAUDE.md the managed capture directive lives in: ~/.claude (user) or ./ (project)."""
-    return (Path.home() / ".claude" / "CLAUDE.md") if user else (Path.cwd() / "CLAUDE.md")
-
-
-def _upsert_managed_block(path: Path) -> str:
-    """Insert/refresh the marker-delimited capture directive in ``path`` (idempotent). Returns
-    'added' | 'updated' | 'unchanged' | 'error'."""
-    block = f"{_CLAUDE_MD_BEGIN}\n{_CAPTURE_DIRECTIVE}{_CLAUDE_MD_END}\n"
-    try:
-        existing = path.read_text(encoding="utf-8") if path.exists() else ""
-    except OSError:
-        return "error"
-    b, e = existing.find(_CLAUDE_MD_BEGIN), existing.find(_CLAUDE_MD_END)
-    if b != -1 and e != -1:  # replace the managed region in place
-        tail = existing[e + len(_CLAUDE_MD_END) :].lstrip("\n")
-        new = existing[:b] + block + (("\n" + tail) if tail else "")
-    else:  # append, separated by a blank line
-        sep = "" if not existing else ("\n" if existing.endswith("\n") else "\n\n")
-        new = existing + sep + block
-    if new == existing:
-        return "unchanged"
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(new, encoding="utf-8")
-    except OSError:
-        return "error"
-    return "added" if b == -1 else "updated"
-
-
-def _remove_managed_block(path: Path) -> bool:
-    """Strip the managed directive from ``path``; True if something was removed."""
-    try:
-        existing = path.read_text(encoding="utf-8") if path.exists() else ""
-    except OSError:
-        return False
-    b, e = existing.find(_CLAUDE_MD_BEGIN), existing.find(_CLAUDE_MD_END)
-    if b == -1 or e == -1:
-        return False
-    after = existing[e + len(_CLAUDE_MD_END) :].lstrip("\n")
-    new = (existing[:b].rstrip("\n") + "\n" + after).strip()
-    path.write_text((new + "\n") if new else "", encoding="utf-8")
-    return True
-
-
+# NOTE: agent-push capture (the agent extracts + calls add_memory) ships in the Claude Code PLUGIN
+# as a skill (packaging/plugin/skills/remember-facts) — no per-machine CLAUDE.md. `hook install`
+# below is the non-plugin fallback: it wires the recall + capture-backstop hooks into settings.json.
 def _cmd_hook_install(args: argparse.Namespace) -> int:
     path = _settings_path(user=not args.project)
     try:
@@ -495,21 +434,15 @@ def _cmd_hook_install(args: argparse.Namespace) -> int:
         print(f"installed {', '.join(added)} hook(s) → {path}")
     else:
         print(f"hooks already wired → {path}")
-    # the agent-push capture directive (D26): the agent extracts + calls add_memory itself
-    md_path = _claude_md_path(user=not args.project)
-    md_status = _upsert_managed_block(md_path)
-    if md_status == "error":
-        print(f"{PKG}: couldn't write {md_path} — check permissions (hooks still wired)")
-    else:
-        print(f"capture directive {md_status} → {md_path}")
-    print("  recall: SessionStart + UserPromptSubmit · capture: the agent calls add_memory")
+    print("  recall: SessionStart + UserPromptSubmit · capture backstop: Stop (naive, keyless)")
+    print("  tip: `claude plugin install coldframe` bundles this + agent-push capture")
     mcp_add = f'claude mcp add {branding.MCP_ID} --env PROJECT_ROOT="$PWD" -- {PKG} mcp'
     print(f"  connect the server: {mcp_add}")
     return 0
 
 
 def _cmd_hook_uninstall(args: argparse.Namespace) -> int:
-    """Remove Coldframe's hooks + the managed CLAUDE.md capture directive (DB untouched)."""
+    """Remove Coldframe's hooks from Claude Code settings (the memory DB is untouched)."""
     path = _settings_path(user=not args.project)
     try:
         settings = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
@@ -530,9 +463,7 @@ def _cmd_hook_uninstall(args: argparse.Namespace) -> int:
         if settings:
             with contextlib.suppress(OSError):
                 path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
-    md_removed = _remove_managed_block(_claude_md_path(user=not args.project))
-    directive = "removed" if md_removed else "none"
-    print(f"removed hooks: {', '.join(removed) or 'none'}; capture directive: {directive}")
+    print(f"removed hooks: {', '.join(removed) or 'none'}")
     print("  (your memory DB is untouched — `cold-frame` still works directly)")
     return 0
 
@@ -552,10 +483,6 @@ def _cmd_hook_status(args: argparse.Namespace) -> int:
         ]
         state = ("✓ " + "+".join(wired)) if wired else "— not installed"
         print(f"{scope:8} {path}: {state}")
-        md = _claude_md_path(user=user)
-        md_text = md.read_text(encoding="utf-8", errors="ignore") if md.exists() else ""
-        has_directive = _CLAUDE_MD_BEGIN in md_text
-        print(f"{'':8} {md}: {'✓ capture directive' if has_directive else '— no directive'}")
     print(f"install with: {PKG} hook install   (remove with: {PKG} hook uninstall)")
     return 0
 

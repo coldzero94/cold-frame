@@ -238,9 +238,9 @@ class Memory:
         return out, known
 
     def _classify_tiers(self, texts: list[str]) -> list[bool]:
-        """Per-text tier — True=global, False=project. Uses the (host-via-sampling / local) LLM when
-        present: the same parasitic model the dedup/conflict judges use classifies better than the
-        heuristic. Falls back to is_global_fact offline or on a malformed/length-mismatch reply."""
+        """Per-text tier — True=global, False=project. Uses the configured LLM when present (e.g.
+        ClaudeCliLLM in `cold-frame worker`) — better than the heuristic. Falls back to
+        is_global_fact when there's no LLM, or on a malformed/length-mismatch reply."""
         if self._llm is None or not texts:
             return [is_global_fact(t) for t in texts]
         try:

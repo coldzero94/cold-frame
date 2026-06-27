@@ -17,7 +17,6 @@ from cold_frame.api import Memory
 from cold_frame.branding import MCP_ID, PKG, fact_deeplink
 from cold_frame.exceptions import ColdFrameError, StoreError, mcp_code_for
 from cold_frame.integrations.claude_code import GLOBAL_KEY, project_key
-from cold_frame.llm.sampling import SamplingLLM
 from cold_frame.models import Scope
 from cold_frame.observability import get_logger
 
@@ -39,53 +38,17 @@ def _require_memory() -> Memory:
     return _MEMORY
 
 
-def _host_sample(system: str, user: str) -> str:
-    """Sync sampler bridging cold-frame's LLM seam to HOST MCP sampling (the parasitic LLM).
-
-    cold-frame's internal judges (dedup/conflict) ride on the host agent's model — no own key.
-    Runs inside a worker thread (the sync core, I4); ``anyio.from_thread.run`` bridges the one
-    completion back to the event loop. ANY failure (no active request, host doesn't support
-    sampling, error) returns ``""`` → ``SamplingLLM`` yields ``parsed=None`` → the deterministic
-    engine decides, exactly as offline.
-    """
-    if _SERVER is None:
-        return ""
-    import anyio
-
-    try:
-        ctx = _SERVER.get_context()  # current request's Context (anyio copies it into this thread)
-    except Exception:
-        return ""
-
-    async def _ask() -> str:
-        from mcp.types import SamplingMessage, TextContent
-
-        result = await ctx.session.create_message(
-            messages=[SamplingMessage(role="user", content=TextContent(type="text", text=user))],
-            system_prompt=system or None,
-            max_tokens=1024,
-            temperature=0.0,
-        )
-        content = result.content
-        return content.text if getattr(content, "type", "") == "text" else ""
-
-    try:
-        return anyio.from_thread.run(_ask)
-    except Exception as exc:  # host declined / no sampling capability / bridge error → degrade
-        _log.warning("host_sample_failed", extra={"exc_type": type(exc).__name__})
-        return ""
-
-
 # ── sync tool logic (the single implementation; fully testable offline) ───────
-# Auto-capture (D26) drains here: the hook only ENQUEUES; the host model is reachable ONLY inside a
-# live MCP request (_host_sample returns "" otherwise), so capture-extraction piggybacks on a tool
-# call. Bounded so it never noticeably delays the agent's actual request.
+# Auto-capture (D26): the hook only ENQUEUES; this drains the durable queue as a deterministic
+# coverage backstop (naive — the MCP server has no model; Claude Code can't service MCP sampling, so
+# we don't pretend to). High-quality extraction is the agent-push skill (the agent calls add_memory)
+# or `cold-frame worker` with ClaudeCliLLM/local. Bounded so it never noticeably delays the request.
 _CAPTURE_DRAIN_MAX = 2
 
 
 def _drain_captures(mem: Memory) -> None:
-    """Drain pending capture jobs while this request is live → extraction uses the host model via
-    sampling (D26). Best-effort: a drain hiccup must never fail the agent's tool call."""
+    """Drain pending capture jobs (the naive coverage backstop) while this request is live.
+    Best-effort: a drain hiccup must never fail the agent's tool call."""
     try:
         mem.run_pending_jobs(max_jobs=_CAPTURE_DRAIN_MAX)
     except Exception as exc:  # content-free (I16); the durable queue retries
@@ -131,10 +94,9 @@ def _search_impl(mem: Memory, query: str, k: int = 10) -> dict[str, Any]:
 
 
 def _add_impl(mem: Memory, text: str) -> dict[str, Any]:
-    # raw=True: the agent's text IS the fact (naive). Smart dedup/conflict still rides on the
-    # host via sampling inside commit; if extraction were LLM-driven, a sampling miss would drop
-    # the fact entirely — naive keeps it, and the judges degrade safely. Tier it like auto-capture
-    # (global vs this project) so an agent-asserted fact is recalled in the right scope (D26).
+    # raw=True: the agent's text IS the fact — the agent already extracted it (agent-push), so no
+    # re-extraction. dedup/conflict are deterministic here (the server has no model). Tier it like
+    # auto-capture (global vs this project) so the fact is recalled in the right scope.
     is_global = mem._classify_tiers([text])[0]
     scope = Scope(agent_id=GLOBAL_KEY) if is_global else mem._default_scope
     res = mem.add(text, raw=True, scope=scope)
@@ -234,15 +196,14 @@ def build_server(memory: Memory | None = None) -> Any:  # noqa: ANN401 - FastMCP
     _SERVER = server
     # Scope the server to its project tier (D26). Claude Code does NOT reliably pass the project cwd
     # to an MCP subprocess (#42687 — os.getcwd() may be a cache dir), so prefer the PROJECT_ROOT env
-    # the user sets at `claude mcp add --env PROJECT_ROOT="$PWD"`; fall back to cwd. (SamplingLLM is
-    # kept for the dedup/conflict judges + future clients; Claude Code can't service sampling today,
-    # so it degrades to the deterministic engine — the agent-push directive does the real capture.)
+    # the user sets at `claude mcp add --env PROJECT_ROOT="$PWD"`; fall back to cwd. llm=None: the
+    # server is deterministic inline (no MCP sampling — Claude Code can't service it); quality
+    # extraction is the agent-push skill or `cold-frame worker` (ClaudeCliLLM/local).
     if memory is not None:
         _MEMORY = memory
     else:
         root = os.environ.get("PROJECT_ROOT") or str(Path.cwd())
-        scope = Scope(agent_id=project_key(root))
-        _MEMORY = Memory(llm=SamplingLLM(_host_sample), default_scope=scope)
+        _MEMORY = Memory(default_scope=Scope(agent_id=project_key(root)))
     server.tool()(search_memory)
     server.tool()(add_memory)
     for tool in (create_fact, update_fact, supersede, forget):  # self-edit tools (one WriteCore)

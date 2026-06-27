@@ -654,38 +654,18 @@ def test_anti_bloat_at_scale(tmp_path: Path) -> None:
     mem.close()
 
 
-def test_hook_install_adds_managed_capture_directive(
+def test_hook_install_wires_hooks_without_touching_claude_md(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # the CLAUDE.md directive was removed (agent-push now ships in the plugin skill); `hook install`
+    # is the non-plugin fallback that only wires settings.json hooks, never edits CLAUDE.md.
     monkeypatch.chdir(tmp_path)
     db = str(tmp_path / "m.db")
     Memory(db).close()
     assert main(["--db", db, "hook", "install", "--project"]) == 0
-    md = tmp_path / "CLAUDE.md"
-    text = md.read_text()
-    assert "coldframe:begin" in text and "coldframe:end" in text
-    assert "add_memory" in text  # the agent-push capture directive
-    assert main(["--db", db, "hook", "install", "--project"]) == 0  # idempotent
-    assert md.read_text().count("coldframe:begin") == 1  # no duplicate block
-    assert main(["--db", db, "hook", "uninstall", "--project"]) == 0
-    assert "coldframe:begin" not in md.read_text()  # removable
-
-
-def test_managed_block_preserves_existing_claude_md(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    md = tmp_path / "CLAUDE.md"
-    md.write_text("# My project rules\n\nUse tabs, not spaces.\n")
-    db = str(tmp_path / "m.db")
-    Memory(db).close()
-    main(["--db", db, "hook", "install", "--project"])
-    t = md.read_text()
-    assert "My project rules" in t and "Use tabs, not spaces." in t  # preserved
-    assert "coldframe:begin" in t
-    main(["--db", db, "hook", "uninstall", "--project"])
-    t2 = md.read_text()
-    assert "My project rules" in t2 and "coldframe:begin" not in t2  # block gone, rules kept
+    assert (tmp_path / ".claude" / "settings.json").exists()  # hooks wired
+    assert not (tmp_path / "CLAUDE.md").exists()  # no per-machine CLAUDE.md edit
+    assert main(["--db", db, "hook", "uninstall", "--project"]) == 0  # removable
 
 
 def test_layer_a_drops_harness_and_slash_noise(tmp_path: Path) -> None:
