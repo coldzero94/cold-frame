@@ -20,14 +20,14 @@ The plugin is the integration layer; the engine is the `cold-frame` package. Ins
 
 ```bash
 uv tool install "cold-frame[mcp]"     # or: pipx install "cold-frame[mcp]"
-brew install <org>/coldframe/cold-frame
+brew install coldzero94/coldframe/cold-frame
 # (or a standalone binary on PATH — see packaging/standalone/)
 ```
 
 ## Install the plugin
 
 ```bash
-claude plugin marketplace add <org>/coldframe      # the marketplace hosting this plugin
+claude plugin marketplace add coldzero94/coldframe      # the marketplace hosting this plugin
 claude plugin install coldframe
 ```
 

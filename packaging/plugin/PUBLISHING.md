@@ -31,11 +31,11 @@ A single git repo can be both the marketplace and host the plugin. Coldframe use
    `version` so every commit SHA is its own version during active development).
 3. **Push to the public repo** (the name/repo is gated on D19 — name/trademark clearance):
    ```bash
-   git push    # to github.com/<org>/<repo>
+   git push    # to github.com/coldzero94/cold-frame
    ```
 4. **Users install** (one-time marketplace add, then install):
    ```bash
-   claude plugin marketplace add <org>/<repo>      # GitHub shorthand; or a full git URL
+   claude plugin marketplace add coldzero94/cold-frame      # GitHub shorthand; or a full git URL
    claude plugin install coldframe@coldframe        # plugin@marketplace
    ```
    Prerequisite: the `cold-frame` CLI must be on PATH (`uv tool install "cold-frame[mcp]"` / brew /

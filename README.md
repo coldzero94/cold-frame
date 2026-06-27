@@ -16,7 +16,7 @@ what was true *when*). It runs offline, needs no API key, and plugs straight int
 From a source checkout (a PyPI release is pending name clearance — see Status):
 
 ```bash
-git clone <this repo> && cd cold-frame
+git clone https://github.com/coldzero94/cold-frame && cd cold-frame
 uv sync --extra mcp        # core + the Claude Code / MCP server
 # then prefix the commands below with `uv run`, e.g. `uv run cold-frame search "coffee"`
 ```
@@ -26,7 +26,7 @@ the web UI) is an opt-in extra, so a plain install stays tiny.
 
 Once the name clears (see Status), the shipping paths are `uv tool install "cold-frame[mcp]"`
 (or `pipx`) for an isolated CLI on your PATH, and a Homebrew tap for macOS/Linux
-(`brew install <org>/coldframe/cold-frame`) — the formula + release procedure are ready in
+(`brew install coldzero94/coldframe/cold-frame`) — the formula + release procedure are ready in
 [`packaging/homebrew/`](packaging/homebrew/). For users with **no Python at all**, a single
 self-contained binary (CLI + MCP server in one ~20 MB file) builds via
 [`packaging/standalone/`](packaging/standalone/) for GitHub Releases. Docker is intentionally not a
@@ -89,25 +89,19 @@ So in a Claude Code session you can just say:
 and the answer comes from your own memory file. Corrections supersede the old fact instead of
 duplicating it, so the memory stays clean over time.
 
-### Automatic memory (opt-in)
+### Automatic memory (how it works)
 
-One command wires Coldframe into Claude Code's hooks so memory happens *automatically* — you don't
-have to tell it to remember, and you don't have to ask it to recall:
-
-```bash
-cold-frame hook install      # wires recall + capture hooks into ~/.claude/settings.json
-cold-frame hook status       # check what's wired
-```
+The plugin above is the one-install path; without the plugin, `cold-frame hook install` wires the
+same hooks into `~/.claude/settings.json` (`cold-frame hook status` shows what's wired). Either way:
 
 - **Auto-recall** — a SessionStart hook injects your strongest durable memories at the top of each
   new session, so the agent opens already knowing you; a UserPromptSubmit hook adds memories relevant
   to the *current* prompt (gated on a real lexical match, so it adds signal, not per-turn noise).
-- **Auto-capture** — Claude Code itself extracts the durable facts you state and calls `add_memory`,
-  driven by a managed CLAUDE.md directive `hook install` adds (no extra key — the agent uses its own
-  model). A Stop hook also enqueues each turn as a deterministic **coverage backstop** (a keyless
-  naive extraction), and dedup merges the two so nothing is lost and the agent's higher-quality
-  capture wins. *(Why not MCP sampling? Claude Code doesn't support it — so the agent pushes facts
-  to the tool rather than the tool pulling the model.)*
+- **Auto-capture** — Claude itself extracts the durable facts you state and calls `add_memory`
+  *during your normal session* (the plugin's capture skill instructs it — **no API key, no extra
+  metered cost**, because it rides the Claude you already pay for). A Stop hook also enqueues each
+  turn as a keyless deterministic **coverage backstop**, and dedup merges the two so nothing is lost
+  and the agent's higher-quality capture wins.
 - **Per-project + global** — facts are tagged by **git project** (remote URL, else repo root), so a
   repo's conventions stay in that repo; clear personal facts ("I prefer…", "my name…") go to a global
   tier recalled everywhere. A new session recalls *this project ∪ global*.
@@ -152,15 +146,18 @@ freshness, and how beliefs changed over time. Binds to localhost only.
 
 ---
 
-## Quality: it rides on Claude Code, it doesn't call out
+## Quality: keyless by default, your Claude when you want it
 
-cold-frame's design choice: **don't run a separate LLM — borrow the host's.** The deterministic
-engine (dedup bands, freshness, forgetting, the token-budget packer) does the heavy lifting with
-**no key and no network**. When a write hits a genuinely *ambiguous* near-duplicate or possible
-contradiction, cold-frame asks **the model Claude Code is already using** to judge it, via MCP
-**sampling** — no second API key, no separate call you pay for twice. If the host doesn't support
-sampling, those judgments simply fall back to the deterministic rules. So memory gets smarter when
-embedded in a capable agent, and stays correct everywhere else.
+cold-frame's deterministic engine (dedup bands, freshness, forgetting, the token-budget packer) does
+the heavy lifting with **no key and no network** — that's the default, and it's enough to be useful.
+For higher-quality *capture* (extracting clean facts from a conversation), Claude does it itself,
+inside your session, via the plugin's capture skill — **no API key, no extra metered cost** (it rides
+the Claude you already pay for). Prefer deterministic background extraction? `cold-frame worker` can
+use the `claude` CLI (your session, but metered as programmatic usage), a local model (`[local-llm]`,
+free), or an API key — all opt-in.
+
+> Claude Code can't service MCP *sampling*, so cold-frame doesn't rely on it: the agent **pushes**
+> facts to the `add_memory` tool, rather than the tool trying to pull the model.
 
 The one thing that can't be borrowed this way is **embeddings** (semantic vectors). The built-in
 offline embedder works out of the box; for sharper recall, plug in a **local** model

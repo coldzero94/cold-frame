@@ -1,6 +1,6 @@
 # Homebrew formula for Coldframe (a local-first, ownable memory layer for LLM agents).
 #
-# This is the TAP formula: `brew install <org>/coldframe/cold-frame`. It builds an isolated
+# This is the TAP formula: `brew install coldzero94/coldframe/cold-frame`. It builds an isolated
 # Python virtualenv under the Cellar and installs cold-frame + the [mcp] extra (so the MCP
 # server — `cold-frame mcp` — works out of the box for Claude Code), resolving the dependency
 # tree from PyPI at build time. That network-at-build style is fine for a third-party tap; the
@@ -15,8 +15,8 @@ class ColdFrame < Formula
   include Language::Python::Virtualenv
 
   desc "Local-first ownable memory layer for LLM agents (one offline SQLite file)"
-  homepage "https://github.com/REPLACE_ME/cold-frame" # RELEASE: real repo URL (D19)
-  url "https://github.com/REPLACE_ME/cold-frame/archive/refs/tags/v0.1.0.tar.gz" # RELEASE
+  homepage "https://github.com/coldzero94/cold-frame" # RELEASE: real repo URL (D19)
+  url "https://github.com/coldzero94/cold-frame/archive/refs/tags/v0.1.0.tar.gz" # RELEASE
   sha256 "0000000000000000000000000000000000000000000000000000000000000000" # RELEASE: tarball sha256
   license "Apache-2.0"
 

@@ -8,7 +8,7 @@ formula styles; ship the **tap** one first, graduate to **homebrew-core** later.
 - **Ready now:** the formula structure, install method (isolated venv + the `[mcp]` extra so the MCP
   server works out of the box), `test do`, and caveats — all in `cold-frame.rb`.
 - **Filled at release (gated on D19 — name/repo/PyPI clearance):** the `url` + `sha256` of the
-  GitHub release tarball, and the `REPLACE_ME` repo/homepage. These can't be real until the name is
+  GitHub release tarball, and the `coldzero94` repo/homepage. These can't be real until the name is
   final and a tag is cut.
 
 ## A. Tap release (do this first — works without PyPI)
@@ -22,9 +22,9 @@ sha256-pinned `resource` blocks. `cold-frame.rb` uses this style.
    ```
 2. Fill the formula's `url`, `sha256`, and `homepage`:
    ```bash
-   curl -fsSL https://github.com/<org>/cold-frame/archive/refs/tags/v0.1.0.tar.gz | shasum -a 256
+   curl -fsSL https://github.com/coldzero94/cold-frame/archive/refs/tags/v0.1.0.tar.gz | shasum -a 256
    ```
-3. Create the tap repo `<org>/homebrew-coldframe` and drop `cold-frame.rb` in its `Formula/`.
+3. Create the tap repo `coldzero94/homebrew-coldframe` and drop `cold-frame.rb` in its `Formula/`.
 4. Test locally before publishing:
    ```bash
    brew install --build-from-source ./packaging/homebrew/cold-frame.rb
@@ -33,7 +33,7 @@ sha256-pinned `resource` blocks. `cold-frame.rb` uses this style.
    ```
 5. Users then:
    ```bash
-   brew install <org>/coldframe/cold-frame
+   brew install coldzero94/coldframe/cold-frame
    cold-frame hook install
    claude mcp add cold-frame -- cold-frame mcp
    ```
