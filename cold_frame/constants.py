@@ -90,7 +90,10 @@ NOTE_MAX_CHARS: Final[int] = 80
 LEASE_TTL: Final[float] = 300.0  # seconds; stale running-job reclaim threshold
 MAX_ATTEMPTS: Final[int] = 5  # attempts cap → dead-letter
 RETRY_BACKOFF_BASE: Final[float] = 0.05  # seconds; exponential backoff base (0.05·2^attempt)
-RETRY_MAX_TRIES: Final[int] = 4  # SQLITE_BUSY write-retry wrapper tries
+# NOTE: no app-level SQLITE_BUSY retry constant. Concurrency = WAL + busy_timeout=5s (interactive
+# writes wait for the lock at BEGIN IMMEDIATE) + the durable jobs queue (retries background work). A
+# retry wrapper only helps beyond a 5s-held lock — unrealistic for a local single-user tool; add one
+# if contention ever shows up.
 
 # ── access_log retention (R5; data-layer §1.2) ──
 ACCESS_LOG_CAP_PER_NOTE: Final[int] = 50  # keep at most 50 most-recent rows per note

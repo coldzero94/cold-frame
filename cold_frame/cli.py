@@ -39,6 +39,7 @@ _SUBCOMMANDS: tuple[str, ...] = (
     "doctor",
     "consolidate",
     "worker",
+    "jobs",
     "export",
     "import",
     "ui",
@@ -649,6 +650,20 @@ def _cmd_worker(args: argparse.Namespace) -> int:
         return 0
 
 
+def _cmd_jobs(args: argparse.Namespace) -> int:
+    """Inspect / recover the background jobs queue (capture + consolidation). `--retry-dead` revives
+    dead-lettered jobs so nothing — a failed capture, say — is silently lost forever."""
+    mem = _memory(args)
+    if args.retry_dead:
+        n = mem._store.requeue_dead(now=mem._clock.now())
+        print(f"requeued {n} dead job(s) → pending (drains via `{PKG} worker` or normal use)")
+        return 0
+    print(f"pending={mem._store.pending_count()}  dead={mem._store.dead_count()}")
+    if mem._store.dead_count():
+        print(f"  recover them: {PKG} jobs --retry-dead")
+    return 0
+
+
 def _cmd_ui(args: argparse.Namespace) -> int:
     from cold_frame.ui.server import serve  # lazy import (stdlib-only server)
 
@@ -716,6 +731,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_worker.add_argument("--once", action="store_true", help="run one drain pass and exit")
     p_worker.add_argument("--interval", type=float, default=5.0, help="poll interval seconds")
     p_worker.set_defaults(func=_cmd_worker)
+    p_jobs = sub.add_parser("jobs", help="inspect/recover the background jobs queue")
+    p_jobs.add_argument("--retry-dead", action="store_true", help="revive dead-lettered jobs")
+    p_jobs.set_defaults(func=_cmd_jobs)
     p_ui = sub.add_parser("ui", help="launch the local web UI")
     p_ui.add_argument("--port", type=int, default=None, help="UI port (else 27182 + auto-fallback)")
     p_ui.set_defaults(func=_cmd_ui)

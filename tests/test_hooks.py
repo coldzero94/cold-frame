@@ -683,3 +683,17 @@ def test_layer_a_drops_harness_and_slash_noise(tmp_path: Path) -> None:
     msgs, _ = read_user_messages(t, 0)
     texts = [m["content"] for m in msgs]
     assert texts == ["My database is Postgres 16 in production"]  # only the real fact survives
+
+
+def test_jobs_retry_dead_recovers_lost_captures(tmp_path: Path) -> None:
+    # dead-letter recovery: a dead job is revived to pending (no silently-lost-forever captures).
+    db = str(tmp_path / "m.db")
+    mem = Memory(db)
+    mem._store.enqueue("capture", {"x": 1}, dedup_key="k")
+    mem._store._conn.execute("UPDATE jobs SET status='dead'")
+    mem._store._conn.commit()
+    assert mem._store.dead_count() == 1
+    assert mem._store.requeue_dead(now=mem._clock.now()) == 1
+    assert mem._store.dead_count() == 0 and mem._store.pending_count() == 1
+    mem.close()
+    assert main(["--db", db, "jobs", "--retry-dead"]) == 0  # CLI path works too

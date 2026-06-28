@@ -301,6 +301,12 @@ class Store(ABC):
         ...
 
     @abstractmethod
+    def requeue_dead(self, *, now: datetime) -> int:
+        """Revive dead-lettered jobs (status dead→pending, attempts reset) so a worker retries them;
+        returns how many. Recovery for captures lost to a transient failure (no black hole)."""
+        ...
+
+    @abstractmethod
     def oldest_pending_age(self, *, now: datetime) -> float | None:
         """Age in seconds of the oldest pending job, or None if none — a 'not draining' signal."""
         ...

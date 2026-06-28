@@ -1075,6 +1075,16 @@ class SQLiteStore(Store):
             self._conn.execute("SELECT COUNT(*) AS n FROM jobs WHERE status='dead'").fetchone()["n"]
         )
 
+    def requeue_dead(self, *, now: datetime) -> int:
+        iso = _to_iso(now)
+        with self.in_transaction():
+            cur = self._conn.execute(
+                "UPDATE jobs SET status='pending', attempts=0, run_after=?, locked_by=NULL, "
+                "locked_at=NULL, updated_at=? WHERE status='dead'",
+                (iso, iso),
+            )
+            return int(cur.rowcount)
+
     def oldest_pending_age(self, *, now: datetime) -> float | None:
         row = self._conn.execute(
             "SELECT MIN(created_at) AS oldest FROM jobs WHERE status='pending'"
