@@ -11,7 +11,7 @@
 
 <p align="center">
   <a href="https://github.com/coldzero94/cold-frame/actions/workflows/ci.yml"><img src="https://github.com/coldzero94/cold-frame/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python 3.11+">
+  <img src="https://img.shields.io/badge/python-3.12%2B-blue" alt="Python 3.12+">
   <img src="https://img.shields.io/badge/license-Apache--2.0-green" alt="Apache-2.0">
   <img src="https://img.shields.io/badge/offline-no%20API%20key-0aa" alt="offline, no API key">
 </p>

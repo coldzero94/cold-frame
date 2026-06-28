@@ -13,10 +13,9 @@ them at codegen time via ``TypeAdapter(...).json_schema()``.
 
 from __future__ import annotations
 
-from typing import Any, get_args
+from typing import Any, TypedDict, get_args
 
 from pydantic import TypeAdapter
-from typing_extensions import TypedDict  # pydantic needs this (not typing.TypedDict) on py<3.12
 
 from cold_frame.models import Band, MemoryTypeLiteral, StatusLiteral, TriageReason
 

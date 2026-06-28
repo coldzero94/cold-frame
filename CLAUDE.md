@@ -81,7 +81,7 @@ caps: `semantic=2000, episodic=500, procedural=100` (per scope) ·
 
 ## 4. Conventions
 
-- **Python 3.11+**, package `cold_frame`, dist `cold-frame`, managed by **uv**.
+- **Python 3.12+**, package `cold_frame`, dist `cold-frame`, managed by **uv**.
 - **Code style is tool-enforced (PEP8 + full type hints).** `ruff` (E/W=PEP8 · I · UP · B · SIM · PTH · **ANN**=annotations) + `ruff format` + `mypy --strict`; config in `pyproject.toml`. **Every public function/method is type-hinted** (mypy strict rejects un-annotated `def`). `.pre-commit-config.yaml` runs ruff + mypy before each commit (`uv run pre-commit install`). Do NOT weaken rules to pass — fix the code/types.
 - **Language:** all code, comments, docstrings, identifiers, and commit messages in **English**. (The planning docs under `docs/` are Korean — leave them as-is.)
 - **Pydantic v2** for all models. Timestamps = tz-aware UTC `datetime` in Python; the Store serializes to ISO8601-UTC TEXT.
