@@ -65,6 +65,7 @@ def test_error_response_maps_not_found() -> None:
     assert resp["error"]["code"] == "not_found"
 
 
+@pytest.mark.skipif(not _HAS_SDK, reason="needs the [mcp] extra (anyio)")
 def test_mcp_self_edit_error_maps_to_stable_code(db_path: str) -> None:
     import anyio
 
