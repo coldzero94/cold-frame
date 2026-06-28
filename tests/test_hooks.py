@@ -168,11 +168,9 @@ def test_hook_stop_enqueues_capture(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     Memory(db).close()
     payload = json.dumps({"transcript_path": str(t), "session_id": "sess1"})
     monkeypatch.setattr("sys.stdin", io.StringIO(payload))
-    assert main(["--db", db, "hook", "stop"]) == 0  # hook only enqueues (no drain)
+    assert main(["--db", db, "hook", "stop"]) == 0  # B6: the Stop hook enqueues AND naive-drains
     mem = Memory(db)
-    assert not mem.list_active()  # nothing captured yet — pending
-    mem.run_pending_jobs()  # the drain (a worker / MCP server) does the extraction
-    assert any("vim" in n.content for n in mem.list_active())
+    assert any("vim" in n.content for n in mem.list_active())  # captured at turn-end, no worker run
     mem.close()
 
 

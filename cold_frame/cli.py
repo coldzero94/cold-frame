@@ -282,6 +282,7 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
 
 # ── Claude Code hooks (auto-recall / capture, D26) ───────────────────────────
 _RECALL_K = 7  # SessionStart digest: inject up to K strongest durable beliefs
+_HOOK_DRAIN_MAX = 3  # Stop hook drains a few naive jobs so capture works without a running worker
 _PROMPT_RECALL_K = 3  # UserPromptSubmit: tighter — at most K hits per prompt (avoid per-turn noise)
 _PROMPT_MIN_QUERY = 8  # don't query on a trivially short prompt
 _PROMPT_SCORE_FLOOR = 0.02  # drop weak fused scores (pure-vector noise sits below a lexical match)
@@ -488,16 +489,19 @@ def _cmd_hook_status(args: argparse.Namespace) -> int:
 
 
 def _cmd_hook_capture(args: argparse.Namespace) -> int:
-    """Capture-commit hook (Stop): enqueue the session's transcript span for auto-capture and return
-    immediately (no extraction here — that drains where an LLM is reachable). The same handler could
-    serve a PreCompact hook, but only Stop is wired today (see _HOOK_WIRING). Fast + fail-silent: a
-    hook must never block or crash the session (D26)."""
+    """Capture-commit hook (Stop): enqueue the session's transcript span AND drain a few jobs with
+    the keyless naive extractor, so capture happens every turn-end without a separately-run
+    `cold-frame worker` (D26 B6). naive is fast (HashEmbedder, no model) + bounded; a running worker
+    or the agent-push skill still provide the higher-quality path. Only Stop is wired (see
+    _HOOK_WIRING). Fast + fail-silent."""
     try:
         payload = _hook_stdin()
         tp = str(payload.get("transcript_path", ""))
         sid = str(payload.get("session_id", ""))
         if tp and sid:
-            _memory(args).enqueue_capture(tp, sid, str(payload.get("cwd", "")))
+            mem = _memory(args)
+            mem.enqueue_capture(tp, sid, str(payload.get("cwd", "")))
+            mem.run_pending_jobs(max_jobs=_HOOK_DRAIN_MAX)  # naive drain → no manual worker needed
     except Exception as exc:  # fail-silent: never break the session on a capture hiccup
         _log.warning("hook_capture_failed", extra={"exc_type": type(exc).__name__})  # content-free
         return 0
