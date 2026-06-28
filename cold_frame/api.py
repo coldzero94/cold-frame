@@ -12,7 +12,9 @@ import hashlib
 import uuid
 from collections.abc import Callable, Iterator
 from datetime import datetime
-from typing import Literal, TypedDict, cast, get_args
+from typing import Literal, cast, get_args
+
+from typing_extensions import TypedDict  # pydantic needs this (not typing.TypedDict) on py<3.12
 
 from cold_frame.branding import DB_PATH
 from cold_frame.constants import CONSOLIDATE_EVERY_N_WRITES, DEDUP_AUTO_MERGE
