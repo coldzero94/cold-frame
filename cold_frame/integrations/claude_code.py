@@ -150,8 +150,15 @@ _REQUEST_PREFIXES = (
 # these leaking through (`<command-name>/effort</command-name>`, `<bash-input>code .`, …) — pure
 # noise/bloat. A turn containing any of these markers is dropped.
 _HARNESS_MARKERS = (
-    "<command-name>", "<command-message>", "<local-command-stdout>", "<local-command-caveat>",
-    "<bash-input>", "<bash-stdout>", "<bash-stderr>", "<task-notification>", "[request interrupted",
+    "<command-name>",
+    "<command-message>",
+    "<local-command-stdout>",
+    "<local-command-caveat>",
+    "<bash-input>",
+    "<bash-stdout>",
+    "<bash-stderr>",
+    "<task-notification>",
+    "[request interrupted",
 )
 
 

@@ -23,7 +23,7 @@ from cold_frame.api import Memory
 from cold_frame.branding import PKG
 from cold_frame.exceptions import NoteNotFound
 from cold_frame.integrations.claude_code import GLOBAL_KEY, project_key
-from cold_frame.models import Scope
+from cold_frame.models import Scope, SearchHit
 from cold_frame.observability import get_logger
 
 _log = get_logger(__name__)
@@ -358,7 +358,7 @@ def _cmd_hook_user_prompt(args: argparse.Namespace) -> int:
         cwd = str(payload.get("cwd", ""))
         mem = _memory(args)
         tiers = list(dict.fromkeys([project_key(cwd), GLOBAL_KEY]))
-        best: dict[str, object] = {}
+        best: dict[str, SearchHit] = {}
         for t in tiers:
             for h in mem.search(
                 query, scope=Scope(agent_id=t), k=_PROMPT_RECALL_K, reinforce=False
@@ -367,14 +367,13 @@ def _cmd_hook_user_prompt(args: argparse.Namespace) -> int:
                 # not pure embedding noise that would fire on every unrelated prompt.
                 if h.signals.bm25 is None or h.score < _PROMPT_SCORE_FLOOR:
                     continue
-                if h.note.id not in best or h.score > best[h.note.id].score:  # type: ignore[attr-defined]
+                if h.note.id not in best or h.score > best[h.note.id].score:
                     best[h.note.id] = h
-        top = sorted(best.values(), key=lambda h: h.score, reverse=True)[:_PROMPT_RECALL_K]  # type: ignore[attr-defined]
+        top = sorted(best.values(), key=lambda h: h.score, reverse=True)[:_PROMPT_RECALL_K]
         if not top:
             return 0
-        ctx = "Possibly relevant memory (Coldframe):\n" + "\n".join(
-            f"- {h.note.content}" for h in top  # type: ignore[attr-defined]
-        )
+        lines = [f"- {h.note.content}" for h in top]
+        ctx = "Possibly relevant memory (Coldframe):\n" + "\n".join(lines)
         ev = "UserPromptSubmit"
         out = {"hookSpecificOutput": {"hookEventName": ev, "additionalContext": ctx}}
         print(json.dumps(out))
