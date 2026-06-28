@@ -16,6 +16,7 @@ import sqlite3
 import sys
 from collections import Counter
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 
 from cold_frame import __version__, branding
@@ -101,7 +102,15 @@ def _cmd_search(args: argparse.Namespace) -> int:
     if not args.query:
         print(f"{PKG}: search requires a query")
         return 1
-    res = _memory(args).search(args.query, k=args.k)
+    as_of: datetime | None = None
+    if args.as_of:  # rewind: search memory as it was valid on a past date (bi-temporal)
+        try:
+            parsed = datetime.fromisoformat(args.as_of)
+        except ValueError:
+            print(f"{PKG}: --as-of must be an ISO date/datetime, e.g. 2026-03-01")
+            return 1
+        as_of = parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+    res = _memory(args).search(args.query, k=args.k, as_of=as_of)
     if not res.hits:
         print("no matches")
         return 0
@@ -693,6 +702,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_search = sub.add_parser("search", help="search memory")
     p_search.add_argument("query", nargs="?", help="search query")
     p_search.add_argument("-k", type=int, default=10, help="number of hits")
+    p_search.add_argument(
+        "--as-of", help="rewind: search memory as it was valid on an ISO date (e.g. 2026-03-01)"
+    )
     p_search.set_defaults(func=_cmd_search)
 
     p_list = sub.add_parser("list", help="list active notes")

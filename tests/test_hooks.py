@@ -697,3 +697,15 @@ def test_jobs_retry_dead_recovers_lost_captures(tmp_path: Path) -> None:
     assert mem._store.dead_count() == 0 and mem._store.pending_count() == 1
     mem.close()
     assert main(["--db", db, "jobs", "--retry-dead"]) == 0  # CLI path works too
+
+
+def test_cli_search_as_of_time_travel(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    # the rewindable-belief differentiator, now exposed on the CLI: --as-of filters by bi-temporal
+    # validity. A fact added now is NOT valid as-of a past date, but IS as-of a future one.
+    db = str(tmp_path / "m.db")
+    Memory(db).add("I deploy with ship.sh")  # valid_at ~ now
+    assert main(["--db", db, "search", "deploy", "--as-of", "2020-01-01"]) == 0
+    assert "ship.sh" not in capsys.readouterr().out  # didn't exist back then
+    assert main(["--db", db, "search", "deploy", "--as-of", "2099-01-01"]) == 0
+    assert "ship.sh" in capsys.readouterr().out  # valid as-of the future
+    assert main(["--db", db, "search", "deploy", "--as-of", "not-a-date"]) == 1  # clean error
