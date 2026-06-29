@@ -105,8 +105,31 @@ jobs:
       - name: Assert the wheel-shippable bundle is real (not the .gitkeep placeholder)
         run: python scripts/check_ui_bundle.py
 
-  # ── Publish gate (DEFERRED) ──────────────────────────────────────────────
-  # Intentionally NO `twine upload` / `uv publish` job here.
-  # Per CLAUDE.md §8 + D19: the dist name `cold-frame` (D19) vs abandon-the-name
-  # (D-P2) is unresolved and PyPI/trademark clearance is unverified. Do NOT add
-  # a publish job until that gate (D19 name/trademark/PyPI clearance) closes.
+  install-smoke:
+    name: fresh install smoke (built wheel)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Build the wheel
+        run: uv build --wheel
+      # install the wheel into a CLEAN venv (no source tree, no dev deps) → catches a broken entry
+      # point, missing package data, or an import that only works from the repo. Offline smoke.
+      - name: Install the wheel clean + smoke it offline
+        run: |
+          uv venv /tmp/smoke --python 3.12
+          uv pip install --python /tmp/smoke/bin/python dist/*.whl
+          export COLD_FRAME_DB=/tmp/smoke.db
+          /tmp/smoke/bin/cold-frame --version
+          /tmp/smoke/bin/cold-frame add "I prefer dark roast coffee"
+          /tmp/smoke/bin/cold-frame search "coffee" | grep -q coffee
+          /tmp/smoke/bin/cold-frame doctor
+
+  # ── Publishing ───────────────────────────────────────────────────────────
+  # Release/publish is NOT in this CI; it lives in release.yml (fires on a `v*` tag → PyPI via OIDC
+  # trusted publishing + per-platform binaries). D19 name (`cold-frame`) is locked; cut a tag to ship.
