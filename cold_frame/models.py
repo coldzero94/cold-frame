@@ -143,6 +143,13 @@ class BlockedSpan(BaseModel):
     placeholder: str  # e.g. "[BLOCKED:aws_access_key]" — a label only; original span discarded
 
 
+class RedactedSpan(BaseModel):
+    """PII REDACTED inline pre-disk (opt-in, I6). Content-free: category + count, not the value."""
+
+    category: str  # email | phone | credit_card | ssn
+    count: int
+
+
 class AddResult(BaseModel):
     """Result of ``Memory.add`` (api-contract §2.1)."""
 
@@ -150,6 +157,7 @@ class AddResult(BaseModel):
     superseded: list[str] = Field(default_factory=list)  # ids archived by conflict
     deduped: list[str] = Field(default_factory=list)  # candidate ids merged-into-existing
     blocked: list[BlockedSpan] = Field(default_factory=list)  # secrets BLOCKed pre-disk
+    redacted: list[RedactedSpan] = Field(default_factory=list)  # PII scrubbed pre-disk (opt-in)
     held: list[Note] = Field(default_factory=list)  # held_for_human (durability gate / quarantine)
 
 

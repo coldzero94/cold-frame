@@ -81,6 +81,7 @@ class Memory:
         id_factory: Callable[[], str] | None = None,
         config: object | None = None,
         consolidate_every: int | None = None,
+        pii_redact: frozenset[str] | None = None,
     ) -> None:
         # Open Store, run migrate() (idempotent), assert the configured embedder's dim
         # matches DB meta else raise EmbedderMismatchError. Clock + id-factory injected (G6):
@@ -112,7 +113,11 @@ class Memory:
                 f"(same id, different dim — incompatible vectors)"
             )
         self._write = WriteCore(
-            self._store, embedder=self._embedder, llm=self._llm, clock=self._clock
+            self._store,
+            embedder=self._embedder,
+            llm=self._llm,
+            clock=self._clock,
+            pii_redact=pii_redact,  # opt-in PII scrub (None = off; a personal store keeps facts)
         )
         self._read = RetrievePipeline(
             self._store, embedder=self._embedder, llm=self._llm, clock=self._clock

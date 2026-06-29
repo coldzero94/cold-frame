@@ -2,8 +2,10 @@
 
 No LLM, no key, no network: a gitleaks-style regex + Shannon-entropy scan that BLOCKs obvious
 secrets/credentials BEFORE they touch disk. Returns only a ``(reason, placeholder)`` label —
-NEVER the matched content (I6/I16). The heavier CLASSIFY→REDACT→CONSENT pipeline, the local-only
-tiebreak (I7), and the crypto-shred purge remain deferred (v1.1 / hosted).
+NEVER the matched content (I6/I16). Plus ``redact_pii`` — an OPT-IN deterministic PII scrub that
+replaces emails/phones/cards/SSNs inline before persist (off by default: a personal-memory tool must
+not blanket-redact the user's OWN useful contact facts; enable per-category when wanted). The
+LLM CONFIDENCE-GATE/CONSENT tiebreak (I7) and crypto-shred purge remain deferred (v1.1 / hosted).
 """
 
 from __future__ import annotations
@@ -52,3 +54,49 @@ def scan_secret(text: str) -> Verdict | None:
         if _entropy(token) >= _ENTROPY_MIN:
             return ("secret", "[BLOCKED:high_entropy]")
     return None
+
+
+# ── PII redaction (OPT-IN, I6 REDACT — deterministic, no LLM) ──────────────────
+PiiCategory = Literal["email", "phone", "credit_card", "ssn"]
+PII_CATEGORIES: frozenset[str] = frozenset({"email", "phone", "credit_card", "ssn"})
+
+# (category, pattern, placeholder, optional digit-count validator). Order matters: the more
+# specific structured patterns (email, ssn, card) run BEFORE the loose phone pattern so it can't
+# swallow them. Validators reject digit blobs that look like ports/versions, not real PII.
+_PII: list[tuple[PiiCategory, re.Pattern[str], str]] = [
+    ("email", re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b"), "[email]"),
+    ("ssn", re.compile(r"\b\d{3}-\d{2}-\d{4}\b"), "[ssn]"),
+    ("credit_card", re.compile(r"\b\d(?:[ -]?\d){12,15}\b"), "[card]"),
+    ("phone", re.compile(r"(?<!\w)\+?\d[\d\s().-]{7,}\d(?!\w)"), "[phone]"),
+]
+
+
+def _digit_count(s: str) -> int:
+    return sum(c.isdigit() for c in s)
+
+
+def redact_pii(
+    text: str, categories: frozenset[str] = PII_CATEGORIES
+) -> tuple[str, dict[str, int]]:
+    """Replace PII spans with typed placeholders; return ``(redacted_text, {category: count})``.
+
+    Deterministic + content-free in the summary (counts only, never the matched value — I16). The
+    redacted text keeps the surrounding fact intact ("my email is [email]"). card/phone are
+    validated by digit count (13-16 / 10-15) so ports, versions, and counts are NOT redacted.
+    """
+    summary: Counter[str] = Counter()
+    for cat, pat, placeholder in _PII:
+        if cat not in categories:
+            continue
+
+        def _sub(m: re.Match[str], _cat: str = cat, _ph: str = placeholder) -> str:
+            span = m.group(0)
+            if _cat == "credit_card" and not (13 <= _digit_count(span) <= 16):
+                return span
+            if _cat == "phone" and not (10 <= _digit_count(span) <= 15):
+                return span
+            summary[_cat] += 1
+            return _ph
+
+        text = pat.sub(_sub, text)
+    return text, dict(summary)

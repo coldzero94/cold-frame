@@ -11,6 +11,7 @@ REDACT/CONFIDENCE-GATE/CONSENT are deferred (I6 PARTIAL).
 
 from __future__ import annotations
 
+from collections import Counter
 from datetime import datetime
 
 import numpy as np
@@ -18,7 +19,15 @@ import numpy as np
 from cold_frame.constants import CONFLICT_CANDIDATE_FLOOR, DEDUP_AUTO_MERGE, DEDUP_NEAR_DUP
 from cold_frame.exceptions import SecretBlocked
 from cold_frame.llm.base import LLM, Clock, Embedder, TaskTag
-from cold_frame.models import AddResult, BlockedSpan, ConflictVerdict, Note, Scope, Source
+from cold_frame.models import (
+    AddResult,
+    BlockedSpan,
+    ConflictVerdict,
+    Note,
+    RedactedSpan,
+    Scope,
+    Source,
+)
 from cold_frame.prompts.conflict import (
     CONFLICT_SYSTEM,
     DEDUP_SYSTEM,
@@ -26,7 +35,7 @@ from cold_frame.prompts.conflict import (
     build_dedup_user,
 )
 from cold_frame.store.base import Store
-from cold_frame.write.admission import scan_secret
+from cold_frame.write.admission import redact_pii, scan_secret
 
 
 def _iso_or_unknown(dt: datetime | None) -> str:
@@ -43,11 +52,14 @@ class WriteCore:
         embedder: Embedder,
         llm: LLM | None,
         clock: Clock,
+        pii_redact: frozenset[str] | None = None,
     ) -> None:
         self._store = store
         self._embedder = embedder
         self._llm = llm
         self._clock = clock
+        # OPT-IN PII categories to scrub inline pre-disk (None = off; see admission.redact_pii)
+        self._pii_redact = pii_redact
 
     def commit(
         self,
@@ -71,11 +83,17 @@ class WriteCore:
         deduped: list[str] = []
         superseded: list[str] = []
         blocked: list[BlockedSpan] = []
+        pii: Counter[str] = Counter()
         for cand in candidates:
             verdict = scan_secret(cand.content)
             if verdict is not None:  # I6: a secret never touches disk (no embed, no host call)
                 blocked.append(BlockedSpan(reason=verdict[0], placeholder=verdict[1]))
                 continue
+            if self._pii_redact:  # opt-in: scrub PII inline BEFORE embed/persist (never on disk)
+                clean, summ = redact_pii(cand.content, self._pii_redact)
+                if summ:
+                    cand = cand.model_copy(update={"content": clean})
+                    pii.update(summ)
             emb = self._embedder.embed_one(cand.content)
             kind, payload = self._classify(cand, emb, scope)
             if kind == "dedup":
@@ -107,7 +125,12 @@ class WriteCore:
                 self._store.add_note(cand, emb)
                 (held if cand.held_for_human or cand.quarantined else added).append(cand)
         return AddResult(
-            added=added, superseded=superseded, deduped=deduped, blocked=blocked, held=held
+            added=added,
+            superseded=superseded,
+            deduped=deduped,
+            blocked=blocked,
+            redacted=[RedactedSpan(category=k, count=v) for k, v in pii.items()],
+            held=held,
         )
 
     def _classify(self, cand: Note, emb: np.ndarray, scope: Scope) -> tuple[str, object]:
@@ -199,6 +222,10 @@ class WriteCore:
         verdict = scan_secret(new.content)
         if verdict is not None:  # I6: never persist a secret, even via an explicit self-edit
             raise SecretBlocked(verdict[1])
+        if self._pii_redact:  # opt-in PII scrub on the correction text too (same pipeline, I15)
+            clean, summ = redact_pii(new.content, self._pii_redact)
+            if summ:
+                new = new.model_copy(update={"content": clean})
         emb = self._embedder.embed_one(new.content)
         self._store.supersede(old_id, new, emb)
         return new

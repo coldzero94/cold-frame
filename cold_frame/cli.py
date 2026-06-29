@@ -26,6 +26,7 @@ from cold_frame.exceptions import NoteNotFound
 from cold_frame.integrations.claude_code import GLOBAL_KEY, project_key
 from cold_frame.models import Scope, SearchHit
 from cold_frame.observability import get_logger
+from cold_frame.write.admission import PII_CATEGORIES
 
 _log = get_logger(__name__)
 
@@ -59,7 +60,9 @@ _OPENED: list[Memory] = []  # memories opened this invocation, closed in main()'
 
 
 def _memory(args: argparse.Namespace) -> Memory:
-    mem = Memory(_resolve_db(args))  # offline default: HashEmbedder + llm=None
+    # opt-in PII scrub when --redact-pii is set (only the `add` subcommand exposes the flag)
+    pii = PII_CATEGORIES if getattr(args, "redact_pii", False) else None
+    mem = Memory(_resolve_db(args), pii_redact=pii)  # offline default: HashEmbedder + llm=None
     _OPENED.append(mem)  # tracked so the connection is closed before the process/command ends
     return mem
 
@@ -93,6 +96,8 @@ def _cmd_add(args: argparse.Namespace) -> int:
         print(f"+ {note.id[:8]}  {note.content}")
     for note in res.held:
         print(f"~ {note.id[:8]}  (held for review)  {note.content}")
+    for span in res.redacted:  # content-free: category + count, never the value (I16)
+        print(f"  redacted {span.count}x {span.category} before storing")
     if not res.added and not res.held:
         print("nothing extracted")
     return 0
@@ -697,6 +702,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_add = sub.add_parser("add", help="add a fact or messages")
     p_add.add_argument("text", nargs="?", help="text to remember")
     p_add.add_argument("--raw", action="store_true", help="store verbatim, skip extraction")
+    p_add.add_argument(
+        "--redact-pii", action="store_true", help="scrub email/phone/card/ssn before storing"
+    )
     p_add.set_defaults(func=_cmd_add)
 
     p_search = sub.add_parser("search", help="search memory")

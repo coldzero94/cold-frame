@@ -64,7 +64,9 @@ cold-frame doctor          # health: counts, integrity, embedder
 - **Stays lean** — every ~20 facts a consolidation pass decays, rolls up, and archives the weakest
   (per-scope caps), so the active set never grows without bound. Forgetting *archives* — nothing is
   truly deleted, and obvious secrets (API keys, tokens, private keys) are blocked before they ever
-  touch disk — though PII redaction and at-rest encryption are not yet automatic (planned).
+  touch disk. PII redaction (email/phone/card/ssn) is available **opt-in** (`add --redact-pii`, or
+  `Memory(pii_redact=…)`) — off by default so a personal store keeps your own contact facts; at-rest
+  encryption is not yet built.
 - **Per-project + global** — facts are tagged by git project; clear personal facts go to a global
   tier recalled everywhere.
 
