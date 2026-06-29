@@ -70,12 +70,16 @@ def _search_impl(mem: Memory, query: str, k: int = 10) -> dict[str, Any]:
     best: dict[str, Any] = {}
     used = 0
     for scope in _scope_tiers(mem):
-        res = mem.search(query, k=k, scope=scope)
+        # reinforce=False per tier: a note surfaced in one tier but dropped from the merged top-k
+        # must NOT get a reinforcement bump. We reinforce the actually-returned set once, below.
+        res = mem.search(query, k=k, scope=scope, reinforce=False)
         used += res.used_tokens or 0
         for h in res.hits:
             if h.note.id not in best or h.score > best[h.note.id].score:
                 best[h.note.id] = h
     top = sorted(best.values(), key=lambda h: h.score, reverse=True)[:k]
+    if top:  # reinforcement tracks what was actually surfaced (one bump per returned note)
+        mem._store.reinforce([h.note.id for h in top], now=mem._clock.now())
     out: dict[str, Any] = {
         "hits": [
             {

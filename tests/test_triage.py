@@ -138,3 +138,15 @@ def test_triage_queue_ranks_by_importance(db_path: str, frozen_clock: FrozenCloc
     m.update(high, importance=0.95)
     m.update(low, importance=0.1)
     assert [item.note.id for item in m.triage_queue()] == [high, low]
+
+
+def test_resolve_merge_bad_target_leaves_note_held(db_path: str, frozen_clock: FrozenClock) -> None:
+    # a failure-prone resolve (bad target) must NOT clear the hold first → no partial resolve:
+    # the held note stays held + quarantined so it can be re-triaged.
+    m = _mem(db_path, frozen_clock)
+    fid = _held_fact(m, "I tried a new espresso blend")
+    with pytest.raises(NoteNotFound):
+        m.resolve_triage(fid, "merge", target="does-not-exist")
+    note = m.get(fid)
+    assert note.held_for_human and note.quarantined  # still held — not dropped off the queue
+    assert [item.note.id for item in m.triage_queue()] == [fid]

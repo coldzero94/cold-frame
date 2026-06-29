@@ -176,6 +176,7 @@ class Memory:
         observed_at: datetime | None = None,
         source: Source | None = None,
         raw: bool = False,
+        reinforce_dedup: bool = True,
     ) -> AddResult:
         scope = scope or self._default_scope
         observed_at = observed_at or self._clock.now()
@@ -190,7 +191,7 @@ class Memory:
             infer=infer,
             raw=raw,
         )
-        result = self._write.commit(candidates, scope=scope)
+        result = self._write.commit(candidates, scope=scope, reinforce_dedup=reinforce_dedup)
         self._after_write(scope, len(result.added))
         return result
 
@@ -315,7 +316,10 @@ class Memory:
             try:
                 fresh, known = self._novel_messages(tier_msgs, scope)  # Layer-B WITHIN the tier
                 if fresh:
-                    self.add(fresh, infer=True, scope=scope)  # source=None → provenance (I14)
+                    # reinforce_dedup=False: this handler is at-least-once (I12), so the in-commit
+                    # restatement bump must NOT fire here (a retry would double-count). Exact
+                    # restatements are reinforced once, watermark-guarded, via reinforce_ids below.
+                    self.add(fresh, infer=True, scope=scope, reinforce_dedup=False)
                 reinforce_ids.extend(known)  # only after this tier's add() actually committed
             except Exception as exc:  # one tier's failure must not abort/re-present the others
                 _log.warning("capture_tier_failed", extra={"exc_type": type(exc).__name__})
@@ -548,26 +552,26 @@ class Memory:
         *,
         target: str | None = None,
     ) -> None:
-        if action in ("merge", "supersede") and target is None:
-            raise ValueError(f"resolve_triage: action {action!r} requires a target")
-        if action == "supersede":  # the held note wins over `target` — do the failure-prone
-            self.forget(target)  # type: ignore[arg-type]  # archive FIRST: a bad target raises
-            # before we clear the hold, so no partial resolve (held note stays held).
-        # the precondition (if any) passed → accept the held note off the queue. The lifecycle
-        # flags held/quarantined/triage_reason live ONLY on the notes row (no fts/vec grain), so
-        # this single setter is the whole "clear" — see set_held_for_human.
-        self._store.set_held_for_human(id, held=False, quarantined=False, reason=None)
-        if action == "pin":  # accept + pin (exempt from decay/archive, I13)
-            self._store.set_pinned(id, True)
+        if action in ("merge", "supersede"):
+            if target is None:
+                raise ValueError(f"resolve_triage: action {action!r} requires a target")
+            self.get(target)  # NoteNotFound on a bad target FIRST — before any mutation
+        # Do every failure-prone op BEFORE clearing the hold, so a failure leaves the held note
+        # still held (no partial resolve) rather than off-the-queue with the action half-applied.
+        if action == "supersede":
+            self.forget(target)  # type: ignore[arg-type]  # the held note wins over `target`
         elif action == "merge":
-            # a duplicate of `target`: record a relates_to edge (held → target) so the merge is
-            # traceable, THEN archive the held note (revivable, I2). v1's lightweight graft — it
-            # links rather than copying provenance grains into target.
+            # a duplicate of `target`: record a traceable relates_to edge (held → target) FIRST.
             self._store.add_edge(
                 Edge(src_id=id, dst_id=target, relation="relates_to", created_at=self._clock.now())  # type: ignore[arg-type]
             )
-            self.forget(id)
-        elif action == "let_go":  # not worth keeping → archive (revivable, I2)
+        # the precondition passed → accept the held note off the queue. The lifecycle flags
+        # held/quarantined/triage_reason live ONLY on the notes row (no fts/vec grain), so this
+        # single setter is the whole "clear" — see set_held_for_human.
+        self._store.set_held_for_human(id, held=False, quarantined=False, reason=None)
+        if action == "pin":  # accept + pin (exempt from decay/archive, I13)
+            self._store.set_pinned(id, True)
+        elif action in ("merge", "let_go"):  # archive the held note (revivable, I2)
             self.forget(id)
 
     # ── self-edit / procedural ───────────────────────────────────────────

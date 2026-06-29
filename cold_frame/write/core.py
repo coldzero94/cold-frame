@@ -97,6 +97,7 @@ class WriteCore:
         candidates: list[Note],
         *,
         scope: Scope,
+        reinforce_dedup: bool = True,
     ) -> AddResult:
         """ADMISSION → DEDUP → CONFLICT → PERSIST for new candidate facts (SPEC §4).
 
@@ -127,8 +128,12 @@ class WriteCore:
             if kind == "dedup":
                 deduped.append(str(payload))  # non-destructive: drop the dup, existing stays
                 # a restatement IS a reinforcement signal — bump the survivor so "the user keeps
-                # saying this" raises its strength + resists forgetting (dogfood fix).
-                self._store.reinforce([str(payload)], now=cand.created_at)
+                # saying this" raises its strength + resists forgetting (dogfood fix). Suppressed on
+                # the at-least-once capture path (reinforce_dedup=False): that handler must be
+                # idempotent (I12) — a job retry would otherwise double-count the bump. Capture does
+                # its own watermark-guarded reinforce of exact restatements instead.
+                if reinforce_dedup:
+                    self._store.reinforce([str(payload)], now=cand.created_at)
             elif kind == "supersede":
                 self._store.supersede(str(payload), cand, emb)
                 superseded.append(str(payload))
