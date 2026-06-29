@@ -16,9 +16,10 @@ First public version. Local-first, ownable memory for AI agents — one SQLite f
 
 ### Added
 
-- **Memory engine** — hybrid retrieval (BM25 + numpy-KNN vectors, RRF fusion), bi-temporal versions
-  with `as_of` rewind, deterministic dedup/conflict resolution, decay + consolidation + per-scope
-  caps (bounded active set), and a token-budget packer.
+- **Memory engine** — hybrid retrieval (BM25 + numpy-KNN vectors + a 1-hop graph edge channel,
+  RRF fusion), bi-temporal versions with `as_of` rewind (`search --as-of`), deterministic
+  dedup/conflict resolution, decay + consolidation (+ an archive-imminent strength sub-label) +
+  per-scope caps (bounded active set), and a token-budget packer.
 - **CLI** — `add` / `search` / `list` / `show` / `timeline` / `doctor` / `consolidate` / `worker` /
   `jobs` / `export` / `import` / `purge` / `reembed` / `ui` / `mcp` / `setup` / `hook`.
 - **Claude Code integration** — a plugin (MCP server + recall/capture hooks + a capture skill) for
@@ -27,16 +28,19 @@ First public version. Local-first, ownable memory for AI agents — one SQLite f
   no extra metered cost). Per-project + global scoping by git project.
 - **Local web UI** (`cold-frame ui`) — a dashboard of memory strength/decay; view + edit
   (pin/correct/forget), CSRF-guarded, localhost-only.
-- **Safety** — obvious secrets blocked before disk; grep-verified hard `purge`; content-free logs.
+- **Safety / privacy** — obvious secrets blocked before disk; grep-verified hard `purge`;
+  content-free logs; **opt-in PII redaction** (email/phone/card/ssn — `add --redact-pii` /
+  `Memory(pii_redact=…)`); **opt-in at-rest encryption** (the `[crypto]` extra = SQLCipher;
+  `Memory(encryption_key=…)` / `$COLD_FRAME_KEY`; whole DB + WAL + snapshots).
 - **Distribution** — `uv tool` / `pipx`, a Homebrew tap formula, and a standalone single-file binary
   (no Python needed); a Release workflow that publishes on tag.
 
-### Known limitations (planned)
+### Known limitations (planned / deferred)
 
-- PII redaction (email/phone/card/ssn) is available opt-in (`add --redact-pii` / `Memory(pii_redact=…)`),
-  off by default. At-rest encryption is available opt-in via the `[crypto]` extra (SQLCipher;
-  `Memory(encryption_key=…)` / `$COLD_FRAME_KEY`) — whole DB + WAL + snapshots, set at creation;
-  obvious secrets are always blocked pre-disk regardless.
+- PII redaction + at-rest encryption are OFF by default (opt-in); encryption is set at DB creation —
+  there's no in-place plaintext→encrypted migration for an existing DB yet.
+- Deferred to v1.1/hosted: the local admission LLM tiebreak (I7) + confidence-gate/consent, and a
+  crypto-shred (key-destroy) purge. A cross-encoder/LLM rerank backend + auto-tagging are not wired.
 - The agent-push capture path is model-discretionary; the keyless backstop guarantees coverage.
 - Write/triage in the browser is partial; full event-log replay import is snapshot-based for now.
 
