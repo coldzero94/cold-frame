@@ -67,7 +67,8 @@ _PII: list[tuple[PiiCategory, re.Pattern[str], str]] = [
     ("email", re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b"), "[email]"),
     ("ssn", re.compile(r"\b\d{3}-\d{2}-\d{4}\b"), "[ssn]"),
     ("credit_card", re.compile(r"\b\d(?:[ -]?\d){12,15}\b"), "[card]"),
-    ("phone", re.compile(r"(?<!\w)\+?\d[\d\s().-]{7,}\d(?!\w)"), "[phone]"),
+    # inner class is non-newline whitespace ([ \t]) so a phone match can't span across lines
+    ("phone", re.compile(r"(?<!\w)\+?\d[\d \t().-]{7,}\d(?!\w)"), "[phone]"),
 ]
 
 

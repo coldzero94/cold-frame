@@ -64,3 +64,37 @@ def test_cli_add_redact_pii_flag(tmp_path: Path, capsys) -> None:  # type: ignor
     # without the flag, the user's own contact fact is kept verbatim (default off)
     assert main(["--db", db, "add", "ping me at carol@acme.io"]) == 0
     assert "carol@acme.io" in capsys.readouterr().out
+
+
+def test_redact_scrubs_content_context_and_keywords_and_rehashes_source(db_path: str) -> None:
+    # PII must be scrubbed from ALL persisted grains (content/context/keywords — keywords are
+    # FTS-indexed), and the source content_hash re-derived so no SHA of the original PII lingers.
+    from datetime import UTC, datetime
+
+    from cold_frame.models import Note, Scope, Source
+
+    t = datetime(2026, 1, 1, tzinfo=UTC)
+    note = Note(
+        id="n",
+        content="my email is alice@corp.com",
+        context="cc bob@corp.com",
+        keywords=["carol@corp.com", "vim"],
+        memory_type="semantic",
+        scope=Scope(),
+        created_at=t,
+        sources=[Source(kind="message", ref="m", content_hash="ORIGINAL_HASH", observed_at=t)],
+    )
+    wc = Memory(db_path, pii_redact=frozenset({"email"}))._write
+    scrubbed, summ = wc._redact(note)
+    assert "@corp.com" not in scrubbed.content and "@corp.com" not in scrubbed.context
+    assert all("@corp.com" not in k for k in scrubbed.keywords)  # keyword PII scrubbed too
+    assert summ["email"] == 3  # content + context + 1 keyword
+    assert scrubbed.sources[0].content_hash != "ORIGINAL_HASH"  # re-hashed over redacted content
+
+
+def test_correct_memory_redacts_pii_on_the_supersede_path(db_path: str) -> None:
+    m = Memory(db_path, pii_redact=frozenset({"email"}))
+    nid = m.add("I deploy this repo").added[0].id
+    m.correct_memory(nid, "actually email me at dave@corp.com from now on")
+    assert all("dave@corp.com" not in n.content for n in m.list_active())  # redacted in-place
+    assert b"dave@corp.com" not in _db_bytes(db_path)  # and absent from disk

@@ -165,7 +165,9 @@ class RetrievePipeline:
         edges = self._store.neighbors(seeds, relations=None)
         if not edges:
             return [], {}
-        degree: dict[str, int] = defaultdict(int)  # promiscuity = how many edges touch a hub
+        # promiscuity = RAW edge count touching a hub (intentionally unfiltered by scope/status: a
+        # hub wired to many things is a weak signal regardless of which neighbors are surfaceable).
+        degree: dict[str, int] = defaultdict(int)
         for e in edges:
             degree[e.src_id] += 1
             degree[e.dst_id] += 1
@@ -182,8 +184,21 @@ class RetrievePipeline:
                 weight[other] = max(weight.get(other, 0.0), w)
         if not order:
             return [], {}
-        for n in self._store.get_notes(order):  # scope + status filter → no cross-scope leak
-            if n.scope.user_id == scope.user_id and n.status in statuses:
+        # deterministic (eval-stable) rank: strongest weight first, id as tiebreak; then cap the
+        # fan-out so a high-degree hub can't pull an unbounded set into get_notes/the fuse.
+        order.sort(key=lambda nid: (-weight[nid], nid))
+        order = order[:FANOUT_MAX]
+        for n in self._store.get_notes(order):
+            # MIRROR _where_clauses EXACTLY (the Store search guard): same user_id, the pinned
+            # agent_id/session_id, NOT quarantined (G2/I14), and an allowed status — so an
+            # edge-reached note can never bypass the scope/quarantine/status filter knn+bm25 apply.
+            if (
+                n.scope.user_id == scope.user_id
+                and (scope.agent_id is None or n.scope.agent_id == scope.agent_id)
+                and (scope.session_id is None or n.scope.session_id == scope.session_id)
+                and not n.quarantined
+                and n.status in statuses
+            ):
                 note_map[n.id] = n
         edge_ids = [nid for nid in order if nid in note_map]
         return edge_ids, {nid: weight[nid] for nid in edge_ids}

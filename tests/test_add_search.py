@@ -161,3 +161,51 @@ def test_edge_channel_surfaces_neighbor_and_isolates_scope(memory: Memory) -> No
     assert other not in ids  # a cross-scope edge-reached note is filtered out (no leak)
     b_hit = next(h for h in hits if h.note.id == b)
     assert b_hit.signals.edge is not None  # carries the edge signal (reached via the graph)
+
+
+def test_edge_channel_excludes_quarantined_and_cross_agent(memory: Memory) -> None:
+    # the edge channel must mirror the Store search guard: an edge-reached note that is quarantined
+    # (I14) or in a different agent/session (same user) must NOT leak into default results.
+    from cold_frame.models import Edge, Scope
+
+    s = Scope(user_id="u", agent_id="A")
+    a = memory.add("deploy this repo with ship.sh", scope=s).added[0].id
+    q = memory.add("quarantined neighbor zzqqxx", scope=s).added[0].id
+    cross = (
+        memory.add("other-agent neighbor zzqqxx", scope=Scope(user_id="u", agent_id="B"))
+        .added[0]
+        .id
+    )
+    memory._store._conn.execute("UPDATE notes SET quarantined=1 WHERE id=?", (q,))
+    now = datetime(2030, 1, 1, tzinfo=UTC)
+    memory._store.add_edge(Edge(src_id=a, dst_id=q, relation="relates_to", created_at=now))
+    memory._store.add_edge(Edge(src_id=a, dst_id=cross, relation="relates_to", created_at=now))
+
+    ids = [h.note.id for h in memory.search("deploy", scope=s).hits]
+    assert a in ids  # the seed
+    assert q not in ids  # quarantined edge-neighbor excluded (I14)
+    assert cross not in ids  # cross-agent edge-neighbor excluded (scope guard)
+
+
+def test_edge_channel_promiscuity_downweights_high_degree_hub(memory: Memory) -> None:
+    # the channel's core down-weighting: a neighbor reached via a LOW-degree hub outranks one
+    # reached via a HIGH-degree (promiscuous) hub — w = 1/(1 + PENALTY·(degree-1)²).
+    from cold_frame.models import Edge, Scope
+
+    s = Scope(user_id="u")
+    now = datetime(2030, 1, 1, tzinfo=UTC)
+    lo = memory.add("alpha deploy pipeline notes", scope=s).added[0].id  # low-degree hub
+    hi = memory.add("beta deploy pipeline notes", scope=s).added[0].id  # high-degree hub
+    b = memory.add("xylophone quasar widget", scope=s).added[0].id  # lo's only neighbor
+    c = memory.add("kazoo nimbus gizmo", scope=s).added[0].id  # one of hi's many neighbors
+    memory._store.add_edge(Edge(src_id=lo, dst_id=b, relation="relates_to", created_at=now))
+    memory._store.add_edge(Edge(src_id=hi, dst_id=c, relation="relates_to", created_at=now))
+    for i in range(20):  # inflate hi's degree so the promiscuity penalty bites
+        # token-distinct so HashEmbedder doesn't merge them as near-dups (no shared tokens)
+        d = memory.add(f"throwaway{i}xqz uniquetoken{i}wbn record{i}mmc", scope=s).added[0].id
+        memory._store.add_edge(Edge(src_id=hi, dst_id=d, relation="relates_to", created_at=now))
+
+    hits = {h.note.id: h for h in memory.search("deploy pipeline", scope=s, k=40).hits}
+    assert b in hits and c in hits  # both surface purely via their edges
+    assert hits[b].signals.edge is not None and hits[c].signals.edge is not None
+    assert hits[b].signals.edge > hits[c].signals.edge  # low-degree neighbor weighted higher

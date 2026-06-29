@@ -41,5 +41,6 @@ def compute_strength(note: Note, now: datetime) -> Strength:
     at_risk = note.confidence < AT_RISK_CONFIDENCE or dt_days > AT_RISK_STALE_DAYS
     # FADING_EMBER sub-label: a fading note this weak is archive-imminent (a fading sub-state, NOT a
     # 4th band) — surfaced so "about to be forgotten" is visible (the decay-made-visible thesis).
-    imminent = band == "fading" and value < FADING_EMBER
+    # pinned notes are exempt from decay/archive (I13) → never "archive-imminent"
+    imminent = not note.pinned and band == "fading" and value < FADING_EMBER
     return Strength(value=value, band=band, at_risk=at_risk, imminent=imminent)

@@ -219,3 +219,10 @@ def test_strength_imminent_subflag_for_archive_imminent_notes() -> None:
     assert s.band == "fading" and s.imminent is True
     healthy = _n(importance=0.9, last_accessed=now)
     assert compute_strength(healthy, now).imminent is False
+    # fading but ABOVE the ember threshold → fading, NOT imminent (pins `value < FADING_EMBER`):
+    # value ≈ 0.35·0.4 = 0.14, which is in [FADING_EMBER=0.10, BAND_BUDDING=0.33)
+    ember = compute_strength(_n(decay_S=0.2, importance=0.4, last_accessed=t0), now)
+    assert ember.band == "fading" and ember.imminent is False
+    # a pinned note is NEVER archive-imminent even when weak (I13 exempts pinned from archive)
+    pinned = _n(decay_S=0.2, importance=0.0, last_accessed=t0, pinned=True)
+    assert compute_strength(pinned, now).imminent is False

@@ -35,6 +35,7 @@ from cold_frame.prompts.conflict import (
 )
 from cold_frame.store.base import Store
 from cold_frame.write.admission import redact_pii, scan_secret
+from cold_frame.write.extract import _sha256  # re-hash sources over redacted content (PII scrub)
 
 
 def _iso_or_unknown(dt: datetime | None) -> str:
@@ -59,6 +60,37 @@ class WriteCore:
         self._clock = clock
         # OPT-IN PII categories to scrub inline pre-disk (None = off; see admission.redact_pii)
         self._pii_redact = pii_redact
+
+    def _redact(self, note: Note) -> tuple[Note, Counter[str]]:
+        """OPT-IN PII scrub of EVERY persisted free-text grain — content, context, AND keywords (all
+        stored + FTS-indexed; redacting content alone would leak PII to disk + search). On any
+        redaction, rebuild each source's content_hash over the REDACTED content so no SHA of the
+        original PII lingers (like notes.content_hash, which hashes the redacted text)."""
+        assert self._pii_redact is not None
+        summ: Counter[str] = Counter()
+        content, s = redact_pii(note.content, self._pii_redact)
+        summ.update(s)
+        context, s = redact_pii(note.context, self._pii_redact)
+        summ.update(s)
+        keywords: list[str] = []
+        for kw in note.keywords:
+            clean_kw, s = redact_pii(kw, self._pii_redact)
+            summ.update(s)
+            keywords.append(clean_kw)
+        if not summ:
+            return note, summ
+        sources = [
+            src.model_copy(update={"content_hash": _sha256(content)}) for src in note.sources
+        ]
+        scrubbed = note.model_copy(
+            update={
+                "content": content,
+                "context": context,
+                "keywords": keywords,
+                "sources": sources,
+            }
+        )
+        return scrubbed, summ
 
     def commit(
         self,
@@ -87,11 +119,9 @@ class WriteCore:
             if verdict is not None:  # I6: a secret never touches disk (no embed, no host call)
                 blocked.append(BlockedSpan(reason=verdict[0], placeholder=verdict[1]))
                 continue
-            if self._pii_redact:  # opt-in: scrub PII inline BEFORE embed/persist (never on disk)
-                clean, summ = redact_pii(cand.content, self._pii_redact)
-                if summ:
-                    cand = cand.model_copy(update={"content": clean})
-                    pii.update(summ)
+            if self._pii_redact:  # opt-in: scrub PII from ALL grains BEFORE embed/persist
+                cand, summ = self._redact(cand)
+                pii.update(summ)
             emb = self._embedder.embed_one(cand.content)
             kind, payload = self._classify(cand, emb, scope)
             if kind == "dedup":
@@ -220,10 +250,8 @@ class WriteCore:
         verdict = scan_secret(new.content)
         if verdict is not None:  # I6: never persist a secret, even via an explicit self-edit
             raise SecretBlocked(verdict[1])
-        if self._pii_redact:  # opt-in PII scrub on the correction text too (same pipeline, I15)
-            clean, summ = redact_pii(new.content, self._pii_redact)
-            if summ:
-                new = new.model_copy(update={"content": clean})
+        if self._pii_redact:  # same all-grain PII scrub on the correction (one pipeline, I15)
+            new, _ = self._redact(new)
         emb = self._embedder.embed_one(new.content)
         self._store.supersede(old_id, new, emb)
         return new
