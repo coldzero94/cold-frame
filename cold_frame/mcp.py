@@ -79,7 +79,10 @@ def _search_impl(mem: Memory, query: str, k: int = 10) -> dict[str, Any]:
                 best[h.note.id] = h
     top = sorted(best.values(), key=lambda h: h.score, reverse=True)[:k]
     if top:  # reinforcement tracks what was actually surfaced (one bump per returned note)
-        mem._store.reinforce([h.note.id for h in top], now=mem._clock.now())
+        try:  # best-effort (mirror the read pipeline): a reinforce failure must NOT fail recall
+            mem._store.reinforce([h.note.id for h in top], now=mem._clock.now())
+        except StoreError:
+            _log.warning("mcp_search_reinforce_failed")
     out: dict[str, Any] = {
         "hits": [
             {

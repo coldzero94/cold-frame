@@ -22,7 +22,7 @@ from cold_frame import __version__, branding
 from cold_frame.api import Memory
 from cold_frame.branding import PKG
 from cold_frame.constants import NOTE_MAX_CHARS
-from cold_frame.exceptions import NoteNotFound
+from cold_frame.exceptions import NoteNotFound, StoreError
 from cold_frame.integrations.claude_code import GLOBAL_KEY, project_key
 from cold_frame.models import Scope, SearchHit
 from cold_frame.observability import get_logger
@@ -30,6 +30,10 @@ from cold_frame.store.sqlite import _DB_ERROR, _DB_OPERATIONAL, _connect  # keye
 from cold_frame.write.admission import PII_CATEGORIES
 
 _log = get_logger(__name__)
+
+# any "can't open this DB" error from a keyed open: a driver error (wrong key / corrupt) OR a
+# StoreError (missing [crypto] extra). Flattened to a tuple of exception classes for `except`.
+_OPEN_ERR: tuple[type[Exception], ...] = (*_DB_ERROR, StoreError)
 
 
 def _resolve_db(args: argparse.Namespace) -> str:
@@ -76,7 +80,9 @@ def _cmd_add(args: argparse.Namespace) -> int:
     # a secret was caught pre-disk — report it (never echo the value, I16)
     for bspan in res.blocked:
         print(f"! blocked {bspan.placeholder} (a secret was detected — not stored)")
-    if not res.added and not res.held and not res.blocked:
+    for dup in res.deduped:  # recognized as a restatement of an existing fact (merged, reinforced)
+        print(f"= {dup[:8]}  (already known — reinforced)")
+    if not (res.added or res.held or res.blocked or res.deduped):
         print("nothing extracted")
     return 0
 
@@ -459,8 +465,11 @@ def _cmd_hook_uninstall(args: argparse.Namespace) -> int:
                 removed.append(event)
             hooks[event] = kept
         if settings:
-            with contextlib.suppress(OSError):
+            try:
                 path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
+            except OSError as exc:  # don't report success if the hooks weren't actually removed
+                print(f"hook uninstall: couldn't write {path} ({exc.strerror}) — hooks NOT removed")
+                return 1
     print(f"removed hooks: {', '.join(removed) or 'none'}")
     print("  (your memory DB is untouched — `cold-frame` still works directly)")
     return 0
@@ -567,7 +576,11 @@ def _db_is_busy(path: Path, key: str | None) -> bool:
         finally:
             conn.close()
     except _DB_OPERATIONAL:
-        return True
+        return True  # genuinely locked by another process (I17)
+    except _OPEN_ERR:
+        # can't even open it (wrong key / corrupt / missing [crypto]) — not a lock. Treat as
+        # not-busy so the import (which backs up dst first) proceeds rather than crashing here.
+        return False
 
 
 def _cmd_import(args: argparse.Namespace) -> int:
@@ -593,7 +606,7 @@ def _cmd_import(args: argparse.Namespace) -> int:
             )
         finally:
             ro.close()
-    except _DB_ERROR:
+    except _OPEN_ERR:
         kh = " (wrong $COLD_FRAME_KEY?)" if key else " (encrypted snapshot? set $COLD_FRAME_KEY)"
         print(f"import: {src} is not a valid cold-frame snapshot{kh}")
         return 1

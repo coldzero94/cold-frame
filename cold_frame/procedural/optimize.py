@@ -43,7 +43,11 @@ _TO_OPTIMIZE = re.compile(r"</?TO_OPTIMIZE>")
 
 
 def _slot_names(text: str) -> set[str]:
-    return {m.group(1) for m in _SLOT.finditer(text)}
+    # Strip ESCAPED doubled braces first: {{foo}} is a literal, not a slot. Without this, a
+    # previously-healed {{foo}} is re-read as a required variable {foo} → spurious VarHealerError +
+    # brace accumulation ({{foo}}→{{{foo}}}) when healed content is fed back round-to-round (P5).
+    unescaped = text.replace("{{", "").replace("}}", "")
+    return {m.group(1) for m in _SLOT.finditer(unescaped)}
 
 
 def heal_vars(current: str, improved: str) -> str:

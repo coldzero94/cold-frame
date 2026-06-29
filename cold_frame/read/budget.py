@@ -38,7 +38,9 @@ def pack_budget(
             else:
                 used = tokens
             continue
-        if used + tokens <= budget:  # whole fact fits → include; else skip + keep trying
+        if used + tokens <= budget:  # whole fact fits → include
             kept.append(hit)
             used += tokens
+        else:  # a retrievable fact was withheld to fit the cap → flag it (SPEC's `dropped`)
+            truncated = True
     return kept, used, truncated

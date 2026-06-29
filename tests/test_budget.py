@@ -36,6 +36,7 @@ def test_budget_caps_tokens_and_keeps_top_rank(memory: Memory) -> None:
     assert sum(c.count(h.note.content) for h in res.hits) == res.used_tokens
     assert res.hits[0].note.id == full.hits[0].note.id  # highest-rank fact preserved
     assert len(res.hits) < len(full.hits)  # lower-rank facts dropped by budget
+    assert res.truncated is True  # ...and the withholding is flagged (caller knows facts dropped)
 
 
 def test_budget_guarantees_nonempty_even_when_top_exceeds(memory: Memory) -> None:

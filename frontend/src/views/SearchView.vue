@@ -23,6 +23,7 @@ watch([q, asOf], ([val]) => {
     seq += 1 // invalidate any in-flight request so it can't repopulate the just-cleared box
     hits.value = []
     searched.value = false
+    loading.value = false // ...and clear the spinner: the invalidated request won't reset it
     return
   }
   timer = setTimeout(() => run(val.trim()), 250)

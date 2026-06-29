@@ -176,3 +176,22 @@ def test_procedural_lookup_is_scope_exact(db_path: str, frozen_clock: FrozenCloc
     broad = Memory(db_path, embedder=HashEmbedder(), llm=None, clock=frozen_clock)  # Scope()
     assert broad.get_procedural("tone") == ""  # scope isolation: no cross-scope match
     assert narrow.get_procedural("tone") == "Narrow {u}."  # its own scope still resolves
+
+
+def test_heal_vars_idempotent_on_escaped_literal() -> None:
+    # a previously-healed {{foo}} (escaped literal) must NOT be re-read as a required var on the
+    # next round: no spurious VarHealerError, and no brace accumulation ({{foo}}→{{{foo}}}).
+    # current="Hello {user}" (required={user}); the edit adds a non-required {foo} → escaped literal
+    once = heal_vars("Hello {user}", "Hello {user}, see {foo}")
+    assert once == "Hello {user}, see {{foo}}"
+    # round 2: feed the healed text back as `current`; dropping the {{foo}} LITERAL must NOT raise
+    # (foo was never a required var — the fix strips {{}} before slot detection)
+    twice = heal_vars(once, "Hello {user}")
+    assert twice == "Hello {user}"
+    # and re-healing identical content is stable (no {{foo}}→{{{foo}}} accumulation)
+    assert heal_vars(once, once) == once
+
+
+def test_heal_vars_still_catches_a_real_dropped_variable() -> None:
+    with pytest.raises(VarHealerError):
+        heal_vars("Hello {user}", "Hello there")  # a genuine single-brace slot was dropped
