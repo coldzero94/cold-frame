@@ -1,5 +1,10 @@
 # Coldframe — P1 Readiness Gaps
 
+> **HISTORICAL (pre-build, RESOLVED).** This was the readiness checklist written *before* P1. Every
+> blocker below is closed: the repo is git-initialized + scaffolded, the 7 contract conflicts are
+> ratified in code (CLAUDE.md §1 conflict rule), ruff/mypy/pytest/CI/pre-commit are wired, and
+> P1–P6 are built (~370 tests green). Kept only as a record of the pre-build state — not current.
+
 # Coldframe — P1 준비도 GAPS (알려진 TODO 외)
 
 **ready_for_p1 판정: ❌ NO.** 문서는 매우 충실하고 아키텍처는 일관되지만, 5개 `docs/build/*.md` 스펙이 서로 독립적으로 작성되어 **TDD가 가장 먼저 닿는 seam에서 상호 모순된 계약**으로 굳어 있다. 7개 blocker를 비준하기 전에는 첫 테스트조차 쓸 수 없다. 각 blocker는 잘못 추측하면 엔진 전체 + eval golden-set 재작업을 강제한다. (저장소 상태 직접 확인: git 미초기화, `cold_frame/`·`tests/` 없음, pyproject에 `[tool.pytest]/[tool.ruff]/[tool.mypy]` 없음, dev extra는 pytest뿐, eval 하버스가 쓰는 `pyyaml` 미등록.)

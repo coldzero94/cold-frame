@@ -105,6 +105,8 @@ def _add_impl(mem: Memory, text: str) -> dict[str, Any]:
         ],
         "held": [n.id for n in res.held],
         "blocked": [b.reason for b in res.blocked],
+        # content-free PII report (I16) — parity with the CLI; empty unless redaction is configured
+        "redacted": [{"category": r.category, "count": r.count} for r in res.redacted],
     }
     _drain_captures(mem)  # also drain pending captures on an explicit add
     return out
@@ -134,7 +136,7 @@ async def search_memory(query: str, k: int = 10) -> dict[str, Any]:
 
 
 async def add_memory(text: str) -> dict[str, Any]:
-    """MCP tool: add a fact/messages; returns {added, held, blocked}."""
+    """MCP tool: add a fact/messages; returns {added, held, blocked, redacted}."""
     import anyio
 
     mem = _require_memory()

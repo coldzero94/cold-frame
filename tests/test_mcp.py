@@ -55,6 +55,8 @@ def test_add_then_search_impl_roundtrip(db_path: str) -> None:
     added = mcpmod._add_impl(mem, "I prefer dark roast coffee")
     assert added["added"] and added["added"][0]["content"] == "I prefer dark roast coffee"
     assert added["added"][0]["deeplink"].endswith(f"/fact/{added['added'][0]['id']}")
+    # agent-facing parity with the CLI: the admission reports are always present (content-free)
+    assert added["blocked"] == [] and added["redacted"] == []
 
     res = mcpmod._search_impl(mem, "coffee")
     assert res["hits"] and "dark roast" in res["hits"][0]["content"]
