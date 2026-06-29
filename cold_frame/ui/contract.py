@@ -24,6 +24,7 @@ class StrengthDict(TypedDict):
     value: float
     band: Band
     at_risk: bool
+    imminent: bool  # fading sub-label: archive-imminent (S < FADING_EMBER)
 
 
 class NoteBriefDict(TypedDict):
@@ -93,6 +94,7 @@ class FieldNoteDict(TypedDict):
     s: float
     band: Band
     atRisk: bool
+    imminent: bool  # fading sub-label: archive-imminent (S < FADING_EMBER)
     importance: float
     access: int
     pinned: bool

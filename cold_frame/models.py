@@ -120,6 +120,7 @@ class Strength(BaseModel):
     value: float  # S ∈ [0, 1]
     band: Band
     at_risk: bool  # confidence<0.4 OR (now - last_accessed) > 60d
+    imminent: bool = False  # fading sub-label: S < FADING_EMBER → archive-imminent (sub-state)
 
 
 class BlockedSpan(BaseModel):

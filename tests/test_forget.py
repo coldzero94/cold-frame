@@ -193,3 +193,29 @@ def test_auto_consolidate_retriggers_each_window(db_path: str, frozen_clock: Fro
         "SELECT count(*) FROM jobs WHERE kind='consolidate' AND status='done'"
     ).fetchone()[0]
     assert done >= 2  # two windows → two consolidate cycles, no manual call
+
+
+def test_strength_imminent_subflag_for_archive_imminent_notes() -> None:
+    # FADING_EMBER sub-label: a fading note below the threshold is flagged archive-imminent; a
+    # healthy note is not. (Strength is computed, not stored — no round-trip concern.)
+    from cold_frame.read.strength import compute_strength
+
+    t0 = datetime(2025, 1, 1, tzinfo=UTC)
+    now = datetime(2026, 6, 1, tzinfo=UTC)
+
+    def _n(**fields: object) -> Note:
+        return Note(
+            id="x",
+            content="c",
+            memory_type="semantic",
+            scope=Scope(),
+            created_at=t0,
+            sources=[Source(kind="message", ref="m", content_hash="h", observed_at=t0)],
+            **fields,  # type: ignore[arg-type]
+        )
+
+    weak = _n(decay_S=0.2, importance=0.0, last_accessed=t0)  # old + low-value + fast decay
+    s = compute_strength(weak, now)
+    assert s.band == "fading" and s.imminent is True
+    healthy = _n(importance=0.9, last_accessed=now)
+    assert compute_strength(healthy, now).imminent is False

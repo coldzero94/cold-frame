@@ -100,7 +100,12 @@ def _note_brief(memory: Memory, note: Note) -> NoteBriefDict:
         "memory_type": note.memory_type,
         "status": note.status,
         "confidence": note.confidence,
-        "strength": {"value": round(s.value, 3), "band": s.band, "at_risk": s.at_risk},
+        "strength": {
+            "value": round(s.value, 3),
+            "band": s.band,
+            "at_risk": s.at_risk,
+            "imminent": s.imminent,
+        },
     }
 
 
@@ -135,6 +140,7 @@ def memory_field_payload(memory: Memory) -> MemoryFieldResponse:
                 "s": round(s.value, 4),
                 "band": s.band,
                 "atRisk": s.at_risk,
+                "imminent": s.imminent,
                 "importance": n.importance,
                 "access": n.access_count,
                 "pinned": n.pinned,

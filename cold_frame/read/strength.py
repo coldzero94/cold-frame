@@ -17,6 +17,7 @@ from cold_frame.constants import (
     AT_RISK_STALE_DAYS,
     BAND_BUDDING,
     BAND_EVERGREEN,
+    FADING_EMBER,
     W_ACCESS,
     W_IMPORTANCE,
     W_RETRIEVABILITY,
@@ -38,4 +39,7 @@ def compute_strength(note: Note, now: datetime) -> Strength:
         "evergreen" if value >= BAND_EVERGREEN else "budding" if value >= BAND_BUDDING else "fading"
     )
     at_risk = note.confidence < AT_RISK_CONFIDENCE or dt_days > AT_RISK_STALE_DAYS
-    return Strength(value=value, band=band, at_risk=at_risk)
+    # FADING_EMBER sub-label: a fading note this weak is archive-imminent (a fading sub-state, NOT a
+    # 4th band) — surfaced so "about to be forgotten" is visible (the decay-made-visible thesis).
+    imminent = band == "fading" and value < FADING_EMBER
+    return Strength(value=value, band=band, at_risk=at_risk, imminent=imminent)

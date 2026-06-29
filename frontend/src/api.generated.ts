@@ -57,6 +57,7 @@ export interface Strength {
   value: number
   band: Band
   at_risk: boolean
+  imminent: boolean
 }
 /**
  * This interface was referenced by `ColdframeApiContract`'s JSON-Schema
@@ -123,6 +124,7 @@ export interface FieldNote {
   s: number
   band: Band
   atRisk: boolean
+  imminent: boolean
   importance: number
   access: number
   pinned: boolean

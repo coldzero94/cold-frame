@@ -159,6 +159,9 @@
         "atRisk": {
           "type": "boolean"
         },
+        "imminent": {
+          "type": "boolean"
+        },
         "importance": {
           "type": "number"
         },
@@ -179,6 +182,7 @@
         "s",
         "band",
         "atRisk",
+        "imminent",
         "importance",
         "access",
         "pinned",
@@ -466,12 +470,16 @@
         },
         "at_risk": {
           "type": "boolean"
+        },
+        "imminent": {
+          "type": "boolean"
         }
       },
       "required": [
         "value",
         "band",
-        "at_risk"
+        "at_risk",
+        "imminent"
       ],
       "type": "object"
     },

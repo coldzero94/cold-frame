@@ -59,6 +59,7 @@ def test_memory_field_payload_shape(memory: Memory) -> None:
         "s",
         "band",
         "atRisk",
+        "imminent",
         "importance",
         "access",
         "pinned",
