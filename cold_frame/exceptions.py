@@ -38,7 +38,9 @@ class StoreError(ColdFrameError):
 class PolicyError(ColdFrameError):
     """A local-only policy was violated (non-local LLM for a secret-span eval, I7). Raised by
     ``llm.assert_local_for``; that guard is DEFERRED with admission/I7 (D25) so nothing in v1
-    dispatches it yet — it's tested and ready for when admission lands (v1.1/hosted)."""
+    dispatches it yet. The class is hierarchy-checked in the smoke test, but the guard BEHAVIOR has
+    no test yet (the admission/remote tests are deferred with I6/I7) — re-activate when admission
+    lands (v1.1/hosted)."""
 
 
 class ToolError(ColdFrameError):

@@ -4,8 +4,9 @@ Non-destructive (archive, not delete — I2); pinned AND high-importance never a
 Convergent at a fixed clock (re-run with the same ``now`` = no-op); progressive decay
 across later clocks is expected and bounded by the caps. Archive fires when over a
 per-scope/type capacity cap (lowest ``archive_score`` first) OR on decay (display
-``S < 0.33`` AND ``archive_score < 0.20``). The LLM episodic→semantic summary is P4-2;
-this is the deterministic forgetting core.
+``S < 0.33`` AND ``archive_score < 0.20``). On top of that deterministic cap/decay core, this module
+also performs the LLM episodic→semantic roll-up (``_consolidate_episodic``, LLM-gated) — atomic +
+convergent via the ``derived_from`` markers.
 """
 
 from __future__ import annotations
@@ -165,14 +166,13 @@ class Consolidator:
         consumed = {
             e.dst_id
             for e in self._store.neighbors([n.id for n in episodic], relations=["derived_from"])
-            if e.relation == "derived_from"
-        }
+        }  # the store already filtered to derived_from edges
         fresh = [n for n in episodic if n.id not in consumed]
         if len(fresh) < 2:
             return []
 
-        sim = self._embedder.embed([n.content for n in fresh])  # (m, dim), L2-normalized
-        cos = sim @ sim.T
+        vecs = self._embedder.embed([n.content for n in fresh])  # (m, dim), L2-normalized
+        cos = vecs @ vecs.T
         assigned: set[str] = set()
         merged: list[str] = []
         for i, seed in enumerate(fresh):

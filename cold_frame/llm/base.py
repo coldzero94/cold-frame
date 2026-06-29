@@ -45,10 +45,10 @@ class TaskTag(StrEnum):
 
     EXTRACT = "extract"  # write/extract.py — chat → candidate facts
     ADMISSION_TIEBREAK = "admission_tiebreak"  # ambiguous secret/PII span (MUST be local, I7)
-    DEDUP_BATCH = "dedup_batch"  # write/dedup.py — ambiguous near-dup batch
-    CONFLICT_JUDGE = "conflict_judge"  # write/conflict.py — dup-vs-contradiction
+    DEDUP_BATCH = "dedup_batch"  # write/core._dedup_judge — near-dup (judged one pair at a time)
+    CONFLICT_JUDGE = "conflict_judge"  # write/core._conflict_judge — dup-vs-contradiction
     CONSOLIDATE_SUMMARY = "consolidate_summary"  # forget/consolidate.py — episodic → semantic
-    RERANK_JUDGE = "rerank_judge"  # read/rerank.py — LLM-boolean rerank (API path)
+    RERANK_JUDGE = "rerank_judge"  # read/rerank — LLM rerank (deferred extra, not wired in v1)
     GRADIENT_DIAGNOSE = "gradient_diagnose"  # procedural/optimize.py
     GRADIENT_EDIT = "gradient_edit"  # procedural/optimize.py
     SCOPE_CLASSIFY = "scope_classify"  # api.py — global vs project tier for an auto-captured fact
@@ -109,8 +109,10 @@ class LLM(ABC):
 def assert_local_for(task: TaskTag, llm: LLM) -> None:
     """Enforce I-LOCAL in one place: a secret span NEVER reaches a remote endpoint (I7).
 
-    DEFERRED in v1 (D25): admission/I7 isn't wired, so no production path calls this yet — it is
-    unit-tested and ready to gate the secret-span eval when admission lands (v1.1/hosted).
+    DEFERRED in v1 (D25): admission/I7 isn't wired, so no production path calls this yet, and the
+    guard behavior is NOT yet under test (only PolicyError's class hierarchy is smoke-checked; the
+    admission/remote tests are deferred with I6/I7). Ready to gate the secret-span eval when
+    admission lands (v1.1/hosted).
     """
     if task in LOCAL_ONLY_TASKS and not llm.is_local:
         raise PolicyError(f"task={task.value} requires a local LLM (D4/R11); got {llm.name!r}")

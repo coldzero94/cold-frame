@@ -295,7 +295,10 @@ class _Handler(BaseHTTPRequestHandler):
         elif path.startswith("/api/fact/") and path.endswith("/history"):
             fid = path[len("/api/fact/") : -len("/history")]
             hist = fact_history_payload(memory, fid)
-            self._json(200, hist) if hist is not None else self._json(404, {"error": "not_found"})
+            if hist is not None:
+                self._json(200, hist)
+            else:
+                self._json(404, {"error": "not_found"})
         elif path.startswith("/api/fact/"):
             data = fact_payload(memory, path[len("/api/fact/") :])
             if data is not None:

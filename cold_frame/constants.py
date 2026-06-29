@@ -58,10 +58,9 @@ FANOUT: Final[int] = 4  # per-signal over-fetch multiplier (k * FANOUT)
 FANOUT_MIN: Final[int] = 20  # floor on per-signal candidate count
 FANOUT_MAX: Final[int] = 200  # ceiling on per-signal candidate count
 # edge promiscuity down-weight: 1 / (1 + EDGE_PROMISCUITY_PENALTY·(n-1)^2)
+# RESERVED — for the dormant RRF edge channel (not wired in v1; see read/fuse.py).
 EDGE_PROMISCUITY_PENALTY: Final[float] = 0.001
-# meta boost: score *= (1 + w) then clamp [0, 1]
-META_BOOST_CLAMP_MIN: Final[float] = 0.0
-META_BOOST_CLAMP_MAX: Final[float] = 1.0
+# (meta boost lives in read/rerank.py with its own +15% factor clamp — no constant needed here)
 
 # ── dedup cosine bands (SPEC §4 / §6 Triage; api-contract) ──
 DEDUP_NEAR_DUP: Final[float] = 0.82  # cosine >= 0.82 → near-dup candidate (LLM band floor)

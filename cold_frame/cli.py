@@ -256,7 +256,11 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     print(f"embedder={h['embedder_id']} dim={h['dim']}  stale_vectors={h['stale_vectors']}")
     if h["stale_vectors"]:  # vectors from an old embedder → not semantically searchable yet
         print(f"  → run '{PKG} reembed' to re-index {h['stale_vectors']} stale vector(s)")
-    print(f"ui_port={branding.UI_PORT}")
+    # report the RESOLVED port the running UI recorded (deep-links use it), not just the default
+    resolved_port = branding.UI_PORT
+    with contextlib.suppress(OSError, ValueError):
+        resolved_port = int(branding.UI_PORTFILE.read_text().strip())
+    print(f"ui_port={resolved_port}")
     ok = (
         bool(h["counts_match"])
         and h["integrity"] == "ok"
@@ -743,15 +747,17 @@ def build_parser() -> argparse.ArgumentParser:
     hook_sub.add_parser(
         "stop", help="enqueue the session transcript for auto-capture"
     ).set_defaults(func=_cmd_hook_capture)
-    p_hi = hook_sub.add_parser("install", help="wire the recall hook into Claude Code settings")
+    p_hi = hook_sub.add_parser(
+        "install", help="wire the recall + capture hooks into Claude Code settings"
+    )
     p_hi.add_argument(
         "--project", action="store_true", help="install into ./.claude (else ~/.claude)"
     )
     p_hi.set_defaults(func=_cmd_hook_install)
-    p_hu = hook_sub.add_parser("uninstall", help="remove the hooks + capture directive")
+    p_hu = hook_sub.add_parser("uninstall", help="remove Coldframe's recall + capture hooks")
     p_hu.add_argument("--project", action="store_true", help="from ./.claude (else ~/.claude)")
     p_hu.set_defaults(func=_cmd_hook_uninstall)
-    hook_sub.add_parser("status", help="show whether the recall hook is installed").set_defaults(
+    hook_sub.add_parser("status", help="show whether Coldframe's hooks are installed").set_defaults(
         func=_cmd_hook_status
     )
     sub.add_parser("setup", help="first-run setup").set_defaults(func=_cmd_setup)

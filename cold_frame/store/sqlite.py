@@ -1089,12 +1089,7 @@ class SQLiteStore(Store):
                 # if a same-key pending sibling appeared while we ran, re-pend WITHOUT the key to
                 # avoid the idx_jobs_dedup collision (keeps backoff; the sibling runs, idempotent)
                 dk = row["dedup_key"]
-                collide = dk is not None and (
-                    self._conn.execute(
-                        "SELECT 1 FROM jobs WHERE status='pending' AND dedup_key=? LIMIT 1", (dk,)
-                    ).fetchone()
-                    is not None
-                )
+                collide = self._has_pending_dedup(dk)
                 self._conn.execute(
                     "UPDATE jobs SET status='pending', run_after=?, last_error=?, dedup_key=?, "
                     "updated_at=? WHERE id=?",
@@ -1115,6 +1110,17 @@ class SQLiteStore(Store):
             self._conn.execute("SELECT COUNT(*) AS n FROM jobs WHERE status='dead'").fetchone()["n"]
         )
 
+    def _has_pending_dedup(self, dedup_key: str | None) -> bool:
+        """True if a PENDING job already holds ``dedup_key`` (the idx_jobs_dedup unique scope)."""
+        if dedup_key is None:
+            return False
+        return (
+            self._conn.execute(
+                "SELECT 1 FROM jobs WHERE status='pending' AND dedup_key=? LIMIT 1", (dedup_key,)
+            ).fetchone()
+            is not None
+        )
+
     def requeue_dead(self, *, now: datetime) -> int:
         iso = _to_iso(now)
         # A blanket UPDATE dead->pending crashes on idx_jobs_dedup (UNIQUE WHERE status='pending')
@@ -1129,12 +1135,7 @@ class SQLiteStore(Store):
             ).fetchall()
             for row in dead:
                 dk = row["dedup_key"]
-                collide = dk is not None and (
-                    self._conn.execute(
-                        "SELECT 1 FROM jobs WHERE status='pending' AND dedup_key=? LIMIT 1", (dk,)
-                    ).fetchone()
-                    is not None
-                )
+                collide = self._has_pending_dedup(dk)
                 self._conn.execute(
                     "UPDATE jobs SET status='pending', attempts=0, run_after=?, locked_by=NULL, "
                     "locked_at=NULL, dedup_key=?, updated_at=? WHERE id=?",
@@ -1146,7 +1147,7 @@ class SQLiteStore(Store):
         row = self._conn.execute(
             "SELECT MIN(created_at) AS oldest FROM jobs WHERE status='pending'"
         ).fetchone()
-        oldest = row["oldest"] if row else None
+        oldest = row["oldest"]  # MIN() always returns one row (oldest is NULL when none pending)
         return None if not oldest else (now - _from_iso(str(oldest))).total_seconds()
 
     # ── event log / export ──────────────────────────────────────────────────

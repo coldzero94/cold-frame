@@ -125,7 +125,8 @@ class TriageResponse(TypedDict):
     items: list[TriageItemDict]
 
 
-# The endpoints whose response shapes are generated (fact returns FactDetailDict | null).
+# Every wire shape fed to the schema generator — top-level response envelopes plus their nested
+# component types (e.g. the fact endpoint returns FactDetailDict | null).
 CONTRACT_TYPES = (
     StrengthDict,
     NoteBriefDict,
