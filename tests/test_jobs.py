@@ -126,11 +126,13 @@ def test_worker_failing_handler_reschedules(store_clock: tuple[SQLiteStore, _Clo
     worker = Worker(store, clock=clock, worker_id="w")
 
     def _boom(job: Job) -> None:
-        raise RuntimeError("handler failed")
+        raise RuntimeError("handler failed: leaked-secret-AKIA123")  # message must NOT be persisted
 
     worker.run_once({"consolidate": _boom})
-    status = store._conn.execute("SELECT status FROM jobs WHERE id=?", (jid,)).fetchone()[0]
-    assert status == "pending"  # rescheduled (backoff), never dropped
+    row = store._conn.execute("SELECT status, last_error FROM jobs WHERE id=?", (jid,)).fetchone()
+    assert row["status"] == "pending"  # rescheduled (backoff), never dropped
+    # TYPE only — str(exc) (which may echo content) must not be persisted to last_error
+    assert row["last_error"] == "RuntimeError"
 
 
 def _drive_to_dead(store: SQLiteStore, clock: _Clock, payload: dict[str, int]) -> str:

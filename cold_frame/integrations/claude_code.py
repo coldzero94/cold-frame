@@ -56,17 +56,51 @@ def _git_remote(config_text: str) -> str | None:
     return None
 
 
+def _read_text(p: Path) -> str | None:
+    try:
+        return p.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return None
+
+
+def _git_dir_from_pointer(gitfile: Path) -> Path | None:
+    """A linked worktree/submodule has ``.git`` as a FILE: ``gitdir: <path>`` → resolve it."""
+    text = _read_text(gitfile)
+    for line in (text or "").splitlines():
+        if line.startswith("gitdir:"):
+            p = Path(line.split(":", 1)[1].strip())
+            return p if p.is_absolute() else (gitfile.parent / p).resolve()
+    return None
+
+
+def _remote_from_git_dir(gitdir: Path) -> str | None:
+    """remote.origin.url for a git dir, following a worktree's ``commondir`` to the shared repo."""
+    cfg = _read_text(gitdir / "config")  # submodules have their own config+remote
+    if cfg and (remote := _git_remote(cfg)):
+        return remote
+    common = _read_text(gitdir / "commondir")  # a linked worktree's gitdir has no config of its own
+    if common:
+        rel = common.strip()
+        common_dir = Path(rel) if Path(rel).is_absolute() else (gitdir / rel).resolve()
+        shared = _read_text(common_dir / "config")
+        if shared:
+            return _git_remote(shared)
+    return None
+
+
 def _project_basis(cwd: str) -> str:
-    """The stable identity of the project at ``cwd``: git remote URL → git repo root → cwd."""
+    """The stable identity of the project at ``cwd``: git remote URL → git repo root → cwd.
+
+    Resolves the remote even when ``.git`` is a FILE (a linked worktree or submodule) so a worktree
+    and its main checkout share ONE project_key instead of being keyed by divergent checkout paths.
+    """
     d = Path(cwd)
     for parent in (d, *d.parents):
         gitdir = parent / ".git"
         if gitdir.exists():
-            cfg = gitdir / "config"
-            if gitdir.is_dir() and cfg.is_file():
-                remote = _git_remote(cfg.read_text(encoding="utf-8", errors="ignore"))
-                if remote:
-                    return remote
+            real = gitdir if gitdir.is_dir() else _git_dir_from_pointer(gitdir)
+            if real is not None and (remote := _remote_from_git_dir(real)):
+                return remote
             return str(parent)  # a git repo without an origin remote → the repo root path
     return str(d)  # not a git repo → the working directory itself
 

@@ -125,6 +125,25 @@ def test_add_note_provenance_guard_rejects_sourceless_active(store: SQLiteStore)
     assert store.get_notes(["bad"]) == []
 
 
+def test_supersede_provenance_guard_rejects_sourceless_active(store: SQLiteStore) -> None:
+    """I14: supersede also mints an active note → same guard applies (was a missed INSERT path)."""
+    store.add_note(_note("old", "works at Vessl", T1), _emb("works at Vessl"))
+    bad_new = Note(
+        id="new",
+        content="works at Anthropic",
+        memory_type="semantic",
+        scope=Scope(),
+        created_at=T2,
+        valid_at=T2,
+        confidence=1.0,
+        sources=[],  # active + high-confidence + no provenance → must be refused
+    )
+    with pytest.raises(StoreError):
+        store.supersede("old", bad_new, _emb(bad_new.content))
+    assert store.get_notes(["new"]) == []  # rejected before any write
+    assert store.get_notes(["old"])[0].status == "active"  # old untouched
+
+
 def test_add_edge_and_neighbors_with_relation_filter(store: SQLiteStore) -> None:
     store.add_note(_note("a", "alpha topic", T1), _emb("alpha topic"))
     store.add_note(_note("b", "beta topic", T1), _emb("beta topic"))

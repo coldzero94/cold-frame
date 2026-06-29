@@ -232,5 +232,11 @@ class Consolidator:
             self._store.add_edge(
                 Edge(src_id=summary.id, dst_id=m.id, relation="derived_from", created_at=at)
             )
-        self._store.cold_demote([m.id for m in members], factor=CONSOLIDATE_DEMOTE_FACTOR)
+        # spare pinned / high-importance members from the decay bump — they signal "keep prominent",
+        # and the capacity/decay archival pass already exempts them; mirror that exemption here.
+        demote = [
+            m.id for m in members if not m.pinned and m.importance < ARCHIVE_PROTECT_IMPORTANCE
+        ]
+        if demote:
+            self._store.cold_demote(demote, factor=CONSOLIDATE_DEMOTE_FACTOR)
         return summary.id

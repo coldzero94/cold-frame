@@ -158,7 +158,11 @@ def _where_clauses(
         clauses.append(f"({alias}.valid_at IS NULL OR {alias}.valid_at <= ?)")
         clauses.append(f"({alias}.invalid_at IS NULL OR {alias}.invalid_at > ?)")
         params.extend([iso, iso])
-    else:
+    elif "archived" not in statuses:
+        # default "currently valid + not expired" so a since-invalidated note never leaks (§5). BUT
+        # when the caller explicitly asked for archived rows (include_archived, no as_of), do NOT
+        # apply these in-effect gates — archived notes always have expired_at in the past, so the
+        # gate would nullify the inclusion and silently return nothing.
         now_iso = _to_iso(now)
         clauses.append(f"({alias}.invalid_at IS NULL OR {alias}.invalid_at > ?)")
         clauses.append(f"({alias}.expired_at IS NULL OR {alias}.expired_at > ?)")
@@ -353,11 +357,10 @@ class SQLiteStore(Store):
         self.set_meta("hlc_last", hlc)
         return hlc
 
-    # ── atomic write (ALL grains in one txn, I3) ────────────────────────────
-    def add_note(self, note: Note, emb: np.ndarray | None) -> None:
-        # Provenance invariant pre-commit guard (I14): an active, non-quarantined,
-        # high-confidence note MUST carry >=1 source. The DB trigger only covers the
-        # UPDATE→active path; this guards the INSERT path (the trigger does not fire on INSERT).
+    def _assert_provenance(self, note: Note) -> None:
+        # Provenance invariant pre-commit guard (I14): an active, non-quarantined, high-confidence
+        # note MUST carry >=1 source. The DB trigger only covers the UPDATE→active path; this guards
+        # every INSERT path (the trigger does not fire on INSERT) — add_note AND supersede.
         if (
             note.status == "active"
             and not note.quarantined
@@ -368,6 +371,10 @@ class SQLiteStore(Store):
                 f"provenance invariant (I14): active note {note.id} "
                 f"(confidence {note.confidence}) needs >=1 source"
             )
+
+    # ── atomic write (ALL grains in one txn, I3) ────────────────────────────
+    def add_note(self, note: Note, emb: np.ndarray | None) -> None:
+        self._assert_provenance(note)
         with self._txn(f"add_note({note.id})"):  # ONE txn: notes+fts+vec+sources+history+event (I3)
             rowid = self._insert_note_row(note)
             self._insert_fts(rowid, note)
@@ -545,6 +552,7 @@ class SQLiteStore(Store):
         if not existing:
             raise NoteNotFound(old_id)
         old = existing[0]
+        self._assert_provenance(new)  # supersede mints an active note → same I14 guard as add_note
         with self._txn(f"supersede({old_id})"):
             now = self._clock.now()
             # archive old: valid-time end = new.valid_at, transaction-time end = now (C3);

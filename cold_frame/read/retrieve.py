@@ -116,8 +116,10 @@ class RetrievePipeline:
 
         # REINFORCE only emitted hits, best-effort (read path stays fast, SPEC §5). `reinforce` is
         # False for the local UI: surfacing memories in a viewer is NOT the agent re-accessing them,
-        # and an ungated GET must not let a drive-by page bump decay/access (write-via-GET).
-        if hits and reinforce:
+        # and an ungated GET must not let a drive-by page bump decay/access (write-via-GET). Also
+        # skipped on a historical (as_of) read: surfacing a past belief must not bump a
+        # since-archived note's decay/access (it would falsify recency on a later revive).
+        if hits and reinforce and as_of is None:
             try:
                 self._store.reinforce([h.note.id for h in hits], now=self._clock.now())
             except (

@@ -47,8 +47,11 @@ class Worker:
                 extra={"job_id": job.id, "kind": job.kind, "exc_type": type(exc).__name__},
             )
             try:
+                # store only the exception TYPE, never str(exc): the message can echo input (e.g. a
+                # pydantic ValidationError quotes input_value) and last_error is durable DB state
+                # copied into snapshots/exports — mirrors the content-free log above (I16 spirit).
                 self._store.fail_job(
-                    job.id, error=f"{type(exc).__name__}: {exc}", retry_after=None, worker=self._id
+                    job.id, error=type(exc).__name__, retry_after=None, worker=self._id
                 )
             except StoreError:  # even fail_job failed → leave running; stale-reclaim recovers it
                 _log.error("fail_job_failed", extra={"job_id": job.id, "kind": job.kind})

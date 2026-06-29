@@ -119,3 +119,24 @@ def test_search_as_of_returns_belief_at_that_time(memory: Memory) -> None:
 
     mid_hits = memory.search("where do I work", as_of=mid).hits
     assert mid_hits and "Vessl" in mid_hits[0].note.content  # what was TRUE at `mid`
+
+
+# ── audit fixes: archived recall + historical-read must not reinforce ──────────
+def test_search_include_archived_surfaces_a_forgotten_note(memory: Memory) -> None:
+    # include_archived is a documented public param; without as_of it was silently a no-op because
+    # the "currently in effect" gate filtered archived rows back out. It must surface them.
+    nid = memory.add("I deploy with ship.sh").added[0].id
+    memory.forget(nid)  # archive (not delete)
+    assert memory.search("deploy").hits == []  # default excludes archived
+    hits = memory.search("deploy", include_archived=True).hits
+    assert any(h.note.id == nid for h in hits)  # now revivable via search
+
+
+def test_as_of_search_does_not_reinforce_archived_belief(memory: Memory) -> None:
+    # a historical (rewind) read must not bump decay/access of the surfaced note.
+    nid = memory.add("I deploy with ship.sh").added[0].id
+    memory.search("deploy")  # a normal read reinforces
+    bumped = memory.get(nid).access_count
+    assert bumped >= 1
+    memory.search("deploy", as_of=datetime(2099, 1, 1, tzinfo=UTC))  # historical read
+    assert memory.get(nid).access_count == bumped  # unchanged — no reinforce on as_of

@@ -332,6 +332,25 @@ def test_project_key_is_git_remote_based(tmp_path: Path) -> None:
     assert project_key(str(a)) != project_key(str(c))  # different repo → different tag
 
 
+def test_project_key_shares_across_git_worktree(tmp_path: Path) -> None:
+    # a linked worktree has .git as a FILE ('gitdir: <path>'); it must resolve to the SHARED repo's
+    # remote (via commondir) so the worktree and the main checkout get ONE project_key, not two.
+    from cold_frame.integrations.claude_code import project_key
+
+    main = tmp_path / "main"
+    (main / ".git").mkdir(parents=True)
+    (main / ".git" / "config").write_text('[remote "origin"]\n\turl = git@github.com:me/app.git\n')
+    wt_gitdir = main / ".git" / "worktrees" / "wt"
+    wt_gitdir.mkdir(parents=True)
+    (wt_gitdir / "commondir").write_text("../..\n")  # → main/.git (holds the remote)
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    (wt / ".git").write_text(f"gitdir: {wt_gitdir}\n")  # the worktree's .git is a FILE pointer
+
+    assert project_key(str(wt)) == project_key(str(main))  # shared remote → same tag
+    assert project_key(str(wt)).startswith("proj:")  # a real project tag, not the cwd fallback
+
+
 def test_auto_capture_scopes_by_project_with_global_tier(tmp_path: Path) -> None:
     from cold_frame.integrations.claude_code import GLOBAL_KEY, project_key
     from cold_frame.models import Scope

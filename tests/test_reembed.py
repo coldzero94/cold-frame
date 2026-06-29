@@ -115,3 +115,33 @@ def test_local_embedder_requires_extra() -> None:
 
     with pytest.raises(ImportError, match="local-llm"):  # helpful 'install the extra' message
         SentenceTransformerEmbedder()
+
+
+def test_reembed_rolls_back_on_mid_txn_failure(
+    db_path: str, frozen_clock: FrozenClock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # reembed co-commits vec-retag + notes.embedder_id + the meta flip in ONE txn (I3/I10). A
+    # mid-loop failure must roll back ALL of it — else meta lags the retag and KNN's
+    # embedder_id=current hard-filter silently drops rows (invisible recall loss). The only
+    # multi-grain Store write that lacked a partial-failure rollback test.
+    from cold_frame.exceptions import StoreError
+
+    m1 = _mem(db_path, HashEmbedder(), frozen_clock)
+    m1.add("I prefer dark roast coffee")
+    m1.add("the deploy script is ship.sh")
+    m1.close()
+
+    m2 = _mem(db_path, HashEmbedder(dim=384, name="local:sim-bge"), frozen_clock)
+    assert m2.health()["stale_vectors"] == 2  # pre-state: both stale under the old embedder
+    before_meta = m2._store.embedder_meta()
+
+    def _boom(note_id: str, emb: object, embedder_id: str | None = None) -> None:
+        raise RuntimeError("simulated mid-reembed failure")
+
+    monkeypatch.setattr(m2._store, "_insert_vec", _boom)
+    with pytest.raises(StoreError):
+        m2.reembed()
+
+    # full ROLLBACK: stored meta + stale count unchanged — no partial retag, no SoT↔vector drift
+    assert m2._store.embedder_meta() == before_meta
+    assert m2.health()["stale_vectors"] == 2
