@@ -31,7 +31,7 @@ from cold_frame.constants import (
 )
 from cold_frame.exceptions import StoreError
 from cold_frame.llm.base import LLM, Clock, Embedder, TaskTag
-from cold_frame.models import ConsolidateResult, Edge, Note, Scope, Source
+from cold_frame.models import ConsolidateResult, Note, Scope, Source
 from cold_frame.observability import get_logger
 from cold_frame.prompts.consolidate import (
     CONSOLIDATE_SUMMARY_SYSTEM,
@@ -227,16 +227,19 @@ class Consolidator:
                 )
             ],
         )
-        self._store.add_note(summary, self._embedder.embed_one(summary.content))
-        for m in members:  # derived_from edge summary → each source (non-destructive link)
-            self._store.add_edge(
-                Edge(src_id=summary.id, dst_id=m.id, relation="derived_from", created_at=at)
-            )
         # spare pinned / high-importance members from the decay bump — they signal "keep prominent",
         # and the capacity/decay archival pass already exempts them; mirror that exemption here.
         demote = [
             m.id for m in members if not m.pinned and m.importance < ARCHIVE_PROTECT_IMPORTANCE
         ]
-        if demote:
-            self._store.cold_demote(demote, factor=CONSOLIDATE_DEMOTE_FACTOR)
+        # ONE atomic commit (summary grains + derived_from edges + demote): a partial failure must
+        # not orphan the summary, else its members re-cluster on the next retry → a duplicate fact.
+        self._store.consolidate_commit(
+            summary,
+            self._embedder.embed_one(summary.content),
+            member_ids=[m.id for m in members],
+            demote_ids=demote,
+            factor=CONSOLIDATE_DEMOTE_FACTOR,
+            at=at,
+        )
         return summary.id

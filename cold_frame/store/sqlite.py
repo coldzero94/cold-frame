@@ -592,6 +592,39 @@ class SQLiteStore(Store):
             self._co_write_event(archived, op="archive", ts=now)
             self._co_write_event(new, op="create")
 
+    def consolidate_commit(
+        self,
+        summary: Note,
+        emb: np.ndarray | None,
+        *,
+        member_ids: list[str],
+        demote_ids: list[str],
+        factor: float,
+        at: datetime,
+    ) -> None:
+        self._assert_provenance(summary)
+        # ONE txn (I3): the summary's grains + the derived_from convergence edges + the cold-demote
+        # all co-commit, so a partial failure can't orphan the summary and trigger a duplicate on
+        # the next durable retry (the edges are what mark members already-consolidated).
+        with self._txn(f"consolidate_commit({summary.id})"):
+            rowid = self._insert_note_row(summary)
+            self._insert_fts(rowid, summary)
+            if emb is not None:
+                self._insert_vec(summary.id, emb)
+            self._insert_sources(summary)
+            self._insert_history(summary, update_type="extract")
+            self._co_write_event(summary, op="create")
+            for mid in member_ids:
+                self._insert_edge(
+                    Edge(src_id=summary.id, dst_id=mid, relation="derived_from", created_at=at)
+                )
+            if demote_ids:
+                placeholders = ",".join("?" * len(demote_ids))
+                self._conn.execute(
+                    f"UPDATE notes SET decay_S = decay_S * ? WHERE id IN ({placeholders})",
+                    [factor, *demote_ids],
+                )
+
     def get_notes(self, ids: list[str]) -> list[Note]:
         if not ids:
             return []

@@ -152,3 +152,37 @@ def test_add_edge_and_neighbors_with_relation_filter(store: SQLiteStore) -> None
     ns = store.neighbors(["a"])
     assert any(e.src_id == "a" and e.dst_id == "b" and e.relation == "relates_to" for e in ns)
     assert store.neighbors(["a"], relations=["supersedes"]) == []  # relation filter
+
+
+def test_consolidate_commit_rolls_back_on_mid_txn_failure(
+    store: SQLiteStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # summary + derived_from edges + member demote must co-commit (I3): a failure mid-commit must
+    # leave NO orphan summary (an orphan makes members re-cluster on retry → duplicate; I12/I13).
+    m1 = _note("m1", "deployed v1 on monday", T1)
+    m2 = _note("m2", "deployed v2 on tuesday", T1)
+    store.add_note(m1, _emb(m1.content))
+    store.add_note(m2, _emb(m2.content))
+    before_decay = {n.id: n.decay_S for n in store.get_notes(["m1", "m2"])}
+
+    summary = _note("sum", "deployed v1 then v2 this week", T1).model_copy(
+        update={"memory_type": "semantic"}
+    )
+
+    def _boom(edge: object) -> None:
+        raise RuntimeError("simulated mid-consolidate failure")
+
+    monkeypatch.setattr(store, "_insert_edge", _boom)
+    with pytest.raises(StoreError):
+        store.consolidate_commit(
+            summary,
+            _emb(summary.content),
+            member_ids=["m1", "m2"],
+            demote_ids=["m1", "m2"],
+            factor=0.5,
+            at=T1,
+        )
+    # full ROLLBACK: no orphan summary, no edges, members' decay untouched (a retry is a true no-op)
+    assert store.get_notes(["sum"]) == []
+    assert store.neighbors(["sum"], relations=["derived_from"]) == []
+    assert {n.id: n.decay_S for n in store.get_notes(["m1", "m2"])} == before_decay

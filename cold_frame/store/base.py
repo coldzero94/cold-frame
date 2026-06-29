@@ -149,6 +149,23 @@ class Store(ABC):
         ...
 
     @abstractmethod
+    def consolidate_commit(
+        self,
+        summary: Note,
+        emb: np.ndarray | None,
+        *,
+        member_ids: list[str],
+        demote_ids: list[str],
+        factor: float,
+        at: datetime,
+    ) -> None:
+        """Atomic episodic→semantic consolidation in ONE txn (I3): insert the summary note (all
+        grains), the ``derived_from`` edges summary→each member, AND the member cold-demote. The
+        convergence marker (edges) MUST co-commit with the summary, else a partial failure leaves an
+        orphan summary whose members re-cluster on retry → a duplicate fact (breaks I12/I13)."""
+        ...
+
+    @abstractmethod
     def get_notes(self, ids: list[str]) -> list[Note]:
         """Order preserved; unknown ids skipped silently."""
         ...
