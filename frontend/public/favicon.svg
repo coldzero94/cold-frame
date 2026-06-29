@@ -1,17 +1,12 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="coldframe">
-  <title>coldframe</title>
+  <title>coldframe — a cold frame preserving warm belief</title>
   <defs>
-    <radialGradient id="cf-ember" cx="44%" cy="40%" r="72%">
-      <stop offset="0%" stop-color="#ffe3b8"/>
-      <stop offset="50%" stop-color="#ff9d4d"/>
-      <stop offset="100%" stop-color="#ef5f33"/>
-    </radialGradient>
+    <linearGradient id="cf-edge" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#8fe6ff"/><stop offset="1" stop-color="#2b6ace"/></linearGradient>
+    <radialGradient id="cf-core" cx="50%" cy="55%" r="56%"><stop offset="0" stop-color="#fff5db"/><stop offset="34%" stop-color="#ffb259"/><stop offset="68%" stop-color="#ef5f33"/><stop offset="100%" stop-color="#ef5f33" stop-opacity="0"/></radialGradient>
   </defs>
-  <!-- cold frame: a low box with a slanted glass roof (higher at the back) -->
-  <path d="M28 104 L100 104 L100 46 L28 62 Z" fill="none" stroke="#38bdf8"
-        stroke-width="7.5" stroke-linejoin="round" stroke-linecap="round"/>
-  <path d="M28 62 L100 46 L100 60 L28 76 Z" fill="#38bdf8" opacity="0.14"/>
-  <!-- embers sheltered inside: warmth = belief strength -->
-  <circle cx="54" cy="86" r="15" fill="url(#cf-ember)"/>
-  <circle cx="84" cy="90" r="8" fill="url(#cf-ember)" opacity="0.85"/>
+  <polygon points="64,18 104,41 104,87 64,110 24,87 24,41" fill="#0a1e31"/>
+  <circle cx="64" cy="66" r="31" fill="url(#cf-core)"/>
+  <g stroke="#8fe6ff" stroke-width="1.3" opacity="0.38"><line x1="64" y1="18" x2="64" y2="110"/><line x1="24" y1="41" x2="104" y2="87"/><line x1="104" y1="41" x2="24" y2="87"/></g>
+  <polygon points="64,18 104,41 104,87 64,110 24,87 24,41" fill="none" stroke="url(#cf-edge)" stroke-width="4.5" stroke-linejoin="round"/>
+  <path d="M26 42 L64 20 L102 42" fill="none" stroke="#cdf3ff" stroke-width="2" stroke-linecap="round" opacity="0.85"/>
 </svg>
