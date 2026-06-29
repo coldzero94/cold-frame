@@ -82,3 +82,20 @@ def test_claude_cli_real_session_extraction() -> None:
     )
     assert isinstance(res.parsed, ScopeVerdict)
     assert res.parsed.tiers == ["global", "project"]  # the real model classifies correctly
+
+
+def test_claude_subprocess_env_excludes_the_encryption_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    # the at-rest encryption key must NOT leak into the third-party `claude` child env (I16 / trust
+    # boundary) — a same-user reader of /proc/<pid>/environ must not recover it.
+    monkeypatch.setenv("COLD_FRAME_KEY", "super-secret-master-key")
+    monkeypatch.setenv("COLD_FRAME_DB", "/tmp/x.db")  # a path, not a secret — may be inherited
+    captured: dict[str, str] = {}
+
+    def _spy(*a: object, **k: object) -> object:
+        captured.update(k.get("env") or {})  # type: ignore[arg-type]
+        return SimpleNamespace(returncode=0, stdout='{"type":"result","result":"{}"}', stderr="")
+
+    monkeypatch.setattr(subprocess, "run", _spy)
+    ClaudeCliLLM().complete(task=TaskTag.EXTRACT, system="s", user="u")
+    assert "COLD_FRAME_KEY" not in captured  # scrubbed
+    assert captured.get("COLD_FRAME_EXTRACTING") == "1"  # the marker is still set

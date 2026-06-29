@@ -132,7 +132,17 @@ class ClaudeCliLLM(LLM):
         return LLMResult(text=text, parsed=parsed, model=self.name)
 
 
+_SECRET_ENV_VARS = ("COLD_FRAME_KEY",)  # never forward Coldframe secrets into the `claude` child
+
+
 def _os_environ() -> dict[str, str]:
     import os
 
-    return dict(os.environ)
+    # the `claude` CLI needs HOME/PATH/session creds — NOT the at-rest encryption key. Strip it so
+    # the master DB key never crosses into a third-party subprocess's environment (I16 / trust
+    # boundary): a same-user reader of /proc/<pid>/environ or the child's crash telemetry must not
+    # recover it. COLD_FRAME_DB (a path, not a secret) is left for the child to inherit.
+    env = dict(os.environ)
+    for var in _SECRET_ENV_VARS:
+        env.pop(var, None)
+    return env

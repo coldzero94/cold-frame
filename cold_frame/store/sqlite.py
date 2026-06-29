@@ -269,12 +269,23 @@ class SQLiteStore(Store):
             isolation_level=None,
             check_same_thread=False,
         )
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
-        conn.execute("PRAGMA foreign_keys=ON")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        conn.execute(f"PRAGMA wal_autocheckpoint={WAL_AUTOCHECKPOINT}")
-        conn.execute("PRAGMA secure_delete=ON")
+        try:  # the first REAL access — a wrong/absent key on an encrypted DB fails HERE
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
+            conn.execute("PRAGMA foreign_keys=ON")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute(f"PRAGMA wal_autocheckpoint={WAL_AUTOCHECKPOINT}")
+            conn.execute("PRAGMA secure_delete=ON")
+        except _DB_ERROR:
+            # raise a typed, KEY-FREE error (never echo the key/exc detail that could include it)
+            # instead of a raw "file is not a database" that invites destructive "recovery" of a
+            # perfectly healthy encrypted DB opened with the wrong key.
+            hint = (
+                "wrong encryption key, or this is not a cold-frame database"
+                if self._key
+                else "not a valid cold-frame database (corrupt, or encrypted but opened unkeyed)"
+            )
+            raise StoreError(f"cannot open database: {hint}") from None
         return conn  # row_factory (driver-matched) is set inside _connect
 
     # ── lifecycle ──────────────────────────────────────────────────────────
@@ -1349,12 +1360,31 @@ class SQLiteStore(Store):
         Honest scope (§7): the live DB only — OS snapshots/backups/free-list aren't covered."""
         if self._db_path == ":memory:":
             return True  # no on-disk file → no recoverable residue (rows already gone from RAM)
+        if self._key:
+            # ENCRYPTED: the file is ciphertext, so a raw-byte grep would ALWAYS be "clean" for the
+            # wrong reason (false confidence). Verify the LOGICAL scrub via the keyed (decrypting)
+            # connection instead — the needle must be absent from every live content-bearing grain.
+            return self._content_clean(needles)
         blobs = b"".join(
             Path(p).read_bytes()
             for p in (self._db_path, f"{self._db_path}-wal")
             if Path(p).exists()
         )
         return all(needle.encode("utf-8") not in blobs for needle in needles if needle)
+
+    def _content_clean(self, needles: list[str]) -> bool:
+        """True iff no ``needle`` appears in any live content-bearing column (read through the keyed
+        connection, so it sees decrypted content). The meaningful purge proof under encryption."""
+        # notes.content (note_fts mirrors it via external content) + the two scrubbed JSON grains
+        targets = (("notes", "content"), ("events", "payload"), ("jobs", "payload"))
+        for needle in (n for n in needles if n):
+            for table, col in targets:
+                hit = self._conn.execute(
+                    f"SELECT 1 FROM {table} WHERE instr({col}, ?) > 0 LIMIT 1", (needle,)
+                ).fetchone()
+                if hit is not None:
+                    return False
+        return True
 
     # ── housekeeping ─────────────────────────────────────────────────────────
     def doctor(self) -> dict[str, Any]:

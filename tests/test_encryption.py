@@ -11,13 +11,14 @@ import importlib.util
 from pathlib import Path
 
 import pytest
+from cold_frame.api import Memory
+from cold_frame.exceptions import StoreError
 
-pytestmark = pytest.mark.skipif(
+# the encrypt/decrypt tests need the SQLCipher wheel (CI Linux); key-resolution tests don't.
+_needs_sqlcipher = pytest.mark.skipif(
     importlib.util.find_spec("sqlcipher3") is None,
     reason="needs the [crypto] extra (sqlcipher3-binary)",
 )
-
-from cold_frame.api import Memory  # noqa: E402
 
 _NEEDLE = "CONFIDENTIAL-acme-merger-codeword-2026"
 _KEY = "correct-horse-battery-staple"
@@ -29,6 +30,7 @@ def _disk_bytes(db: str) -> bytes:
     return data + (wal.read_bytes() if wal.exists() else b"")
 
 
+@_needs_sqlcipher
 def test_encrypted_db_has_no_plaintext_on_disk(tmp_path: Path) -> None:
     db = str(tmp_path / "enc.db")
     m = Memory(db, encryption_key=_KEY)
@@ -41,11 +43,12 @@ def test_encrypted_db_has_no_plaintext_on_disk(tmp_path: Path) -> None:
     assert not header.startswith(b"SQLite format 3")  # SQLCipher → no plaintext SQLite header
 
 
+@_needs_sqlcipher
 def test_wrong_key_cannot_open_right_key_can(tmp_path: Path) -> None:
     db = str(tmp_path / "enc.db")
     Memory(db, encryption_key=_KEY).add(f"fact {_NEEDLE}")
-    with pytest.raises(Exception):  # noqa: B017 - SQLCipher rejects a wrong key on first access
-        Memory(db, encryption_key="totally-wrong-key").list_active()
+    with pytest.raises(StoreError):  # typed, key-free error (not a raw "file is not a database")
+        Memory(db, encryption_key="totally-wrong-key")
     again = Memory(db, encryption_key=_KEY)
     assert any(_NEEDLE in n.content for n in again.list_active())  # right key → readable
 
@@ -60,6 +63,7 @@ def test_default_path_is_plaintext_and_unchanged(tmp_path: Path) -> None:
     assert _NEEDLE.encode() in _disk_bytes(db)
 
 
+@_needs_sqlcipher
 def test_snapshot_of_encrypted_db_stays_encrypted(tmp_path: Path) -> None:
     # the leak vector: a snapshot/backup must NOT be written in plaintext (it's keyed too)
     db = str(tmp_path / "enc.db")
@@ -69,4 +73,48 @@ def test_snapshot_of_encrypted_db_stays_encrypted(tmp_path: Path) -> None:
     m.snapshot(snap)
     assert _NEEDLE.encode() not in _disk_bytes(snap)  # backup is encrypted, no plaintext leak
     restored = Memory(snap, encryption_key=_KEY)  # ...and restorable with the key
+    assert any(_NEEDLE in n.content for n in restored.list_active())
+
+
+# ── key resolution (no SQLCipher needed — these run everywhere) ────────────────
+def test_blank_key_fails_closed_not_silently_plaintext(tmp_path: Path) -> None:
+    # a SET-BUT-BLANK key is a misconfig → must raise, never silently downgrade to plaintext
+    with pytest.raises(ValueError, match="blank"):
+        Memory(str(tmp_path / "x.db"), encryption_key="")
+    with pytest.raises(ValueError, match="blank"):
+        Memory(str(tmp_path / "y.db"), encryption_key="   ")
+
+
+def test_unset_key_is_plaintext_default(tmp_path: Path) -> None:
+    # explicit None (and no env) → the zero-config plaintext default, no error
+    m = Memory(str(tmp_path / "z.db"), encryption_key=None)
+    assert m.health()["encrypted"] is False
+
+
+@_needs_sqlcipher
+def test_purge_under_encryption_verifies_via_keyed_connection(tmp_path: Path) -> None:
+    # under encryption the raw file is ciphertext, so grep_clean must be proven via the keyed
+    # (decrypting) connection — not a vacuous byte-grep that's always "clean" for the wrong reason.
+    db = str(tmp_path / "enc.db")
+    m = Memory(db, encryption_key=_KEY)
+    nid = m.add(f"purge me {_NEEDLE}").added[0].id
+    report = m._store.purge(nid)
+    assert report.grep_clean is True  # logical scrub verified through the decrypting connection
+    assert all(_NEEDLE not in n.content for n in m.list_active())  # and the secret is gone
+
+
+@_needs_sqlcipher
+def test_cli_import_restores_an_encrypted_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from cold_frame.cli import main
+
+    monkeypatch.setenv("COLD_FRAME_KEY", _KEY)  # the import path resolves the key from the env
+    src = str(tmp_path / "enc.db")
+    Memory(src, encryption_key=_KEY).add(f"backed up {_NEEDLE}")
+    snap = str(tmp_path / "snap.db")
+    Memory(src, encryption_key=_KEY).snapshot(snap)  # an ENCRYPTED snapshot
+    dst = str(tmp_path / "restored.db")
+    assert main(["--db", dst, "import", snap]) == 0  # validates + restores (no crash on ciphertext)
+    restored = Memory(dst, encryption_key=_KEY)
     assert any(_NEEDLE in n.content for n in restored.list_active())

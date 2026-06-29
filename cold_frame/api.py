@@ -94,8 +94,15 @@ class Memory:
         self._clock: Clock = clock or SystemClock()
         self._new_id: Callable[[], str] = id_factory or (lambda: uuid.uuid4().hex)
         # opt-in at-rest encryption (SQLCipher via [crypto]): explicit key, else $COLD_FRAME_KEY,
-        # else None = plaintext (the zero-config default). Whole .db + WAL + temp are encrypted.
-        self._encryption_key = encryption_key or os.environ.get("COLD_FRAME_KEY") or None
+        # else None = plaintext (the zero-config default). UNSET → plaintext; but SET-BUT-BLANK is a
+        # misconfiguration → fail CLOSED (never silently store plaintext when a key was intended).
+        raw_key = encryption_key if encryption_key is not None else os.environ.get("COLD_FRAME_KEY")
+        if raw_key is not None and not raw_key.strip():
+            raise ValueError(
+                "encryption key is set but blank — refusing to silently store in plaintext "
+                "(unset encryption_key / $COLD_FRAME_KEY to use the unencrypted default)"
+            )
+        self._encryption_key = raw_key
 
         self._store = SQLiteStore(
             self._db_path,

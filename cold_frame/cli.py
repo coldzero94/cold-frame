@@ -12,7 +12,6 @@ import argparse
 import contextlib
 import json
 import os
-import sqlite3
 import sys
 from collections import Counter
 from collections.abc import Sequence
@@ -27,6 +26,7 @@ from cold_frame.exceptions import NoteNotFound
 from cold_frame.integrations.claude_code import GLOBAL_KEY, project_key
 from cold_frame.models import Scope, SearchHit
 from cold_frame.observability import get_logger
+from cold_frame.store.sqlite import _DB_ERROR, _DB_OPERATIONAL, _connect  # keyed open for import
 from cold_frame.write.admission import PII_CATEGORIES
 
 _log = get_logger(__name__)
@@ -546,17 +546,24 @@ def _cmd_export(args: argparse.Namespace) -> int:
     return 0
 
 
-def _db_is_busy(path: Path) -> bool:
-    """True if another process holds ``path`` open (can't take an exclusive lock immediately)."""
+def _import_key() -> str | None:
+    """The at-rest key for import/restore (same source as Memory) — an encrypted snapshot must be
+    opened keyed to validate/lock it. Blank → None (the open then fails as 'not valid')."""
+    return os.environ.get("COLD_FRAME_KEY") or None
+
+
+def _db_is_busy(path: Path, key: str | None) -> bool:
+    """True if another process holds ``path`` open (can't take an exclusive lock immediately).
+    Keyed so an encrypted live DB can be lock-probed (else it'd error as 'not a database')."""
     try:
-        conn = sqlite3.connect(str(path), timeout=0.0)
+        conn = _connect(str(path), key, timeout=0.0)
         try:
             conn.execute("BEGIN EXCLUSIVE")
             conn.execute("ROLLBACK")
             return False
         finally:
             conn.close()
-    except sqlite3.OperationalError:
+    except _DB_OPERATIONAL:
         return True
 
 
@@ -569,8 +576,10 @@ def _cmd_import(args: argparse.Namespace) -> int:
     if not src.exists():
         print(f"import: source not found: {src}")
         return 1
-    try:  # validate it is a cold-frame snapshot: valid SQLite + migrated + the notes table
-        ro = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
+    # keyed so an ENCRYPTED snapshot can be validated (else it reads as ciphertext)
+    key = _import_key()
+    try:  # validate it's a cold-frame snapshot: (decryptable) SQLite + migrated + notes table
+        ro = _connect(str(src), key)
         try:
             version = int(ro.execute("PRAGMA user_version").fetchone()[0])
             has_notes = (
@@ -581,13 +590,14 @@ def _cmd_import(args: argparse.Namespace) -> int:
             )
         finally:
             ro.close()
-    except sqlite3.Error:
-        print(f"import: {src} is not a valid SQLite snapshot")
+    except _DB_ERROR:
+        kh = " (wrong $COLD_FRAME_KEY?)" if key else " (encrypted snapshot? set $COLD_FRAME_KEY)"
+        print(f"import: {src} is not a valid cold-frame snapshot{kh}")
         return 1
     if version < 1 or not has_notes:
         print(f"import: {src} is not a cold-frame snapshot")
         return 1
-    if dst.exists() and _db_is_busy(dst):  # I17: never replace a DB another process has open
+    if dst.exists() and _db_is_busy(dst, key):  # I17: never replace a DB another process has open
         print(f"import: {dst} is in use — stop cold-frame (ui/mcp/worker) first, then retry")
         return 1
     try:
