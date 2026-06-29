@@ -728,3 +728,26 @@ def test_cli_search_as_of_time_travel(tmp_path: Path, capsys: pytest.CaptureFixt
     assert main(["--db", db, "search", "deploy", "--as-of", "2099-01-01"]) == 0
     assert "ship.sh" in capsys.readouterr().out  # valid as-of the future
     assert main(["--db", db, "search", "deploy", "--as-of", "not-a-date"]) == 1  # clean error
+
+
+def test_capture_dedup_drops_rescan_of_archived_fact(memory: Memory) -> None:
+    # a Claude Code compaction shrink forces a full transcript re-scan; re-reading a turn whose note
+    # was since archived/superseded must NOT resurrect it (or flip a belief backward) — Layer-B now
+    # dedups against archived too. A genuine revival flows through the agent-push add path.
+    from cold_frame.models import Scope
+
+    scope = Scope(agent_id="proj:demo")
+    nid = memory.add("I deploy with ship.sh", scope=scope).added[0].id
+    memory.forget(nid)  # archive (forgotten)
+    fresh, known = memory._novel_messages(
+        [{"role": "user", "content": "I deploy with ship.sh"}], scope
+    )
+    assert fresh == []  # the re-read is dropped — not re-added (no resurrection)
+    assert known == []  # and not reinforced (archived, not a live restatement)
+
+    # sanity: a near-identical match to a LIVE note is still 'known' (reinforced post-commit)
+    live = memory.add("I use the dark theme everywhere", scope=scope).added[0].id
+    f2, k2 = memory._novel_messages(
+        [{"role": "user", "content": "I use the dark theme everywhere"}], scope
+    )
+    assert f2 == [] and k2 == [live]

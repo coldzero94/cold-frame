@@ -225,14 +225,23 @@ class Memory:
         A turn already represented by a near-identical active note (cosine ≥ DEDUP_AUTO_MERGE) is
         dropped as known so we skip paying to extract it. Its matched id is RETURNED, not reinforced
         here, so the caller reinforces post-commit — reinforcing before add() would double-fire on a
-        job retry. A multi-fact turn dilutes below the threshold (so it survives)."""
+        job retry. A multi-fact turn dilutes below the threshold (so it survives).
+
+        Also dedups against ARCHIVED notes: a near-identical match to a since-archived/superseded
+        note means this turn was already ingested then forgotten — re-adding it (e.g. when a Claude
+        Code compaction shrinks the transcript and forces a full re-scan) would resurrect a
+        forgotten fact or flip a superseded belief backward with a fresh valid_at. It is DROPPED,
+        not re-added. (A genuine revival/correction flows through the agent-push add path.)"""
         out: list[Msg] = []
         known: list[str] = []
         for m in msgs:
             emb = self._embedder.embed_one(m["content"])
-            hits = self._store.knn(emb, 1, scope=scope, statuses=["active"])
+            hits = self._store.knn(emb, 1, scope=scope, statuses=["active", "archived"])
             if hits and hits[0][1] >= DEDUP_AUTO_MERGE:
-                known.append(hits[0][0])  # restatement → caller reinforces post-commit
+                matched = self._store.get_notes([hits[0][0]])
+                if matched and matched[0].status == "active":
+                    known.append(hits[0][0])  # live restatement → caller reinforces post-commit
+                # archived/superseded near-match → drop (no resurrection, no backward belief flip)
                 continue
             out.append(m)
         return out, known
