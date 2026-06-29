@@ -431,6 +431,15 @@ class SQLiteStore(Store):
             (rowid, note.content, json.dumps(note.keywords), json.dumps(note.tags)),
         )
 
+    def _delete_fts(self, rowid: int, note: Note) -> None:
+        # external-content FTS5 has no auto-sync/FK-cascade — drop the OLD index row explicitly,
+        # passing the exact values that were indexed (I10). Mirrors _insert_fts.
+        self._conn.execute(
+            "INSERT INTO note_fts(note_fts, rowid, content, keywords, tags) "
+            "VALUES ('delete', ?, ?, ?, ?)",
+            (rowid, note.content, json.dumps(note.keywords), json.dumps(note.tags)),
+        )
+
     def _insert_vec(self, note_id: str, emb: np.ndarray, *, embedder_id: str | None = None) -> None:
         # ``embedder_id`` overrides the live embedder for re-embedding (the vector is tagged with
         # the embedder that produced it, not whatever is currently configured).
@@ -441,6 +450,9 @@ class SQLiteStore(Store):
         )
 
     def _insert_sources(self, note: Note) -> None:
+        # NOTE: extractor/extracted_at are written (a fixed _DEFAULT_EXTRACTOR + created_at) but not
+        # yet read back — RESERVED for R6 provenance versioning (the real prompt/model version, once
+        # prompt-versioning lands). Not surfaced on the Source model in v1.
         extracted_at = _to_iso(note.created_at)
         self._conn.executemany(
             "INSERT INTO sources("
@@ -510,11 +522,7 @@ class SQLiteStore(Store):
             )
             now = self._clock.now()
             # external-content FTS5 has no auto-sync: delete the OLD index row, insert the NEW
-            self._conn.execute(
-                "INSERT INTO note_fts(note_fts, rowid, content, keywords, tags) "
-                "VALUES ('delete', ?, ?, ?, ?)",
-                (rowid, old.content, json.dumps(old.keywords), json.dumps(old.tags)),
-            )
+            self._delete_fts(rowid, old)
             cur = self._conn.execute(
                 "UPDATE notes SET content=?, keywords=?, tags=?, context=?, confidence=?, "
                 "importance=?, pinned=?, status=?, version=?, valid_at=?, invalid_at=?, "
@@ -763,11 +771,7 @@ class SQLiteStore(Store):
                 self._conn.execute("SELECT rowid FROM notes WHERE id=?", (id,)).fetchone()[0]
             )
             # external-content FTS5 has no FK cascade: drop the index entry explicitly
-            self._conn.execute(
-                "INSERT INTO note_fts(note_fts, rowid, content, keywords, tags) "
-                "VALUES ('delete', ?, ?, ?, ?)",
-                (rowid, old.content, json.dumps(old.keywords), json.dumps(old.tags)),
-            )
+            self._delete_fts(rowid, old)
             self._co_write_event(old, op="delete", ts=now)  # audit the removal (payload kept)
             self._conn.execute("DELETE FROM note_history WHERE id=?", (id,))  # no FK cascade
             # DELETE notes cascades note_vec / edges / sources / access_log (ON DELETE CASCADE)
@@ -1231,11 +1235,7 @@ class SQLiteStore(Store):
                     self._conn.execute("SELECT rowid FROM notes WHERE id=?", (n.id,)).fetchone()[0]
                 )
                 # external-content FTS5 has no FK cascade: drop the indexed terms explicitly
-                self._conn.execute(
-                    "INSERT INTO note_fts(note_fts, rowid, content, keywords, tags) "
-                    "VALUES ('delete', ?, ?, ?, ?)",
-                    (rowid, n.content, json.dumps(n.keywords), json.dumps(n.tags)),
-                )
+                self._delete_fts(rowid, n)
                 self._conn.execute("DELETE FROM note_history WHERE id=?", (n.id,))  # no FK cascade
                 # DELETE notes cascades note_vec / edges / sources / access_log (ON DELETE CASCADE)
                 rows += self._conn.execute("DELETE FROM notes WHERE id=?", (n.id,)).rowcount

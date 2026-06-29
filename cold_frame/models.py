@@ -9,29 +9,15 @@ ISO8601-UTC TEXT (SPEC §1 portability rule). G2 RATIFIED (CLAUDE.md §9):
 from __future__ import annotations
 
 from datetime import datetime
-from enum import StrEnum
 from typing import Literal
 
 from pydantic import BaseModel, Field
 
-
-class MemoryType(StrEnum):
-    """Note kind (SPEC §2)."""
-
-    SEMANTIC = "semantic"  # durable fact / preference
-    EPISODIC = "episodic"  # time-stamped event / experience
-    PROCEDURAL = "procedural"  # behavior directive (prompt fragment, §7)
-
-
-class Status(StrEnum):
-    """Lifecycle status — G2: exactly 3 values (quarantine is a flag, not a status)."""
-
-    ACTIVE = "active"  # default, included in search
-    ARCHIVED = "archived"  # soft-forgotten, excluded from search, revivable
-    DELETED = "deleted"  # tombstone only (secret hard-purge; content scrubbed everywhere)
-
-
-# Literal aliases for hot paths / Store signatures (mypy-friendly, no Enum import churn).
+# The SINGLE source for note kind + lifecycle status (used everywhere — Store signatures, models,
+# the UI contract enums). semantic=durable fact/preference · episodic=time-stamped event ·
+# procedural=behavior directive (§7). status G2: EXACTLY 3 — active (in search) / archived
+# (soft-forgotten, revivable) / deleted (purge tombstone, content scrubbed); quarantine is a flag,
+# not a 4th status. Literals (not StrEnums) so hot paths + mypy stay churn-free.
 MemoryTypeLiteral = Literal["semantic", "episodic", "procedural"]
 StatusLiteral = Literal["active", "archived", "deleted"]
 EdgeRelation = Literal["supersedes", "relates_to", "mentions", "derived_from", "caused_by"]
@@ -66,7 +52,7 @@ class Note(BaseModel):
     content: str
     memory_type: MemoryTypeLiteral
     keywords: list[str] = Field(default_factory=list)
-    tags: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)  # RESERVED — round-trips, no tagger fills it yet
     context: str = ""
     confidence: float = 1.0  # extraction confidence (≠ importance)
     scope: Scope
@@ -107,9 +93,9 @@ class Signals(BaseModel):
 
     semantic: float | None = None  # cosine
     bm25: float | None = None  # normalized
-    edge: float | None = None  # 1-hop boost
+    edge: float | None = None  # RESERVED — 1-hop edge boost (edge channel not wired in v1)
     rrf: float  # fused rank score
-    rerank: float | None = None
+    rerank: float | None = None  # RESERVED — rerank-backend signal (rerank is a deferred extra)
 
 
 class SearchHit(BaseModel):

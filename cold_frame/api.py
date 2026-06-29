@@ -320,7 +320,9 @@ class Memory:
         """Replace ``id`` with a new fact carrying ``new_text`` via the one supersede commit.
 
         Keyed by an EXPLICIT id (not a similarity search) — correct_memory and the
-        update_fact/supersede self-edit tools all funnel through here (I15).
+        update_fact/supersede self-edit tools all funnel through here (I15). ``scope=None`` INHERITS
+        the old note's scope (``scope or old.scope``) — a correction stays in the corrected fact's
+        scope by default, unlike ``add`` where ``scope=None`` falls back to the default scope.
         """
         old_notes = self._store.get_notes([id])
         if not old_notes:
@@ -541,10 +543,15 @@ class Memory:
         self._store.set_held_for_human(id, held=False, quarantined=False, reason=None)
         if action == "pin":  # accept + pin (exempt from decay/archive, I13)
             self._store.set_pinned(id, True)
-        elif action in ("let_go", "merge"):
-            # let_go: not worth keeping. merge: a duplicate of `target` (presence-checked only).
-            # Either way archive the held note (revivable, I2); v1 keeps merge lightweight —
-            # no provenance graft into `target` yet. (keep/supersede: the clear above is all.)
+        elif action == "merge":
+            # a duplicate of `target`: record a relates_to edge (held → target) so the merge is
+            # traceable, THEN archive the held note (revivable, I2). v1's lightweight graft — it
+            # links rather than copying provenance grains into target.
+            self._store.add_edge(
+                Edge(src_id=id, dst_id=target, relation="relates_to", created_at=self._clock.now())  # type: ignore[arg-type]
+            )
+            self.forget(id)
+        elif action == "let_go":  # not worth keeping → archive (revivable, I2)
             self.forget(id)
 
     # ── self-edit / procedural ───────────────────────────────────────────

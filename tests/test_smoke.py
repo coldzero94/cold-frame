@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import inspect
 from datetime import UTC, datetime
+from typing import get_args
 
 import cold_frame
 import numpy as np
@@ -18,7 +19,7 @@ from cold_frame import Memory, Note, Scope, SearchResult, Source, branding, cons
 from cold_frame.constants import HASH_EMBED_DIM
 from cold_frame.exceptions import ColdFrameError, NoteNotFound, PolicyError
 from cold_frame.llm.base import LLM, Embedder, HashEmbedder
-from cold_frame.models import Status
+from cold_frame.models import StatusLiteral
 from cold_frame.store.base import Store
 
 
@@ -116,9 +117,9 @@ def test_note_has_g2_flag_columns() -> None:
 
 # ── Status is exactly 3 values (G2) ──────────────────────────────────────────
 def test_status_has_exactly_three_values() -> None:
-    values = {s.value for s in Status}
+    values = set(get_args(StatusLiteral))
     assert values == {"active", "archived", "deleted"}
-    assert len(list(Status)) == 3
+    assert len(values) == 3
 
 
 # ── exception hierarchy ──────────────────────────────────────────────────────

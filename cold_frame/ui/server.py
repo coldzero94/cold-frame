@@ -292,7 +292,11 @@ class _Handler(BaseHTTPRequestHandler):
             qs = parse_qs(parsed.query)
             q = (qs.get("q") or [""])[0].strip()
             as_of = _parse_iso((qs.get("as_of") or [""])[0])  # optional time-travel point
-            res = search_payload(memory, q, as_of=as_of) if q else {"query": "", "hits": []}
+            try:  # optional ?k= result count, clamped to a sane range
+                k = max(1, min(100, int((qs.get("k") or ["20"])[0])))
+            except ValueError:
+                k = 20
+            res = search_payload(memory, q, k=k, as_of=as_of) if q else {"query": "", "hits": []}
             self._json(200, res)
         elif path.startswith("/api/fact/") and path.endswith("/history"):
             fid = path[len("/api/fact/") : -len("/history")]

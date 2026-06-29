@@ -22,6 +22,7 @@ from pathlib import Path
 from cold_frame import __version__, branding
 from cold_frame.api import Memory
 from cold_frame.branding import PKG
+from cold_frame.constants import NOTE_MAX_CHARS
 from cold_frame.exceptions import NoteNotFound
 from cold_frame.integrations.claude_code import GLOBAL_KEY, project_key
 from cold_frame.models import Scope, SearchHit
@@ -106,7 +107,7 @@ def _cmd_list(args: argparse.Namespace) -> int:
         return 0
     for n in notes:
         band = mem.strength(n.id).band
-        print(f"{n.id[:8]}  [{band:9}] {n.content[:80]}")
+        print(f"{n.id[:8]}  [{band:9}] {n.content[:NOTE_MAX_CHARS]}")
     return 0
 
 

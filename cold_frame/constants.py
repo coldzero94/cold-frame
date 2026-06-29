@@ -20,7 +20,7 @@ ACCESS_SATURATION: Final[float] = 20.0
 # ── strength bands (3 bands; 0.10 is a fading sub-label, NOT a 4th band) ──
 BAND_EVERGREEN: Final[float] = 0.66  # S >= 0.66 → evergreen 🌳
 BAND_BUDDING: Final[float] = 0.33  # 0.33 <= S < 0.66 → budding 🌿; S < 0.33 → fading 🌱
-FADING_EMBER: Final[float] = 0.10  # sub-label only (archive-imminent), within the fading band
+FADING_EMBER: Final[float] = 0.10  # RESERVED — archive-imminent sub-label (UI), not yet surfaced
 
 # ── at-risk overlay (○, band-independent) ──
 AT_RISK_CONFIDENCE: Final[float] = 0.40  # confidence < 0.40 → at_risk
