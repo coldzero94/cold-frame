@@ -255,6 +255,7 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     print(f"notes={h['notes']} fts={h['fts']} vec={h['vec']}  (match={h['counts_match']})")
     print(f"integrity_check={h['integrity']}  fts_integrity={h['fts_integrity']}")
     print(f"embedder={h['embedder_id']} dim={h['dim']}  stale_vectors={h['stale_vectors']}")
+    print(f"at_rest_encryption={'on' if h.get('encrypted') else 'off'}")
     if h["stale_vectors"]:  # vectors from an old embedder → not semantically searchable yet
         print(f"  → run '{PKG} reembed' to re-index {h['stale_vectors']} stale vector(s)")
     # report the RESOLVED port the running UI recorded (deep-links use it), not just the default

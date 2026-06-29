@@ -9,6 +9,7 @@ admission (REDACT/CONSENT) + its local-only tiebreak (I7).
 from __future__ import annotations
 
 import hashlib
+import os
 import uuid
 from collections.abc import Callable, Iterator
 from datetime import datetime
@@ -81,6 +82,7 @@ class Memory:
         id_factory: Callable[[], str] | None = None,
         consolidate_every: int | None = None,
         pii_redact: frozenset[str] | None = None,
+        encryption_key: str | None = None,
     ) -> None:
         # Open Store, run migrate() (idempotent), assert the configured embedder's dim
         # matches DB meta else raise EmbedderMismatchError. Clock + id-factory injected (G6):
@@ -91,9 +93,16 @@ class Memory:
         self._default_scope = default_scope or Scope()
         self._clock: Clock = clock or SystemClock()
         self._new_id: Callable[[], str] = id_factory or (lambda: uuid.uuid4().hex)
+        # opt-in at-rest encryption (SQLCipher via [crypto]): explicit key, else $COLD_FRAME_KEY,
+        # else None = plaintext (the zero-config default). Whole .db + WAL + temp are encrypted.
+        self._encryption_key = encryption_key or os.environ.get("COLD_FRAME_KEY") or None
 
         self._store = SQLiteStore(
-            self._db_path, embedder=self._embedder, clock=self._clock, new_id=self._new_id
+            self._db_path,
+            embedder=self._embedder,
+            clock=self._clock,
+            new_id=self._new_id,
+            encryption_key=self._encryption_key,
         )
         self._store.migrate()
         stored = self._store.embedder_meta()
@@ -437,7 +446,7 @@ class Memory:
 
     def health(self) -> dict[str, object]:
         """Doctor/health snapshot: invariant counts + integrity + embedder (eval §C.8)."""
-        return self._store.doctor()
+        return {**self._store.doctor(), "encrypted": self._encryption_key is not None}
 
     # ── backup / portability (I17: snapshot or event-log dump; never the live WAL) ──
     def snapshot(self, dst: str) -> None:

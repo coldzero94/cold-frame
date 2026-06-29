@@ -53,6 +53,13 @@ jobs:
         # No keys, no network: exclude slow + live markers.
         run: pytest -q -m "not slow and not live"
 
+      - name: At-rest encryption tests ([crypto] — SQLCipher wheel, Linux)
+        # The prebuilt sqlcipher3 wheel exists for Linux x86_64; install it so the encryption tests
+        # actually RUN (they skip when absent). Verifies no-plaintext-on-disk / wrong-key / snapshot.
+        run: |
+          uv pip install --system sqlcipher3-binary
+          pytest tests/test_encryption.py -q
+
   # ── Frontend checks (Node-only; kept OUT of the core gate above) ─────────
   # (1) API codegen freshness: the JSON contract is single-sourced in cold_frame/ui/contract.py;
   #     regenerate schema + TS and fail on any diff so a stale TS client can't ship.

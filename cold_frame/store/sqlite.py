@@ -177,6 +177,41 @@ _MIGRATIONS: list[tuple[int, str]] = [(1, DDL_V1)]
 assert _MIGRATIONS[-1][0] == SCHEMA_VERSION, "migrations must reach SCHEMA_VERSION"
 
 
+def _connect(
+    db_path: str,
+    key: str | None,
+    *,
+    timeout: float = BUSY_TIMEOUT_MS / 1000,
+    isolation_level: Literal["DEFERRED", "EXCLUSIVE", "IMMEDIATE"] | None = None,
+    check_same_thread: bool = True,
+) -> sqlite3.Connection:
+    """Open a DB connection. With ``key`` (at-rest encryption, opt-in): via SQLCipher (the
+    ``[crypto]`` extra) with the key applied as the VERY FIRST statement — SQLCipher requires the
+    key before any other access, and it transparently encrypts the main db + WAL + temp files.
+    Without a key: stdlib sqlite3 (the default, unchanged). The key is never logged (I16)."""
+    if not key:
+        return sqlite3.connect(
+            db_path,
+            timeout=timeout,
+            isolation_level=isolation_level,
+            check_same_thread=check_same_thread,
+        )
+    try:
+        from sqlcipher3 import dbapi2 as _sqlcipher  # type: ignore[import-not-found]
+    except ImportError as exc:  # encryption requested but the extra isn't installed
+        raise StoreError(
+            "at-rest encryption needs the [crypto] extra: pip install 'cold-frame[crypto]'"
+        ) from exc
+    conn: sqlite3.Connection = _sqlcipher.connect(
+        db_path,
+        timeout=timeout,
+        isolation_level=isolation_level,
+        check_same_thread=check_same_thread,
+    )
+    conn.execute("PRAGMA key = ?", (key,))  # MUST precede every other statement on the connection
+    return conn
+
+
 class SQLiteStore(Store):
     """Single-file SQLite adapter (one ``.db``: notes + FTS + vectors + edges + jobs)."""
 
@@ -187,16 +222,17 @@ class SQLiteStore(Store):
         embedder: Embedder | None = None,
         clock: Clock | None = None,
         new_id: Callable[[], str] | None = None,
+        encryption_key: str | None = None,
     ) -> None:
         self._db_path = db_path
         self._embedder = embedder
         self._clock: Clock = clock or SystemClock()
         self._new_id: Callable[[], str] = new_id or (lambda: uuid.uuid4().hex)
+        self._key = encryption_key  # opt-in at-rest encryption (SQLCipher via [crypto]); None = off
         self._conn = self._open(db_path)
 
     # ── connection / PRAGMAs (data-layer §3.1) ──────────────────────────────
-    @staticmethod
-    def _open(db_path: str) -> sqlite3.Connection:
+    def _open(self, db_path: str) -> sqlite3.Connection:
         # isolation_level=None → autocommit; transactions are explicit BEGIN IMMEDIATE (I3).
         parent = Path(db_path).parent
         if str(parent) not in ("", "."):
@@ -204,8 +240,10 @@ class SQLiteStore(Store):
         # check_same_thread=False: the MCP async seam runs sync Store calls in anyio worker
         # threads (I4). Access stays serialized (sequential tool calls + BEGIN IMMEDIATE +
         # busy_timeout); per-thread connection pooling is the P3 concurrency step (§3.2).
-        conn = sqlite3.connect(
+        # _connect applies the SQLCipher key FIRST when at-rest encryption is on (else stdlib).
+        conn = _connect(
             db_path,
+            self._key,
             timeout=BUSY_TIMEOUT_MS / 1000,
             isolation_level=None,
             check_same_thread=False,
@@ -242,7 +280,8 @@ class SQLiteStore(Store):
         WAL); skipped for in-memory DBs. A backup failure aborts the migration (fail-safe)."""
         if self._db_path == ":memory:":
             return
-        dst = sqlite3.connect(f"{self._db_path}.bak.{current}")
+        # keyed too (else an encrypted DB's backup would be written in plaintext — a leak)
+        dst = _connect(f"{self._db_path}.bak.{current}", self._key)
         try:
             self._conn.backup(dst)
         finally:
@@ -1200,8 +1239,9 @@ class SQLiteStore(Store):
 
     def snapshot(self, dst: str) -> None:
         """Consistent checkpointed copy of the WHOLE DB to ``dst`` (I17: a snapshot, never the
-        live WAL). Single-file, WAL-free — restorable by copying it back into place."""
-        out = sqlite3.connect(dst)
+        live WAL). Single-file, WAL-free — restorable by copying it back into place. An encrypted
+        store produces an ENCRYPTED snapshot (the target is keyed with the same key — no leak)."""
+        out = _connect(dst, self._key)
         try:
             self._conn.backup(out)
         finally:
