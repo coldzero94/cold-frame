@@ -178,6 +178,23 @@ _REQUEST_PREFIXES = (
     "what",
 )
 
+# Copula/modal markers that flag a command-verb-leading turn as a DECLARATIVE statement, not an
+# imperative — so a homograph fact ("test coverage must exceed 80%") survives the leading-verb drop.
+_DECLARATIVE_MARKERS = (
+    " is ",
+    " are ",
+    " was ",
+    " were ",
+    " must ",
+    " should ",
+    " will ",
+    " needs ",
+    " need ",
+    " has ",
+    " have ",
+    "'s ",
+)
+
 
 # Harness-injected blocks that arrive as type=user but are NOT user-stated facts: slash commands,
 # bash tool I/O, task notifications, interrupt markers. Live dogfooding on a real transcript showed
@@ -210,7 +227,13 @@ def _is_durable_user_fact(text: str) -> bool:
     if any(marker in t for marker in _HARNESS_MARKERS):
         return False
     first = t.split(maxsplit=1)[0] if t else ""
-    return first not in _COMMAND_VERBS
+    if first not in _COMMAND_VERBS:
+        return True
+    # a leading command verb is usually an imperative ("run the tests") → drop. BUT many are
+    # noun/verb HOMOGRAPHS (test/build/review/change/search/...) that lead real declarative facts —
+    # "test coverage must exceed 80%", "review is mandatory". Keep it when a copula/modal marks it
+    # a statement, not a command (a rare false-keep is absorbed by dedup downstream).
+    return any(marker in t for marker in _DECLARATIVE_MARKERS)
 
 
 def _user_text(message: object) -> str:

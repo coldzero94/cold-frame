@@ -174,3 +174,17 @@ def test_fail_job_reschedule_survives_same_key_pending_sibling(
     assert b != a and store.pending_count() == 1
     store.fail_job(a, error="boom", retry_after=None, worker="w")  # must not raise
     assert store.pending_count() == 2  # A re-pended (key dropped) + B, no collision
+
+
+def test_fail_job_backoff_delays_re_lease(store_clock: tuple[SQLiteStore, _Clock]) -> None:
+    # exponential backoff (I12) must make a just-failed job non-leasable until the delay elapses —
+    # was untested (the dead-letter test jumps an hour past it), so a zeroed backoff shipped green.
+    from cold_frame.constants import RETRY_BACKOFF_BASE
+
+    store, clock = store_clock
+    jid = store.enqueue("consolidate", {})
+    assert store.lease_job(worker="w", now=clock.now()) is not None  # attempts → 1
+    store.fail_job(jid, error="x", retry_after=None, worker="w")  # reschedule with backoff
+    assert store.lease_job(worker="w", now=clock.now()) is None  # still backing off at the same now
+    clock.t = clock.t + timedelta(seconds=RETRY_BACKOFF_BASE * 2 + 0.01)  # past 0.05·2^1
+    assert store.lease_job(worker="w", now=clock.now()) is not None  # leasable once backoff elapses

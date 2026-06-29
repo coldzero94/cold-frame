@@ -751,3 +751,14 @@ def test_capture_dedup_drops_rescan_of_archived_fact(memory: Memory) -> None:
         [{"role": "user", "content": "I use the dark theme everywhere"}], scope
     )
     assert f2 == [] and k2 == [live]
+
+
+def test_layer_a_keeps_homograph_declarative_facts() -> None:
+    # noun/verb homographs lead real declarative facts; a copula/modal keeps them, while a bare
+    # imperative starting with the same verb is still dropped.
+    from cold_frame.integrations.claude_code import _is_durable_user_fact
+
+    assert _is_durable_user_fact("test coverage must exceed 80% here")  # kept (declarative)
+    assert _is_durable_user_fact("review is mandatory before any merge")  # kept
+    assert not _is_durable_user_fact("run the integration tests again")  # imperative → dropped
+    assert not _is_durable_user_fact("fix the failing build now please")  # imperative → dropped
