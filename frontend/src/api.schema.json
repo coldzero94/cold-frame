@@ -10,6 +10,39 @@
         "fading"
       ]
     },
+    "CreateFactResponse": {
+      "description": "POST /api/fact \u2014 the created note (or null if blocked/empty) + dedup/secret-block report.",
+      "properties": {
+        "added": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NoteBrief"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "deduped": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "blocked": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "added",
+        "deduped",
+        "blocked"
+      ],
+      "type": "object"
+    },
     "Edge": {
       "properties": {
         "src": {
@@ -496,6 +529,18 @@
         "low_confidence",
         "pin_adjacent_archive"
       ]
+    },
+    "TriageResolveResponse": {
+      "description": "POST /api/triage/{id}/resolve \u2014 acknowledgement of a triage action.",
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "ok"
+      ],
+      "type": "object"
     },
     "TriageResponse": {
       "properties": {

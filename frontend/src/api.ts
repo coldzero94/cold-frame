@@ -3,6 +3,7 @@
 // run `pnpm run gen:types` after changing a server payload shape. The two languages cannot drift —
 // the core test gate fails if the schema is stale, and CI re-runs the generator + git diff.
 import type {
+  CreateFactResponse,
   FactDetail,
   FactHistoryResponse,
   MemoryFieldResponse,
@@ -10,6 +11,7 @@ import type {
   NoteBrief,
   NotesResponse,
   SearchResponse,
+  TriageResolveResponse,
   TriageResponse,
 } from './api.generated'
 
@@ -77,10 +79,7 @@ export const api = {
   revive: (id: string) => postJSON<NoteBrief>(`/api/fact/${enc(id)}/revive`),
   correct: (id: string, text: string) => postJSON<NoteBrief>(`/api/fact/${enc(id)}/correct`, { text }),
   create: (text: string, memory_type: MemoryType = 'semantic') =>
-    postJSON<{ added: NoteBrief | null; deduped: string[]; blocked: string[] }>('/api/fact', {
-      text,
-      memory_type,
-    }),
+    postJSON<CreateFactResponse>('/api/fact', { text, memory_type }),
   resolveTriage: (id: string, action: string, target?: string) =>
-    postJSON<{ ok: boolean }>(`/api/triage/${enc(id)}/resolve`, { action, target }),
+    postJSON<TriageResolveResponse>(`/api/triage/${enc(id)}/resolve`, { action, target }),
 }

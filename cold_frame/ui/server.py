@@ -36,6 +36,7 @@ from cold_frame.models import Note
 from cold_frame.observability import get_logger
 from cold_frame.read.strength import compute_strength
 from cold_frame.ui.contract import (
+    CreateFactResponse,
     FactDetailDict,
     FactHistoryResponse,
     FieldNoteDict,
@@ -45,6 +46,7 @@ from cold_frame.ui.contract import (
     SearchHitDict,
     SearchResponse,
     TriageItemDict,
+    TriageResolveResponse,
     TriageResponse,
 )
 
@@ -397,16 +399,14 @@ class _Handler(BaseHTTPRequestHandler):
             else:
                 res = memory.create_fact(text, memory_type=mt)
                 added = res.added[0] if res.added else None
-                self._json(
-                    200,
-                    {
-                        "added": _note_brief(memory, added) if added else None,
-                        "deduped": res.deduped,
-                        # surface a pre-disk secret-BLOCK (I6) so the form can tell the user why
-                        # nothing was stored, instead of silently showing no change.
-                        "blocked": [b.placeholder for b in res.blocked],
-                    },
-                )
+                create_resp: CreateFactResponse = {
+                    "added": _note_brief(memory, added) if added else None,
+                    "deduped": res.deduped,
+                    # surface a pre-disk secret-BLOCK (I6) so the form can tell the user why
+                    # nothing was stored, instead of silently showing no change.
+                    "blocked": [b.placeholder for b in res.blocked],
+                }
+                self._json(200, create_resp)
         elif path.startswith("/api/triage/") and path.endswith("/resolve"):
             tid = path[len("/api/triage/") : -len("/resolve")]
             act = body.get("action")
@@ -425,7 +425,8 @@ class _Handler(BaseHTTPRequestHandler):
                 except ValueError:
                     self._json(400, {"error": "invalid"})
                 else:
-                    self._json(200, {"ok": True})
+                    triage_resp: TriageResolveResponse = {"ok": True}
+                    self._json(200, triage_resp)
         else:
             self._json(404, {"error": "not_found"})
 

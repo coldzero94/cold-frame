@@ -125,6 +125,20 @@ class TriageResponse(TypedDict):
     items: list[TriageItemDict]
 
 
+class CreateFactResponse(TypedDict):
+    """POST /api/fact — the created note (or null if blocked/empty) + dedup/secret-block report."""
+
+    added: NoteBriefDict | None
+    deduped: list[str]
+    blocked: list[str]  # content-free secret-BLOCK placeholders (I6)
+
+
+class TriageResolveResponse(TypedDict):
+    """POST /api/triage/{id}/resolve — acknowledgement of a triage action."""
+
+    ok: bool
+
+
 # Every wire shape fed to the schema generator — top-level response envelopes plus their nested
 # component types (e.g. the fact endpoint returns FactDetailDict | null).
 CONTRACT_TYPES = (
@@ -143,6 +157,8 @@ CONTRACT_TYPES = (
     SearchResponse,
     FactHistoryResponse,
     TriageResponse,
+    CreateFactResponse,
+    TriageResolveResponse,
 )
 
 # String-literal domains hoisted into named JSON-Schema $defs → named TS unions (Band, …).

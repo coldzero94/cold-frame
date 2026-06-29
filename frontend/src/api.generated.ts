@@ -27,6 +27,38 @@ export interface ColdframeApiContract {
   [k: string]: unknown
 }
 /**
+ * POST /api/fact — the created note (or null if blocked/empty) + dedup/secret-block report.
+ *
+ * This interface was referenced by `ColdframeApiContract`'s JSON-Schema
+ * via the `definition` "CreateFactResponse".
+ */
+export interface CreateFactResponse {
+  added: NoteBrief | null
+  deduped: string[]
+  blocked: string[]
+}
+/**
+ * This interface was referenced by `ColdframeApiContract`'s JSON-Schema
+ * via the `definition` "NoteBrief".
+ */
+export interface NoteBrief {
+  id: string
+  content: string
+  memory_type: MemoryType
+  status: Status
+  confidence: number
+  strength: Strength
+}
+/**
+ * This interface was referenced by `ColdframeApiContract`'s JSON-Schema
+ * via the `definition` "Strength".
+ */
+export interface Strength {
+  value: number
+  band: Band
+  at_risk: boolean
+}
+/**
  * This interface was referenced by `ColdframeApiContract`'s JSON-Schema
  * via the `definition` "Edge".
  */
@@ -50,15 +82,6 @@ export interface FactDetail {
   valid_at: string | null
   edges: Edge[]
   accesses: string[]
-}
-/**
- * This interface was referenced by `ColdframeApiContract`'s JSON-Schema
- * via the `definition` "Strength".
- */
-export interface Strength {
-  value: number
-  band: Band
-  at_risk: boolean
 }
 /**
  * This interface was referenced by `ColdframeApiContract`'s JSON-Schema
@@ -115,18 +138,6 @@ export interface MemoryFieldResponse {
 }
 /**
  * This interface was referenced by `ColdframeApiContract`'s JSON-Schema
- * via the `definition` "NoteBrief".
- */
-export interface NoteBrief {
-  id: string
-  content: string
-  memory_type: MemoryType
-  status: Status
-  confidence: number
-  strength: Strength
-}
-/**
- * This interface was referenced by `ColdframeApiContract`'s JSON-Schema
  * via the `definition` "NotesResponse".
  */
 export interface NotesResponse {
@@ -180,6 +191,15 @@ export interface TriageItem {
   reason: TriageReason
   candidates: string[]
   impact: number
+}
+/**
+ * POST /api/triage/{id}/resolve — acknowledgement of a triage action.
+ *
+ * This interface was referenced by `ColdframeApiContract`'s JSON-Schema
+ * via the `definition` "TriageResolveResponse".
+ */
+export interface TriageResolveResponse {
+  ok: boolean
 }
 /**
  * This interface was referenced by `ColdframeApiContract`'s JSON-Schema
