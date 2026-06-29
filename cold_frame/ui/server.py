@@ -21,6 +21,7 @@ import json
 import mimetypes
 import secrets
 import sys
+import threading
 from collections.abc import Callable
 from contextlib import suppress
 from datetime import UTC, datetime
@@ -245,6 +246,11 @@ class _UIServer(ThreadingHTTPServer):
     def __init__(self, addr: tuple[str, int], memory: Memory) -> None:
         super().__init__(addr, _Handler)
         self.memory = memory
+        # ThreadingHTTPServer spawns a thread per request, but the Store is ONE shared sqlite3
+        # connection (check_same_thread=False, no internal lock) — concurrent requests would race /
+        # corrupt a txn. Serialize request handling through this lock (localhost single-user UI, so
+        # serialization is free); the Store's single-connection model is thus never violated.
+        self.req_lock = threading.Lock()
         # per-process CSRF token (security-spec §localhost): injected into the served page, required
         # on every mutating request alongside a same-origin Origin check. Unauthenticated,
         # not defenceless — a drive-by site can neither read this token nor forge Origin.
@@ -282,7 +288,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(403, {"error": "forbidden host"})
             return
         try:
-            self._route_get()
+            with self._server().req_lock:  # serialize: the Store is one shared connection
+                self._route_get()
         except Exception as exc:  # a StoreError in a payload builder → 500, not a reset socket
             self._failsafe(exc)
 
@@ -335,7 +342,9 @@ class _Handler(BaseHTTPRequestHandler):
         if self.headers.get("Origin") not in srv.allowed_origins():
             return False
         token = self.headers.get("X-CSRF-Token", "")
-        return bool(token) and secrets.compare_digest(token, srv.csrf_token)
+        # token.isascii() FIRST: secrets.compare_digest raises TypeError on a non-ASCII str, and
+        # this runs before do_POST's try — a crafted header would 500/reset instead of a clean 403.
+        return bool(token) and token.isascii() and secrets.compare_digest(token, srv.csrf_token)
 
     def _read_json_body(self) -> dict[str, object]:
         n = int(self.headers.get("Content-Length") or 0)
@@ -376,7 +385,9 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(400, {"error": "bad_request"})
             return
         try:
-            self._route_post(urlparse(self.path).path, self._server().memory, body)
+            srv = self._server()
+            with srv.req_lock:  # serialize: the Store is one shared connection (see _UIServer)
+                self._route_post(urlparse(self.path).path, srv.memory, body)
         except Exception as exc:  # an unguarded create_fact StoreError → 500, not a reset socket
             self._failsafe(exc)
 

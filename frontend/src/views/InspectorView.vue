@@ -140,6 +140,7 @@ async function submitCorrect(): Promise<void> {
     correcting.value = false
     correctText.value = ''
     await router.push(`/fact/${created.id}`) // follow the supersede to the new fact
+    await refresh() // ...and reload the list so the old (archived) fact drops + the new one shows
   } catch (e) {
     detailError.value = e instanceof Error ? e.message : String(e)
   } finally {

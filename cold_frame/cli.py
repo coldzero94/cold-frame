@@ -73,7 +73,10 @@ def _cmd_add(args: argparse.Namespace) -> int:
         print(f"~ {note.id[:8]}  (held for review)  {note.content}")
     for span in res.redacted:  # content-free: category + count, never the value (I16)
         print(f"  redacted {span.count}x {span.category} before storing")
-    if not res.added and not res.held:
+    # a secret was caught pre-disk — report it (never echo the value, I16)
+    for bspan in res.blocked:
+        print(f"! blocked {bspan.placeholder} (a secret was detected — not stored)")
+    if not res.added and not res.held and not res.blocked:
         print("nothing extracted")
     return 0
 

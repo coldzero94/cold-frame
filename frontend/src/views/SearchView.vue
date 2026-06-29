@@ -20,6 +20,7 @@ let timer: ReturnType<typeof setTimeout> | undefined
 watch([q, asOf], ([val]) => {
   clearTimeout(timer)
   if (!val.trim()) {
+    seq += 1 // invalidate any in-flight request so it can't repopulate the just-cleared box
     hits.value = []
     searched.value = false
     return
