@@ -209,3 +209,38 @@ def test_edge_channel_promiscuity_downweights_high_degree_hub(memory: Memory) ->
     assert b in hits and c in hits  # both surface purely via their edges
     assert hits[b].signals.edge is not None and hits[c].signals.edge is not None
     assert hits[b].signals.edge > hits[c].signals.edge  # low-degree neighbor weighted higher
+
+
+def test_edge_channel_skipped_for_historical_as_of_reads(memory: Memory) -> None:
+    # the edge channel is a "currently relevant" expansion → skipped for as_of (point-in-time)
+    # reads, so a historical query never surfaces graph neighbors that weren't direct hits.
+    from cold_frame.models import Edge, Scope
+
+    s = Scope(user_id="u")
+    a = memory.add("deploy with ship.sh", scope=s).added[0].id
+    b = memory.add("xylophone quasar widget", scope=s).added[0].id  # reachable ONLY via the edge
+    memory._store.add_edge(
+        Edge(src_id=a, dst_id=b, relation="relates_to", created_at=datetime(2030, 1, 1, tzinfo=UTC))
+    )
+    assert b in [h.note.id for h in memory.search("deploy", scope=s).hits]  # edge surfaces B
+    future = datetime(2099, 1, 1, tzinfo=UTC)  # all notes valid, but the edge channel is skipped
+    assert b not in [h.note.id for h in memory.search("deploy", scope=s, as_of=future).hits]
+
+
+def test_edge_channel_respects_status_filter(memory: Memory) -> None:
+    # an edge-reached note that's been archived must not leak into default search, but appears with
+    # include_archived (the channel mirrors the knn/bm25 status filter).
+    from cold_frame.models import Edge, Scope
+
+    s = Scope(user_id="u")
+    a = memory.add("deploy with ship.sh", scope=s).added[0].id
+    b = memory.add("xylophone quasar widget", scope=s).added[0].id  # reachable ONLY via the edge
+    memory._store.add_edge(
+        Edge(src_id=a, dst_id=b, relation="relates_to", created_at=datetime(2030, 1, 1, tzinfo=UTC))
+    )
+    memory.forget(b)  # archive B
+    assert b not in [
+        h.note.id for h in memory.search("deploy", scope=s).hits
+    ]  # archived → excluded
+    archived = memory.search("deploy", scope=s, include_archived=True).hits
+    assert b in [h.note.id for h in archived]  # surfaced once archived is included

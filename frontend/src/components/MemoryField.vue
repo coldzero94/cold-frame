@@ -38,11 +38,12 @@ const enabledBands = ref<Record<Band, boolean>>({ evergreen: true, budding: true
 const shown = computed(() => notes.value.filter((n) => enabledBands.value[n.band]))
 
 const counts = computed(() => {
-  const c = { evergreen: 0, budding: 0, fading: 0, pinned: 0, atRisk: 0 }
+  const c = { evergreen: 0, budding: 0, fading: 0, pinned: 0, atRisk: 0, imminent: 0 }
   for (const n of notes.value) {
     c[n.band]++
     if (n.pinned) c.pinned++
     if (n.atRisk) c.atRisk++
+    if (n.imminent) c.imminent++
   }
   return c
 })
@@ -51,7 +52,7 @@ const fieldLabel = computed(() => {
   if (loading.value) return 'Memory field, loading'
   if (!notes.value.length) return 'Memory field, empty'
   const c = counts.value
-  return `Memory field: ${c.evergreen} evergreen, ${c.budding} budding, ${c.fading} fading, ${c.pinned} sheltered, ${c.atRisk} at-risk. Full detail in the Inspector.`
+  return `Memory field: ${c.evergreen} evergreen, ${c.budding} budding, ${c.fading} fading, ${c.pinned} sheltered, ${c.atRisk} at-risk, ${c.imminent} fading fast. Full detail in the Inspector.`
 })
 
 function mountField(): void {
@@ -132,6 +133,7 @@ onBeforeUnmount(() => {
       </button>
       <div class="text-[11px] text-dim mt-3 leading-relaxed">
         ⬡ {{ counts.pinned }} sheltered &nbsp;·&nbsp; ❄ {{ counts.atRisk }} at-risk
+        &nbsp;·&nbsp; 🔥 {{ counts.imminent }} fading fast
       </div>
       <div v-if="notes.length < total" class="text-[11px] text-dim/80 mt-1.5">
         showing {{ notes.length }} of {{ total }}
@@ -159,6 +161,7 @@ onBeforeUnmount(() => {
           {{ hovered.band }} · S={{ hovered.s.toFixed(2) }} · {{ hovered.type }} · ×{{ hovered.access }}
           <span v-if="hovered.pinned"> · ⬡ pinned</span>
           <span v-if="hovered.atRisk" class="text-ember"> · ❄ at-risk</span>
+          <span v-if="hovered.imminent" class="text-ember"> · 🔥 fading fast</span>
         </div>
       </div>
       <div v-else-if="loading" class="text-dim text-[12px]">Kindling your memory field…</div>

@@ -203,6 +203,12 @@ async function submitCorrect(): Promise<void> {
           {{ n.memory_type }}
           <span :title="`confidence ${n.confidence}`" class="ml-1">{{ confGlyph(n.confidence) }}</span>
           <span v-if="n.strength.at_risk" class="text-ember ml-1">❄ at risk</span>
+          <span
+            v-if="n.strength.imminent"
+            class="text-ember ml-1"
+            title="archive-imminent — about to be forgotten"
+            >🔥 fading fast</span
+          >
         </div>
       </RouterLink>
     </div>
@@ -227,6 +233,12 @@ async function submitCorrect(): Promise<void> {
           {{ detail.memory_type }} · {{ detail.status }} · S={{ detail.strength.value }} ({{ detail.strength.band }})
           · confidence {{ detail.confidence }}
           <span v-if="detail.strength.at_risk" class="text-ember ml-1">· ❄ at risk</span>
+          <span
+            v-if="detail.strength.imminent"
+            class="text-ember ml-1"
+            title="archive-imminent — about to be forgotten"
+            >· 🔥 fading fast</span
+          >
         </div>
 
         <!-- write actions (CSRF-guarded). Forget archives (revivable); Correct supersedes. -->
