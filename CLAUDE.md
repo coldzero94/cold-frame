@@ -7,9 +7,9 @@
 
 ## Status — where this repo is
 
-Planning, adversarial hardening, and scaffolding are **done**. The six interface gates (G1–G6) the build specs disagreed on are **resolved and pinned in code** (`constants.py`, `models.py`, the ABCs); the `cold_frame/` scaffold is green (`ruff` + `mypy --strict` + smoke tests). Engine logic is stubbed (`NotImplementedError`).
+**P1–P6 are built** (TDD, §2): the offline `add`→`search`→conflict/freshness→budget→forgetting/consolidation→procedural→self-edit engine works, with CLI + MCP stdio server + Claude Code plugin + local web UI. ~350 deterministic tests green on a **3.12/3.13 CI matrix** (`ruff` + `mypy --strict` + pytest + a built-wheel install smoke). The auto-memory loop (recall + capture) is **live-verified against real Claude Code** (headless `claude -p`). A multi-agent hardening audit fixed 17 findings (timestamp-width/`as_of`, jobs dedup-collision recovery, consolidation atomicity, compaction-rescan resurrection, …).
 
-**Next = P1, by TDD (§2),** implemented strictly in build-phase order (§6). Code from `docs/SPEC.md` + `docs/build/*.md` (§1). Never silently diverge from a contract — change it with an ADR in `docs/decisions.md`.
+**NOT done — genuine, known gaps (don't claim otherwise):** privacy/security per **D25** is PARTIAL — only obvious secrets are BLOCKed pre-disk; **PII redaction, at-rest encryption, the admission LLM tiebreak (I7), confidence-gate/consent, and crypto-shred purge are NOT built** (deferred to v1.1/hosted). `PolicyError` + `llm.assert_local_for` are tested **scaffolding with no live caller in v1** (re-activate when admission lands). A PyPI release is pending (D19 name locked; trusted-publisher + tag are the user's call). Never silently diverge from a contract — change it with an ADR in `docs/decisions.md`.
 
 ---
 
