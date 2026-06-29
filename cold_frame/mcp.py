@@ -29,7 +29,6 @@ _INSTALL_HINT = (
 
 # One Memory per server process, set by build_server() at serve time.
 _MEMORY: Memory | None = None
-_SERVER: Any = None  # the FastMCP server (for get_context()); set in build_server()
 
 
 def _require_memory() -> Memory:
@@ -181,7 +180,8 @@ async def forget(id: str) -> dict[str, Any]:
 
 # ── server wiring (lazy SDK import, I9) ───────────────────────────────────────
 def build_server(memory: Memory | None = None) -> Any:  # noqa: ANN401 - FastMCP type optional
-    """Construct the FastMCP stdio server with the two tools registered.
+    """Construct the FastMCP stdio server with its tools registered (search_memory + add_memory +
+    the create_fact/update_fact/supersede/forget self-edit set).
 
     Raises ``ColdFrameError`` (install hint) if the ``[mcp]`` extra is not installed —
     BEFORE touching disk, so a missing SDK never creates a DB.
@@ -191,9 +191,8 @@ def build_server(memory: Memory | None = None) -> Any:  # noqa: ANN401 - FastMCP
     except ImportError as exc:
         raise ColdFrameError(_INSTALL_HINT) from exc
 
-    global _MEMORY, _SERVER
+    global _MEMORY
     server = FastMCP(MCP_ID)
-    _SERVER = server
     # Scope the server to its project tier (D26). Claude Code does NOT reliably pass the project cwd
     # to an MCP subprocess (#42687 — os.getcwd() may be a cache dir), so prefer the PROJECT_ROOT env
     # the user sets at `claude mcp add --env PROJECT_ROOT="$PWD"`; fall back to cwd. llm=None: the

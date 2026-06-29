@@ -1,9 +1,9 @@
 """``cold-frame`` CLI (SPEC §9). Entry point: ``cold-frame = "cold_frame.cli:main"``.
 
-P1 wires the offline path: ``add`` → ``search`` recalls the just-added fact with zero
-keys/network (I5), plus ``doctor`` (invariant check) and ``mcp`` (dispatch to the stdio
-server). Other subcommands remain stubs until their phase. The DB location resolves from
-``--db`` → ``$COLD_FRAME_DB`` → ``branding.DB_PATH`` (no literal path strings, branding rule).
+Offline-first (I5): ``add``/``search`` work with zero keys/network. Every subcommand is wired —
+``add search list show stats timeline path doctor consolidate worker jobs export import ui mcp
+setup purge reembed hook``. The DB location resolves ``--db`` → ``$COLD_FRAME_DB`` →
+``branding.DB_PATH`` (no literal path strings, branding rule).
 """
 
 from __future__ import annotations
@@ -30,27 +30,6 @@ from cold_frame.write.admission import PII_CATEGORIES
 
 _log = get_logger(__name__)
 
-_SUBCOMMANDS: tuple[str, ...] = (
-    "add",
-    "search",
-    "list",
-    "show",
-    "stats",
-    "timeline",
-    "path",
-    "doctor",
-    "consolidate",
-    "worker",
-    "jobs",
-    "export",
-    "import",
-    "ui",
-    "mcp",
-    "setup",
-    "purge",
-    "reembed",
-)
-
 
 def _resolve_db(args: argparse.Namespace) -> str:
     return args.db or os.environ.get("COLD_FRAME_DB") or str(branding.DB_PATH)
@@ -65,11 +44,6 @@ def _memory(args: argparse.Namespace) -> Memory:
     mem = Memory(_resolve_db(args), pii_redact=pii)  # offline default: HashEmbedder + llm=None
     _OPENED.append(mem)  # tracked so the connection is closed before the process/command ends
     return mem
-
-
-def _not_implemented(args: argparse.Namespace) -> int:
-    print(f"{PKG}: '{args.command}' not implemented")
-    return 1
 
 
 def _resolve_id(mem: Memory, prefix: str) -> str | None:
@@ -786,10 +760,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_purge.add_argument("--force", action="store_true", help="confirm the irreversible scrub")
     p_purge.add_argument("--cascade", action="store_true", help="also purge derived summaries")
     p_purge.set_defaults(func=_cmd_purge)
-
-    for name in _SUBCOMMANDS:  # default any not-yet-wired subcommand to the stub handler
-        if not callable(sub.choices[name].get_default("func")):
-            sub.choices[name].set_defaults(func=_not_implemented)
 
     return parser
 

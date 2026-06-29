@@ -1,9 +1,9 @@
 """Tier classification prompt (D26 project scoping).
 
 Is an auto-captured user statement a GLOBAL fact (about the user as a person — recalled in every
-project) or a PROJECT fact (about this codebase/task)? The LLM proposes; ``is_global_fact`` (the
-deterministic heuristic) is the offline / malformed-reply fallback. The host model reaches this via
-MCP sampling inside the capture drain — the same parasitic LLM the dedup/conflict judges use.
+project) or a PROJECT fact (about this codebase/task)? The configured LLM proposes (e.g. the
+ClaudeCliLLM used by ``cold-frame worker``); ``is_global_fact`` (the deterministic heuristic) is the
+offline / no-LLM / malformed-reply fallback — the same dedup/conflict LLM seam, not MCP sampling.
 """
 
 from __future__ import annotations
