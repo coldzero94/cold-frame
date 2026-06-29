@@ -34,7 +34,9 @@ First public version. Local-first, ownable memory for AI agents — one SQLite f
 ### Known limitations (planned)
 
 - PII redaction (email/phone/card/ssn) is available opt-in (`add --redact-pii` / `Memory(pii_redact=…)`),
-  off by default; at-rest encryption is not yet built (obvious secrets are always blocked pre-disk).
+  off by default. At-rest encryption is available opt-in via the `[crypto]` extra (SQLCipher;
+  `Memory(encryption_key=…)` / `$COLD_FRAME_KEY`) — whole DB + WAL + snapshots, set at creation;
+  obvious secrets are always blocked pre-disk regardless.
 - The agent-push capture path is model-discretionary; the keyless backstop guarantees coverage.
 - Write/triage in the browser is partial; full event-log replay import is snapshot-based for now.
 

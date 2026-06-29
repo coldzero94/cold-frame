@@ -65,8 +65,10 @@ cold-frame doctor          # health: counts, integrity, embedder
   (per-scope caps), so the active set never grows without bound. Forgetting *archives* — nothing is
   truly deleted, and obvious secrets (API keys, tokens, private keys) are blocked before they ever
   touch disk. PII redaction (email/phone/card/ssn) is available **opt-in** (`add --redact-pii`, or
-  `Memory(pii_redact=…)`) — off by default so a personal store keeps your own contact facts; at-rest
-  encryption is not yet built.
+  `Memory(pii_redact=…)`) — off by default so a personal store keeps your own contact facts.
+  **At-rest encryption** is available opt-in too — `pip install 'cold-frame[crypto]'` + a key via
+  `Memory(encryption_key=…)` or `$COLD_FRAME_KEY` encrypts the whole DB (+ WAL + snapshots) with
+  SQLCipher (set at creation; the default stays plaintext + zero-config).
 - **Per-project + global** — facts are tagged by git project; clear personal facts go to a global
   tier recalled everywhere.
 
