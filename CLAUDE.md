@@ -7,7 +7,7 @@
 
 ## Status — where this repo is
 
-**P1–P6 are built** (TDD, §2): the offline `add`→`search`→conflict/freshness→budget→forgetting/consolidation→procedural→self-edit engine works, with CLI + MCP stdio server + Claude Code plugin + local web UI. ~350 deterministic tests green on a **3.12/3.13 CI matrix** (`ruff` + `mypy --strict` + pytest + a built-wheel install smoke). The auto-memory loop (recall + capture) is **live-verified against real Claude Code** (headless `claude -p`). A multi-agent hardening audit fixed 17 findings (timestamp-width/`as_of`, jobs dedup-collision recovery, consolidation atomicity, compaction-rescan resurrection, …).
+**P1–P6 are built** (TDD, §2): the offline `add`→`search`→conflict/freshness→budget→forgetting/consolidation→procedural→self-edit engine works, with CLI + MCP stdio server + Claude Code plugin + local web UI. ~370 deterministic tests green on a **3.12/3.13 CI matrix** (`ruff` + `mypy --strict` + pytest + a built-wheel install smoke + a frontend vue-tsc/build/codegen-drift job). The auto-memory loop (recall + capture) is **live-verified against real Claude Code** (headless `claude -p`). Hardened by multi-agent review rounds: a bug+quality audit (17 findings — timestamp-width/`as_of`, jobs dedup-collision recovery, consolidation atomicity, compaction-rescan resurrection, …), an adversarial **security review of at-rest encryption** (key-in-subprocess leak, fail-open blank key, …), and an independent review of the post-audit features (edge channel / FADING_EMBER / PII) that caught **2 critical leaks** (edge surfacing quarantined/cross-scope notes; PII left in FTS-indexed keywords/context) — all fixed + CI-verified.
 
 **NOT done — genuine, known gaps (don't claim otherwise):** privacy/security per **D25** is PARTIAL — obvious secrets BLOCKed pre-disk; **PII redaction (email/phone/card/ssn) built but OPT-IN** (`Memory(pii_redact=…)` / `add --redact-pii`); **at-rest encryption built but OPT-IN** (the `[crypto]` extra = SQLCipher; `Memory(encryption_key=…)` / `$COLD_FRAME_KEY`; whole DB + WAL + snapshots, set at creation; adversarially reviewed, CI-verified on Linux). Still **NOT built**: the admission LLM tiebreak (I7), confidence-gate/consent, crypto-shred purge, and a plaintext→encrypted migration for an existing DB (deferred to v1.1/hosted). `PolicyError` + `llm.assert_local_for` are tested **scaffolding with no live caller in v1** (re-activate when the I7 tiebreak lands). A PyPI release is pending (D19 name locked; trusted-publisher + tag are the user's call). Never silently diverge from a contract — change it with an ADR in `docs/decisions.md`.
 
@@ -71,11 +71,11 @@
 
 **Frozen constants** (`cold_frame/constants.py`, the single source of truth):
 `S = 0.45·retrievability + 0.35·importance + 0.20·min(1, log1p(access_count)/log1p(20))` ·
-bands: evergreen `S≥0.66` / budding `0.33≤S<0.66` / fading `S<0.33` (3 bands; `0.10` is a fading sub-label, not a 4th band) ·
+bands: evergreen `S≥0.66` / budding `0.33≤S<0.66` / fading `S<0.33` (3 bands; `FADING_EMBER=0.10` is a fading sub-label, not a 4th band — surfaced as `Strength.imminent`, excludes pinned) ·
 `at_risk` overlay (band-independent): `confidence<0.4 OR (now−last_accessed)>60d` ·
 archive fires ONLY when `S<0.33 AND archive_score<ARCHIVE_THRESHOLD=0.20`, OR on a capacity cap ·
 caps: `semantic=2000, episodic=500, procedural=100` (per scope) ·
-`REINFORCE_DECAY_INC=0.5`, `DECAY_S_CAP=365.0`, RRF `k_const=60` (no global divisor), `FANOUT=4` (min 20, max 200), cosine dedup bands `0.82`/`0.93`, importance EMA `α=0.1`, archive_score weights `0.5/0.3/0.2`, HashEmbedder `dim=256`.
+`REINFORCE_DECAY_INC=0.5`, `DECAY_S_CAP=365.0`, RRF `k_const=60` (no global divisor), `FANOUT=4` (min 20, max 200), cosine dedup bands `0.82`/`0.93`, importance EMA `α=0.1`, archive_score weights `0.5/0.3/0.2`, HashEmbedder `dim=256`, edge channel `EDGE_SEED_K=10` + `EDGE_PROMISCUITY_PENALTY=0.001`.
 
 ---
 
