@@ -5,7 +5,8 @@ __pycache__/
 .ruff_cache/
 .mypy_cache/
 dist/
-build/
+# Python packaging output at repo root ONLY — anchored (leading /) so it never swallows docs/build/
+/build/
 *.egg-info/
 *.db
 *.db-wal
