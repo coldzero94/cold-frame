@@ -230,7 +230,7 @@ def _connect(
     # out of the literal). MUST precede every other statement on the connection.
     conn.execute("PRAGMA key = '" + key.replace("'", "''") + "'")
     conn.row_factory = _sqlcipher.Row  # driver-matched Row (sqlite3.Row rejects a sqlcipher cursor)
-    return conn
+    return conn  # type: ignore[no-any-return]  # _sqlcipher untyped → conn is Connection-compatible
 
 
 class SQLiteStore(Store):
