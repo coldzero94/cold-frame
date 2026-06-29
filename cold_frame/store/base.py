@@ -199,11 +199,6 @@ class Store(ABC):
         append-only event payloads are retained. NoteNotFound if absent."""
         ...
 
-    @abstractmethod
-    def cold_demote(self, ids: list[str], *, factor: float) -> None:
-        """Multiply decay_S by ``factor`` (consolidation cold-demote — sources fade faster)."""
-        ...
-
     # ── retrieval ───────────────────────────────────────────────────────────
     @abstractmethod
     def knn(

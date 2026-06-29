@@ -1,6 +1,7 @@
-"""RetrievePipeline — search fan-out → RRF → rerank → token-budget pack (SPEC §5).
+"""RetrievePipeline — search fan-out → RRF fuse → meta-boost → token-budget pack (SPEC §5).
 
-Implemented across P1 (hybrid retrieve + RRF) and P3 (packer / rerank / meta boost).
+Implemented across P1 (hybrid retrieve + RRF) and P3 (deterministic meta boost + the packer). A
+cross-encoder/LLM rerank backend is a deferred extra and is NOT wired in v1.
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ _log = get_logger(__name__)
 
 
 class RetrievePipeline:
-    """Hybrid retrieve → RRF fuse → optional rerank → budget pack → REINFORCE."""
+    """Hybrid retrieve → RRF fuse → meta boost → budget pack → REINFORCE."""
 
     def __init__(
         self,
@@ -46,10 +47,9 @@ class RetrievePipeline:
         token_budget: int | None = None,
         as_of: datetime | None = None,
         include_archived: bool = False,
-        rerank: bool = False,
         reinforce: bool = True,
     ) -> SearchResult:
-        """Hybrid retrieve → RRF fuse → top-k → REINFORCE (P1; rerank/budget are P3).
+        """Hybrid retrieve → RRF fuse → top-k → meta-boost → REINFORCE (P1; meta-boost/budget P3).
 
         Default FILTER = ``status='active' AND NOT quarantined`` (G2, enforced in the
         Store channels). Never raises on no match — returns an empty SearchResult.

@@ -26,7 +26,6 @@ from cold_frame.models import (
     Note,
     RedactedSpan,
     Scope,
-    Source,
 )
 from cold_frame.prompts.conflict import (
     CONFLICT_SYSTEM,
@@ -66,7 +65,6 @@ class WriteCore:
         candidates: list[Note],
         *,
         scope: Scope,
-        source: Source | None = None,
     ) -> AddResult:
         """ADMISSION → DEDUP → CONFLICT → PERSIST for new candidate facts (SPEC §4).
 

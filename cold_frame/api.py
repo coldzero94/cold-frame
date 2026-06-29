@@ -79,7 +79,6 @@ class Memory:
         default_scope: Scope | None = None,
         clock: Clock | None = None,
         id_factory: Callable[[], str] | None = None,
-        config: object | None = None,
         consolidate_every: int | None = None,
         pii_redact: frozenset[str] | None = None,
     ) -> None:
@@ -92,7 +91,6 @@ class Memory:
         self._default_scope = default_scope or Scope()
         self._clock: Clock = clock or SystemClock()
         self._new_id: Callable[[], str] = id_factory or (lambda: uuid.uuid4().hex)
-        self._config = config
 
         self._store = SQLiteStore(
             self._db_path, embedder=self._embedder, clock=self._clock, new_id=self._new_id
@@ -176,7 +174,7 @@ class Memory:
             infer=infer,
             raw=raw,
         )
-        result = self._write.commit(candidates, scope=scope, source=source)
+        result = self._write.commit(candidates, scope=scope)
         self._after_write(scope, len(result.added))
         return result
 
@@ -413,7 +411,6 @@ class Memory:
         token_budget: int | None = None,
         as_of: datetime | None = None,
         include_archived: bool = False,
-        rerank: bool = False,
         reinforce: bool = True,
     ) -> SearchResult:
         return self._read.search(
@@ -423,7 +420,6 @@ class Memory:
             token_budget=token_budget,
             as_of=as_of,
             include_archived=include_archived,
-            rerank=rerank,
             reinforce=reinforce,
         )
 
@@ -469,10 +465,10 @@ class Memory:
             scope=scope or self._default_scope, status="active", sort=sort, limit=limit
         )
 
-    def neighbors(
-        self, id: str, *, relations: list[EdgeRelation] | None = None, hops: int = 1
-    ) -> list[Edge]:
-        return self._store.neighbors([id], relations=relations)  # 1-hop (multi-hop later)
+    def neighbors(self, id: str, *, relations: list[EdgeRelation] | None = None) -> list[Edge]:
+        """Direct (1-hop) edges of ``id``, optionally filtered by relation. Multi-hop is the CLI
+        ``path`` BFS over repeated calls — not a param here (v1 has no multi-hop store query)."""
+        return self._store.neighbors([id], relations=relations)
 
     def fork_history(self, id: str) -> list[Note]:
         """Every persisted version of ``id`` (oldest→newest) — the rewindable belief trail."""
@@ -632,7 +628,7 @@ class Memory:
                 )
             ],
         )
-        result = self._write.commit([cand], scope=scope, source=None)
+        result = self._write.commit([cand], scope=scope)
         self._after_write(scope, len(result.added))
         return result
 

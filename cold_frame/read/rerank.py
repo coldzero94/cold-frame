@@ -1,10 +1,9 @@
-"""Meta boost + optional rerank hook (read-and-budget §5.7).
+"""Meta boost (read-and-budget §5.7).
 
-Meta boost (default, deterministic): a small recency/scope multiplier on the fused
-score, clamped to <=+15% so it nudges but never dominates RRF — the default read path
-stays fully deterministic for eval. Cross-encoder/LLM rerank backends are extras
-(``[local-llm]``/``[openai]``), off by default; without a backend, rerank falls back to
-meta boost (so ``rerank=True`` is safe offline).
+A small recency/scope multiplier on the fused score, clamped to <=+15% so it nudges but never
+dominates RRF — the default read path stays fully deterministic for eval. This is the only
+re-scoring step that is wired in v1. A cross-encoder/LLM rerank backend (``[local-llm]``/
+``[openai]``) is a deferred extra — NOT implemented yet (no rerank function lives here).
 """
 
 from __future__ import annotations

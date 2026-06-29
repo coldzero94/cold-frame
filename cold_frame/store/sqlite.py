@@ -710,16 +710,6 @@ class SQLiteStore(Store):
         with self._txn(f"set_pinned({id})"):
             self._conn.execute("UPDATE notes SET pinned=? WHERE id=?", (int(pinned), id))
 
-    def cold_demote(self, ids: list[str], *, factor: float) -> None:
-        if not ids:
-            return
-        placeholders = ",".join("?" * len(ids))
-        with self._txn("cold_demote"):
-            self._conn.execute(
-                f"UPDATE notes SET decay_S = decay_S * ? WHERE id IN ({placeholders})",
-                [factor, *ids],
-            )
-
     def archive(self, id: str, *, now: datetime) -> None:
         existing = self.get_notes([id])
         if not existing:
@@ -851,28 +841,25 @@ class SQLiteStore(Store):
         if not ids:
             return
         now_iso = _to_iso(now)
-        try:
-            with self.in_transaction():
-                for nid in ids:
-                    self._conn.execute(
-                        "UPDATE notes SET access_count = access_count + 1, last_accessed = ?, "
-                        "decay_S = MIN(decay_S + ?, ?) WHERE id = ?",
-                        (now_iso, REINFORCE_DECAY_INC, DECAY_S_CAP, nid),
-                    )
-                    self._conn.execute(
-                        "INSERT INTO access_log(note_id, ts, kind) VALUES (?, ?, 'search')",
-                        (nid, now_iso),
-                    )
-                    # per-note cap (I13): keep the most-recently-inserted rows (rowid breaks
-                    # ts ties under a frozen clock).
-                    self._conn.execute(
-                        "DELETE FROM access_log WHERE note_id = ? AND rowid NOT IN "
-                        "(SELECT rowid FROM access_log WHERE note_id = ? ORDER BY rowid DESC "
-                        "LIMIT ?)",
-                        (nid, nid, ACCESS_LOG_CAP_PER_NOTE),
-                    )
-        except sqlite3.Error as exc:
-            raise StoreError(f"reinforce failed: {exc}") from exc
+        with self._txn("reinforce"):  # same error-translating wrapper as every other mutator
+            for nid in ids:
+                self._conn.execute(
+                    "UPDATE notes SET access_count = access_count + 1, last_accessed = ?, "
+                    "decay_S = MIN(decay_S + ?, ?) WHERE id = ?",
+                    (now_iso, REINFORCE_DECAY_INC, DECAY_S_CAP, nid),
+                )
+                self._conn.execute(
+                    "INSERT INTO access_log(note_id, ts, kind) VALUES (?, ?, 'search')",
+                    (nid, now_iso),
+                )
+                # per-note cap (I13): keep the most-recently-inserted rows (rowid breaks
+                # ts ties under a frozen clock).
+                self._conn.execute(
+                    "DELETE FROM access_log WHERE note_id = ? AND rowid NOT IN "
+                    "(SELECT rowid FROM access_log WHERE note_id = ? ORDER BY rowid DESC "
+                    "LIMIT ?)",
+                    (nid, nid, ACCESS_LOG_CAP_PER_NOTE),
+                )
 
     # ── edges ─────────────────────────────────────────────────────────────
     def _insert_edge(self, edge: Edge) -> None:
@@ -893,11 +880,8 @@ class SQLiteStore(Store):
         )
 
     def add_edge(self, edge: Edge) -> None:
-        try:
-            with self.in_transaction():
-                self._insert_edge(edge)
-        except sqlite3.Error as exc:
-            raise StoreError(f"add_edge failed: {exc}") from exc
+        with self._txn("add_edge"):  # same error-translating wrapper as every other mutator
+            self._insert_edge(edge)
 
     def neighbors(
         self, ids: list[str], *, relations: list[EdgeRelation] | None = None

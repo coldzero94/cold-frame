@@ -49,9 +49,9 @@ def test_add_routes_through_writecore(memory: Memory, monkeypatch: pytest.Monkey
     calls: list[int] = []
     orig = WriteCore.commit
 
-    def spy(self: WriteCore, candidates: list, *, scope: object, source: object = None) -> object:  # type: ignore[type-arg]
+    def spy(self: WriteCore, candidates: list, *, scope: object) -> object:  # type: ignore[type-arg]
         calls.append(len(candidates))
-        return orig(self, candidates, scope=scope, source=source)  # type: ignore[arg-type]
+        return orig(self, candidates, scope=scope)  # type: ignore[arg-type]
 
     monkeypatch.setattr(WriteCore, "commit", spy)
     memory.add("route me through the single persist path")
