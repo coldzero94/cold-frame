@@ -23,6 +23,7 @@ python3 -m venv "$BUILD/venv"
 
 echo ">> freezing the binary → $OUT/cold-frame"
 "$BUILD/venv/bin/pyinstaller" --onefile --name cold-frame --clean --noconfirm \
+  --icon "$HERE/coldframe.icns" \
   --distpath "$OUT" --workpath "$BUILD/work" --specpath "$BUILD" \
   --collect-submodules cold_frame \
   --hidden-import mcp.server.fastmcp --hidden-import mcp.types \

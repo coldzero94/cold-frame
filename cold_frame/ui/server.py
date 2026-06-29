@@ -514,7 +514,8 @@ def serve(
 _INDEX_HTML = """<!doctype html><html lang="en"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="color-scheme" content="dark"><title>cold-frame</title><style>
+<meta name="color-scheme" content="dark"><title>cold-frame</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg"><style>
 :root{color-scheme:dark}
 body{margin:0;background:#0b0b0f;color:#e7e7ea;font:14px/1.5 -apple-system,Inter,sans-serif}
 header{padding:20px 24px;border-bottom:1px solid #1c1c22}

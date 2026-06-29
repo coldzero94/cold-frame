@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="coldframe">
+  <title>coldframe</title>
+  <defs>
+    <radialGradient id="cf-ember" cx="44%" cy="40%" r="72%">
+      <stop offset="0%" stop-color="#ffe3b8"/>
+      <stop offset="50%" stop-color="#ff9d4d"/>
+      <stop offset="100%" stop-color="#ef5f33"/>
+    </radialGradient>
+  </defs>
+  <!-- cold frame: a low box with a slanted glass roof (higher at the back) -->
+  <path d="M28 104 L100 104 L100 46 L28 62 Z" fill="none" stroke="#38bdf8"
+        stroke-width="7.5" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M28 62 L100 46 L100 60 L28 76 Z" fill="#38bdf8" opacity="0.14"/>
+  <!-- embers sheltered inside: warmth = belief strength -->
+  <circle cx="54" cy="86" r="15" fill="url(#cf-ember)"/>
+  <circle cx="84" cy="90" r="8" fill="url(#cf-ember)" opacity="0.85"/>
+</svg>
