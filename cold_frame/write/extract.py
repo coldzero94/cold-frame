@@ -40,7 +40,8 @@ def _normalize(messages: str | Sequence[Msg]) -> list[dict[str, str]]:
 
 
 def _iso(dt: datetime) -> str:
-    return dt.astimezone(UTC).isoformat().replace("+00:00", "Z")
+    # fixed-width fractional seconds → sortable TEXT (see store._to_iso for why)
+    return dt.astimezone(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
 def _parse_valid_at(s: str | None, default: datetime) -> datetime:

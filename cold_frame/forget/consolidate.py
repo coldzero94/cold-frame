@@ -45,7 +45,10 @@ _log = get_logger(__name__)
 
 
 def _opt_iso(dt: datetime | None) -> str:
-    return dt.astimezone(UTC).isoformat().replace("+00:00", "Z") if dt is not None else ""
+    # fixed-width fractional seconds → sortable TEXT (see store._to_iso)
+    if dt is None:
+        return ""
+    return dt.astimezone(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
 def _parse_iso(s: str | None) -> datetime | None:

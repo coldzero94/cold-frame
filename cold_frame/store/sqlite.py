@@ -64,8 +64,14 @@ _DEFAULT_EXTRACTOR: str = "pipeline:v1"
 
 
 def _to_iso(dt: datetime) -> str:
-    """tz-aware datetime -> ISO8601-UTC TEXT with a ``Z`` suffix (I8)."""
-    return dt.astimezone(UTC).isoformat().replace("+00:00", "Z")
+    """tz-aware datetime -> ISO8601-UTC TEXT with a ``Z`` suffix (I8).
+
+    ``timespec="microseconds"`` forces a FIXED-WIDTH fractional field: without it, a whole-second
+    instant serializes to ``...00Z`` while a sub-second one is ``...00.500000Z``, and since ``.`` <
+    ``Z`` the later instant sorts BEFORE the earlier as TEXT — silently inverting the bi-temporal
+    ``valid_at<=?`` / ``invalid_at>?`` gates and ``ORDER BY`` tiebreaks that compare these strings.
+    """
+    return dt.astimezone(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
 def _from_iso(s: str) -> datetime:
@@ -1040,7 +1046,7 @@ class SQLiteStore(Store):
         now = self._clock.now()
         with self._txn(f"fail_job({id})"):
             row = self._conn.execute(
-                "SELECT attempts, max_attempts, locked_by FROM jobs WHERE id=?", (id,)
+                "SELECT attempts, max_attempts, locked_by, dedup_key FROM jobs WHERE id=?", (id,)
             ).fetchone()
             if row is None:
                 raise StoreError(f"fail_job: job {id} not found")
@@ -1055,10 +1061,19 @@ class SQLiteStore(Store):
             else:  # reschedule with exponential backoff
                 backoff = RETRY_BACKOFF_BASE * (2 ** row["attempts"])
                 ra = retry_after or (now + timedelta(seconds=backoff))
+                # if a same-key pending sibling appeared while we ran, re-pend WITHOUT the key to
+                # avoid the idx_jobs_dedup collision (keeps backoff; the sibling runs, idempotent)
+                dk = row["dedup_key"]
+                collide = dk is not None and (
+                    self._conn.execute(
+                        "SELECT 1 FROM jobs WHERE status='pending' AND dedup_key=? LIMIT 1", (dk,)
+                    ).fetchone()
+                    is not None
+                )
                 self._conn.execute(
-                    "UPDATE jobs SET status='pending', run_after=?, last_error=?, "
+                    "UPDATE jobs SET status='pending', run_after=?, last_error=?, dedup_key=?, "
                     "updated_at=? WHERE id=?",
-                    (_to_iso(ra), error, _to_iso(now), id),
+                    (_to_iso(ra), error, None if collide else dk, _to_iso(now), id),
                 )
 
     def pending_count(self, kind: str | None = None) -> int:
@@ -1077,13 +1092,30 @@ class SQLiteStore(Store):
 
     def requeue_dead(self, *, now: datetime) -> int:
         iso = _to_iso(now)
-        with self.in_transaction():
-            cur = self._conn.execute(
-                "UPDATE jobs SET status='pending', attempts=0, run_after=?, locked_by=NULL, "
-                "locked_at=NULL, updated_at=? WHERE status='dead'",
-                (iso, iso),
-            )
-            return int(cur.rowcount)
+        # A blanket UPDATE dead->pending crashes on idx_jobs_dedup (UNIQUE WHERE status='pending')
+        # when two dead jobs share a dedup_key, OR a dead job's key matches a live pending one —
+        # legitimate: enqueue() debounces only against 'pending' and dead-letter keeps the key.
+        # Requeue per-row: if the key already lives on a pending row, requeue WITHOUT it so the
+        # recovery still runs (idempotent handlers make the duplicate safe) instead of throwing and
+        # recovering nothing. _txn so any driver error surfaces as StoreError (contract), not raw.
+        with self._txn("requeue_dead"):
+            dead = self._conn.execute(
+                "SELECT id, dedup_key FROM jobs WHERE status='dead'"
+            ).fetchall()
+            for row in dead:
+                dk = row["dedup_key"]
+                collide = dk is not None and (
+                    self._conn.execute(
+                        "SELECT 1 FROM jobs WHERE status='pending' AND dedup_key=? LIMIT 1", (dk,)
+                    ).fetchone()
+                    is not None
+                )
+                self._conn.execute(
+                    "UPDATE jobs SET status='pending', attempts=0, run_after=?, locked_by=NULL, "
+                    "locked_at=NULL, dedup_key=?, updated_at=? WHERE id=?",
+                    (iso, None if collide else dk, iso, row["id"]),
+                )
+            return len(dead)
 
     def oldest_pending_age(self, *, now: datetime) -> float | None:
         row = self._conn.execute(

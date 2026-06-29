@@ -319,6 +319,21 @@ def test_purge_event_payloads_are_scrubbed(store: SQLiteStore, db_path: str) -> 
     assert rows and all(r["payload"] == "" and r["content_hash"] is None for r in rows)
 
 
+def test_purge_scrubs_job_payloads(store: SQLiteStore, db_path: str) -> None:
+    # the I2/I17 hard-purge must scrub EVERY grain, incl. queued job payloads that echo content
+    # (the scrub branch was mutation-proven untested — deleting it kept other purge tests green).
+    store.add_note(_note("s3", _SECRET), HashEmbedder().embed_one(_SECRET))
+    store.enqueue("consolidate", {"summary": _SECRET})  # a queued job whose payload embeds content
+    assert _SECRET.encode() in _db_bytes(db_path)
+
+    report = store.purge("s3")
+
+    assert report.grep_clean is True
+    payloads = [r["payload"] for r in store._conn.execute("SELECT payload FROM jobs").fetchall()]
+    assert payloads and all(_SECRET not in p for p in payloads)  # scrubbed from the jobs grain
+    assert _SECRET.encode() not in _db_bytes(db_path)
+
+
 def test_purge_cascade_removes_derivatives(store: SQLiteStore, db_path: str) -> None:
     # a semantic summary S derived_from the secret episodic note X — purging X (cascade) must
     # also remove S, else the secret survives in its derivative.
@@ -421,3 +436,18 @@ def test_add_note_rollback_on_failure(store: SQLiteStore, monkeypatch: pytest.Mo
     assert _count(store, "note_fts") == 0
     assert _count(store, "note_vec") == 0
     assert _count(store, "events") == 0
+
+
+def test_to_iso_fixed_width_is_lexicographically_sortable() -> None:
+    # _to_iso must emit fixed-width fractional seconds so TEXT comparison matches time order — the
+    # bi-temporal valid_at<=as_of / invalid_at>now gates and ORDER BY rely on it. With a bare
+    # isoformat() a whole-second instant ('...00Z') sorts AFTER a later sub-second one
+    # ('...00.5Z') because '.' < 'Z', silently inverting the as_of rewind filter.
+    from datetime import UTC, datetime
+
+    from cold_frame.store.sqlite import _to_iso
+
+    earlier = datetime(2026, 1, 1, 0, 0, 0, 0, tzinfo=UTC)  # whole second
+    later = datetime(2026, 1, 1, 0, 0, 0, 500000, tzinfo=UTC)  # 0.5s later, sub-second
+    assert _to_iso(earlier) <= _to_iso(later)  # was False with bare isoformat()
+    assert _to_iso(earlier).endswith(".000000Z")  # fixed width, not truncated to '...00Z'

@@ -131,3 +131,44 @@ def test_worker_failing_handler_reschedules(store_clock: tuple[SQLiteStore, _Clo
     worker.run_once({"consolidate": _boom})
     status = store._conn.execute("SELECT status FROM jobs WHERE id=?", (jid,)).fetchone()[0]
     assert status == "pending"  # rescheduled (backoff), never dropped
+
+
+def _drive_to_dead(store: SQLiteStore, clock: _Clock, payload: dict[str, int]) -> str:
+    """Lease+fail a consolidate job MAX_ATTEMPTS times until it dead-letters; return its id."""
+    jid = store.enqueue("consolidate", payload, dedup_key="consolidate:u")
+    for _ in range(MAX_ATTEMPTS):
+        clock.t = clock.t + timedelta(hours=1)  # step past the prior backoff before re-leasing
+        job = store.lease_job(worker="w", now=clock.now())
+        assert job is not None and job.id == jid
+        store.fail_job(jid, error="boom", retry_after=None, worker="w")
+    return jid
+
+
+def test_requeue_dead_handles_two_dead_jobs_sharing_a_dedup_key(
+    store_clock: tuple[SQLiteStore, _Clock],
+) -> None:
+    # enqueue debounces only against 'pending', so once A dead-letters a same-key B can be enqueued
+    # and also dead-letter → two dead rows share a dedup_key. The documented recovery command
+    # (`jobs --retry-dead`) must NOT crash on idx_jobs_dedup and must recover BOTH (I12, no loss).
+    store, clock = store_clock
+    a = _drive_to_dead(store, clock, {"n": 1})
+    assert store.dead_count() == 1
+    b = _drive_to_dead(store, clock, {"n": 2})  # same dedup_key, allowed because A is dead
+    assert a != b and store.dead_count() == 2
+    n = store.requeue_dead(now=clock.now())
+    assert n == 2 and store.dead_count() == 0 and store.pending_count() == 2
+
+
+def test_fail_job_reschedule_survives_same_key_pending_sibling(
+    store_clock: tuple[SQLiteStore, _Clock],
+) -> None:
+    # while A runs, a new same-key enqueue creates a pending sibling B (debounce blocks only
+    # pending, and A is 'running'). Rescheduling A on failure must not collide with B on the index.
+    store, clock = store_clock
+    a = store.enqueue("consolidate", {"n": 1}, dedup_key="k")
+    job = store.lease_job(worker="w", now=clock.now())
+    assert job is not None and job.id == a  # A running, attempts=1 < MAX
+    b = store.enqueue("consolidate", {"n": 2}, dedup_key="k")
+    assert b != a and store.pending_count() == 1
+    store.fail_job(a, error="boom", retry_after=None, worker="w")  # must not raise
+    assert store.pending_count() == 2  # A re-pended (key dropped) + B, no collision
