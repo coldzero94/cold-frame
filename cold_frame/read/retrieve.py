@@ -188,17 +188,11 @@ class RetrievePipeline:
         # fan-out so a high-degree hub can't pull an unbounded set into get_notes/the fuse.
         order.sort(key=lambda nid: (-weight[nid], nid))
         order = order[:FANOUT_MAX]
-        for n in self._store.get_notes(order):
-            # MIRROR _where_clauses EXACTLY (the Store search guard): same user_id, the pinned
-            # agent_id/session_id, NOT quarantined (G2/I14), and an allowed status — so an
-            # edge-reached note can never bypass the scope/quarantine/status filter knn+bm25 apply.
-            if (
-                n.scope.user_id == scope.user_id
-                and (scope.agent_id is None or n.scope.agent_id == scope.agent_id)
-                and (scope.session_id is None or n.scope.session_id == scope.session_id)
-                and not n.quarantined
-                and n.status in statuses
-            ):
-                note_map[n.id] = n
+        # Apply the EXACT search guard (scope + status + quarantine + bi-temporal in-effect gate)
+        # by reusing the Store's `_where_clauses` via get_notes_filtered — NOT a hand-rolled Python
+        # filter (which twice drifted: missed quarantine, then the invalid_at gate). as_of is always
+        # None here (the channel early-returns above for historical reads).
+        for n in self._store.get_notes_filtered(order, scope=scope, statuses=statuses, as_of=as_of):
+            note_map[n.id] = n
         edge_ids = [nid for nid in order if nid in note_map]
         return edge_ids, {nid: weight[nid] for nid in edge_ids}

@@ -93,7 +93,7 @@ class Signals(BaseModel):
 
     semantic: float | None = None  # cosine
     bm25: float | None = None  # normalized
-    edge: float | None = None  # RESERVED — 1-hop edge boost (edge channel not wired in v1)
+    edge: float | None = None  # RRF score from the 1-hop graph edge channel (None if not reached)
     rrf: float  # fused rank score
     rerank: float | None = None  # RESERVED — rerank-backend signal (rerank is a deferred extra)
 

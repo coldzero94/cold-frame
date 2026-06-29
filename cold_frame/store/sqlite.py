@@ -719,6 +719,32 @@ class SQLiteStore(Store):
                 out.append(self._row_to_note(row, sources.get(nid, [])))
         return out
 
+    def get_notes_filtered(
+        self,
+        ids: list[str],
+        *,
+        scope: Scope,
+        statuses: list[StatusLiteral],
+        as_of: datetime | None = None,
+    ) -> list[Note]:
+        """``get_notes`` restricted to the SAME predicate knn/bm25 apply — scope + status +
+        quarantine + bi-temporal in-effect gate — by reusing ``_where_clauses`` VERBATIM (no Python
+        re-implementation, so the edge channel can't drift from the search guard). Order preserved.
+        """
+        if not ids:
+            return []
+        where_sql, where_params = _where_clauses(
+            scope, statuses, as_of, self._clock.now(), alias="n"
+        )
+        placeholders = ",".join("?" * len(ids))
+        rows = self._conn.execute(
+            f"SELECT n.* FROM notes n WHERE n.id IN ({placeholders}) AND {where_sql}",
+            [*ids, *where_params],
+        ).fetchall()
+        by_id = {str(r["id"]): r for r in rows}
+        sources = self._load_sources(list(by_id))
+        return [self._row_to_note(by_id[nid], sources.get(nid, [])) for nid in ids if nid in by_id]
+
     def _load_sources(self, note_ids: list[str]) -> dict[str, list[Source]]:
         if not note_ids:
             return {}
@@ -1287,10 +1313,13 @@ class SQLiteStore(Store):
         targets, frontier, seen = [id], [id], {id}
         while cascade and frontier:
             edges = self.neighbors(frontier, relations=["derived_from"])
-            frontier = [e.src_id for e in edges if e.dst_id in seen and e.src_id not in seen]
-            for nid in frontier:
-                seen.add(nid)
-                targets.append(nid)
+            nxt: list[str] = []
+            for e in edges:  # mark seen AT enqueue so a multi-parent node is visited only once
+                if e.dst_id in seen and e.src_id not in seen:
+                    seen.add(e.src_id)
+                    nxt.append(e.src_id)
+                    targets.append(e.src_id)
+            frontier = nxt
         return targets
 
     def purge(self, id: str, *, cascade: bool = False) -> PurgeReport:
@@ -1375,8 +1404,14 @@ class SQLiteStore(Store):
     def _content_clean(self, needles: list[str]) -> bool:
         """True iff no ``needle`` appears in any live content-bearing column (read through the keyed
         connection, so it sees decrypted content). The meaningful purge proof under encryption."""
-        # notes.content (note_fts mirrors it via external content) + the two scrubbed JSON grains
-        targets = (("notes", "content"), ("events", "payload"), ("jobs", "payload"))
+        # notes.content + notes.context (both free-text, both PII-redacted) + the two scrubbed JSON
+        # grains. Mirrors the plaintext byte-grep's coverage so the encrypted path isn't weaker.
+        targets = (
+            ("notes", "content"),
+            ("notes", "context"),
+            ("events", "payload"),
+            ("jobs", "payload"),
+        )
         for needle in (n for n in needles if n):
             for table, col in targets:
                 hit = self._conn.execute(

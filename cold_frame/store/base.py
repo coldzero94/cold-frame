@@ -171,6 +171,20 @@ class Store(ABC):
         ...
 
     @abstractmethod
+    def get_notes_filtered(
+        self,
+        ids: list[str],
+        *,
+        scope: Scope,
+        statuses: list[StatusLiteral],
+        as_of: datetime | None = None,
+    ) -> list[Note]:
+        """``get_notes`` constrained to the same scope/status/quarantine/bi-temporal predicate the
+        search channels (knn/bm25) apply — so an edge-reached id can never bypass that guard. Order
+        preserved; non-matching ids dropped."""
+        ...
+
+    @abstractmethod
     def set_status(
         self, id: str, status: StatusLiteral, *, invalid_at: datetime | None = None
     ) -> None: ...

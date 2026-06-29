@@ -244,3 +244,36 @@ def test_edge_channel_respects_status_filter(memory: Memory) -> None:
     ]  # archived → excluded
     archived = memory.search("deploy", scope=s, include_archived=True).hits
     assert b in [h.note.id for h in archived]  # surfaced once archived is included
+
+
+def test_edge_channel_excludes_currently_invalid_stale_note(memory: Memory) -> None:
+    # a "stale" write is status='active' but invalid_at<=now (hidden from current search, visible
+    # only via as_of). The edge channel must apply the SAME bi-temporal gate as knn/bm25 — a
+    # currently-invalid neighbor must NOT leak into a default (non-historical) search.
+    from cold_frame.models import Edge, Note, Scope, Source
+
+    s = Scope(user_id="u")
+    t_past = datetime(2020, 1, 1, tzinfo=UTC)
+    a = memory.add("deploy with ship.sh", scope=s).added[0].id
+    stale = Note(
+        id="stale-b",
+        content="xylophone quasar widget",  # reachable ONLY via the edge, never lexically
+        memory_type="semantic",
+        scope=s,
+        created_at=t_past,
+        valid_at=t_past,
+        invalid_at=t_past,  # already invalidated → not currently in effect
+        sources=[Source(kind="message", ref="m", content_hash="h", observed_at=t_past)],
+    )
+    memory._store.add_note(stale, HashEmbedder().embed_one(stale.content))
+    memory._store.add_edge(
+        Edge(
+            src_id=a,
+            dst_id="stale-b",
+            relation="relates_to",
+            created_at=datetime(2030, 1, 1, tzinfo=UTC),
+        )
+    )
+    ids = [h.note.id for h in memory.search("deploy", scope=s).hits]
+    assert a in ids
+    assert "stale-b" not in ids  # currently-invalid note must not leak via the edge channel
