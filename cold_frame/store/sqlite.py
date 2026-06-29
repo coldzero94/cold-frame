@@ -177,6 +177,21 @@ _MIGRATIONS: list[tuple[int, str]] = [(1, DDL_V1)]
 assert _MIGRATIONS[-1][0] == SCHEMA_VERSION, "migrations must reach SCHEMA_VERSION"
 
 
+# SQLCipher (the [crypto] extra) raises its OWN exception classes, NOT sqlite3's — a narrow
+# `except sqlite3.X` would miss them in encrypted mode. These tuples catch both driver families.
+try:
+    import sqlcipher3.dbapi2 as _sqlcipher_dbapi  # type: ignore[import-not-found]
+
+    _DB_ERROR: tuple[type[Exception], ...] = (sqlite3.Error, _sqlcipher_dbapi.Error)
+    _DB_OPERATIONAL: tuple[type[Exception], ...] = (
+        sqlite3.OperationalError,
+        _sqlcipher_dbapi.OperationalError,
+    )
+except ImportError:  # [crypto] not installed → plaintext only, stdlib exceptions suffice
+    _DB_ERROR = (sqlite3.Error,)
+    _DB_OPERATIONAL = (sqlite3.OperationalError,)
+
+
 def _connect(
     db_path: str,
     key: str | None,
@@ -197,7 +212,7 @@ def _connect(
             check_same_thread=check_same_thread,
         )
     try:
-        from sqlcipher3 import dbapi2 as _sqlcipher  # type: ignore[import-not-found]
+        from sqlcipher3 import dbapi2 as _sqlcipher
     except ImportError as exc:  # encryption requested but the extra isn't installed
         raise StoreError(
             "at-rest encryption needs the [crypto] extra: pip install 'cold-frame[crypto]'"
@@ -274,7 +289,7 @@ class SQLiteStore(Store):
                 self.set_meta("schema_version", str(version))
                 self._conn.execute(f"PRAGMA user_version = {version}")
             self._seed_meta_once()
-        except sqlite3.Error as exc:  # pragma: no cover - exercised via rollback tests later
+        except _DB_ERROR as exc:  # pragma: no cover - exercised via rollback tests later
             raise StoreError(f"migrate failed: {exc}") from exc
 
     def _backup_before_upgrade(self, current: int) -> None:
@@ -342,7 +357,7 @@ class SQLiteStore(Store):
     def get_meta(self, key: str) -> str | None:
         try:
             row = self._conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
-        except sqlite3.OperationalError:
+        except _DB_OPERATIONAL:
             return None  # meta table not created yet (fresh db, pre-migrate)
         return None if row is None else str(row[0])
 
@@ -1355,7 +1370,7 @@ class SQLiteStore(Store):
         try:
             self._conn.execute("INSERT INTO note_fts(note_fts) VALUES ('integrity-check')")
             fts_integrity = "ok"
-        except sqlite3.Error as exc:
+        except _DB_ERROR as exc:
             fts_integrity = f"corrupt: {exc}"
         # vectors written by a different embedder than the current one (KNN excludes them, I10) →
         # they need `reembed` to become searchable again.
