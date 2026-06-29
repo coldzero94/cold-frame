@@ -4,10 +4,11 @@ All notable changes to coldframe. Format loosely follows [Keep a Changelog]; ver
 
 ## [Unreleased]
 
-The engine, CLI, MCP server, and Claude Code plugin are built and tested; a tagged `v0.1.0` PyPI
-release is pending a once-through live verification in a real Claude Code session (see the repo's
-readiness notes). Cut a release with `git tag v0.1.0 && git push origin v0.1.0` once verified — the
-Release workflow publishes to PyPI + attaches per-platform binaries.
+The engine, CLI, MCP server, and Claude Code plugin are built and tested. The core auto-memory loop
+is **verified end-to-end against real Claude Code** (headless `claude -p`): a fact stated in one
+session is captured and recalled (unprompted) in the next. Remaining before tagging `v0.1.0`:
+confirm the `claude plugin install` path + register the PyPI trusted publisher, then
+`git tag v0.1.0 && git push` (the Release workflow publishes to PyPI + attaches binaries).
 
 ## [0.1.0] — unreleased
 

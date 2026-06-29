@@ -73,8 +73,10 @@ observation log); link last. 90/10: insight first, promo last.
 
 ## Sequenced checklist
 
-- [ ] **Gate 0** — LIVE verify in real Claude Code (recall + capture work); `claude plugin validate`
-      clean. *(Blocks everything below.)*
+- [x] **Gate 0 (core loop)** — VERIFIED 2026-06-29 against real Claude Code via headless `claude -p`:
+      session 1's Stop hook captured a fact, a fresh session's SessionStart recall made the model
+      answer from it (unprompted). Isolated temp project/DB. Still confirm once: the actual
+      `claude plugin install` path (vs `hook install`) + the agent-push skill firing.
 - [ ] **Release** — register the PyPI trusted publisher, `git tag v0.1.0` (the Release workflow does
       PyPI + binaries). Confirm `uv tool install` / `claude plugin install` work on a clean machine.
 - [ ] **Pre-launch** — README rewind GIF (record [`demo.md`](demo.md) §B); MCP registries; submit to

@@ -43,7 +43,7 @@ cold-frame doctor          # health: counts, integrity, embedder
 ```
 
 *(Install: `uv tool install "cold-frame[mcp]"` · Homebrew · or a single binary — see
-[`packaging/`](packaging/). A PyPI release is pending name clearance.)*
+[`packaging/`](packaging/). A PyPI release is pending PyPI/trademark clearance.)*
 
 ## Why coldframe
 
@@ -97,7 +97,8 @@ you can browse facts and pin / correct / forget them (writes are CSRF-guarded an
 
 The engine, CLI, MCP server, Claude Code plugin, secret-blocking + grep-verified hard-purge, and a
 local web UI are built and tested end-to-end on a fully offline gate (`ruff` + `mypy --strict` +
-~340 deterministic mock-LLM tests green). Planned: full PII redaction + crypto-shred purge, a write
-web UI, event-log replay import, and a PyPI release (the name is pending trademark/registry clearance).
+~340 deterministic mock-LLM tests green). The automatic recall + capture loop is verified end-to-end
+against real Claude Code. Planned: full PII redaction + crypto-shred purge, a write web UI, event-log
+replay import, and a PyPI release (PyPI/trademark clearance pending).
 
 Apache-2.0.
