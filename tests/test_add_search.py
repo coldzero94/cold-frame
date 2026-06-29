@@ -140,3 +140,24 @@ def test_as_of_search_does_not_reinforce_archived_belief(memory: Memory) -> None
     assert bumped >= 1
     memory.search("deploy", as_of=datetime(2099, 1, 1, tzinfo=UTC))  # historical read
     assert memory.get(nid).access_count == bumped  # unchanged — no reinforce on as_of
+
+
+def test_edge_channel_surfaces_neighbor_and_isolates_scope(memory: Memory) -> None:
+    # the edge channel expands a query hit to its 1-hop graph neighbors — a connected fact surfaces
+    # even with NO lexical/semantic match — but never across a scope boundary (leak guard).
+    from cold_frame.models import Edge, Scope
+
+    s = Scope(user_id="u")
+    a = memory.add("the deploy script is ship.sh", scope=s).added[0].id
+    b = memory.add("xylophone zucchini quasar widget", scope=s).added[0].id  # unrelated text
+    other = memory.add("the deploy script is ship.sh", scope=Scope(user_id="other")).added[0].id
+    now = datetime(2030, 1, 1, tzinfo=UTC)
+    memory._store.add_edge(Edge(src_id=a, dst_id=b, relation="relates_to", created_at=now))
+    memory._store.add_edge(Edge(src_id=a, dst_id=other, relation="relates_to", created_at=now))
+
+    hits = memory.search("deploy script", scope=s).hits
+    ids = [h.note.id for h in hits]
+    assert a in ids and b in ids  # B surfaced purely via its edge to A
+    assert other not in ids  # a cross-scope edge-reached note is filtered out (no leak)
+    b_hit = next(h for h in hits if h.note.id == b)
+    assert b_hit.signals.edge is not None  # carries the edge signal (reached via the graph)
