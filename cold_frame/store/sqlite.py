@@ -208,7 +208,10 @@ def _connect(
         isolation_level=isolation_level,
         check_same_thread=check_same_thread,
     )
-    conn.execute("PRAGMA key = ?", (key,))  # MUST precede every other statement on the connection
+    # SQLCipher's PRAGMA key takes a string LITERAL, not a bind param ("near '?': syntax error").
+    # Inline it as a single-quoted literal with quotes doubled → injection-safe (a key cannot break
+    # out of the literal). MUST precede every other statement on the connection.
+    conn.execute("PRAGMA key = '" + key.replace("'", "''") + "'")
     return conn
 
 
