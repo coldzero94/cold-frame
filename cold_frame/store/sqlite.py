@@ -205,19 +205,21 @@ def _connect(
     key before any other access, and it transparently encrypts the main db + WAL + temp files.
     Without a key: stdlib sqlite3 (the default, unchanged). The key is never logged (I16)."""
     if not key:
-        return sqlite3.connect(
+        conn = sqlite3.connect(
             db_path,
             timeout=timeout,
             isolation_level=isolation_level,
             check_same_thread=check_same_thread,
         )
+        conn.row_factory = sqlite3.Row
+        return conn
     try:
         from sqlcipher3 import dbapi2 as _sqlcipher
     except ImportError as exc:  # encryption requested but the extra isn't installed
         raise StoreError(
             "at-rest encryption needs the [crypto] extra: pip install 'cold-frame[crypto]'"
         ) from exc
-    conn: sqlite3.Connection = _sqlcipher.connect(
+    conn = _sqlcipher.connect(
         db_path,
         timeout=timeout,
         isolation_level=isolation_level,
@@ -227,6 +229,7 @@ def _connect(
     # Inline it as a single-quoted literal with quotes doubled → injection-safe (a key cannot break
     # out of the literal). MUST precede every other statement on the connection.
     conn.execute("PRAGMA key = '" + key.replace("'", "''") + "'")
+    conn.row_factory = _sqlcipher.Row  # driver-matched Row (sqlite3.Row rejects a sqlcipher cursor)
     return conn
 
 
@@ -272,8 +275,7 @@ class SQLiteStore(Store):
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute(f"PRAGMA wal_autocheckpoint={WAL_AUTOCHECKPOINT}")
         conn.execute("PRAGMA secure_delete=ON")
-        conn.row_factory = sqlite3.Row
-        return conn
+        return conn  # row_factory (driver-matched) is set inside _connect
 
     # ── lifecycle ──────────────────────────────────────────────────────────
     def migrate(self) -> None:
