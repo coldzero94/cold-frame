@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import sys
+import time
 from typing import Any, Final
 
 # Fields whose VALUES must never be logged (I16). Substring match on the key.
@@ -56,6 +57,16 @@ def _is_denylisted(key: str) -> bool:
     return any(bad in lowered for bad in REDACT_DENYLIST)
 
 
+def _mask(value: Any) -> Any:  # noqa: ANN401 - masks arbitrary log `extra` values of any type
+    """Recursively mask denylisted keys at ANY depth (I16). A top-level-only mask would leak content
+    nested under a non-denylisted key, e.g. ``extra={"meta": {"content": "<secret>"}}``."""
+    if isinstance(value, dict):
+        return {k: (REDACTED if _is_denylisted(str(k)) else _mask(v)) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_mask(v) for v in value]
+    return value
+
+
 class RedactFilter(logging.Filter):
     """Masks denylisted ``extra`` fields on the record before formatting (I16)."""
 
@@ -67,11 +78,18 @@ class RedactFilter(logging.Filter):
 
 
 class JsonFormatter(logging.Formatter):
-    """Renders each record as a single-line JSON object (structured logging)."""
+    """Renders each record as a single-line JSON object (structured logging). The AUTHORITATIVE I16
+    guard: recursively masks denylisted fields unless ``redact=False`` (the unsafe-trace path)."""
+
+    converter = staticmethod(time.gmtime)  # ts in UTC, not the host's local time
+
+    def __init__(self, *, redact: bool = True) -> None:
+        super().__init__()
+        self._redact = redact
 
     def format(self, record: logging.LogRecord) -> str:
         payload: dict[str, Any] = {
-            "ts": self.formatTime(record, "%Y-%m-%dT%H:%M:%S%z"),
+            "ts": self.formatTime(record, "%Y-%m-%dT%H:%M:%S") + "Z",
             "level": record.levelname,
             "logger": record.name,
             "event": record.getMessage(),
@@ -79,7 +97,10 @@ class JsonFormatter(logging.Formatter):
         for key, value in vars(record).items():
             if key in _RESERVED or key == "message":
                 continue
-            payload[key] = REDACTED if _is_denylisted(key) else value
+            if self._redact:
+                payload[key] = REDACTED if _is_denylisted(key) else _mask(value)
+            else:
+                payload[key] = value  # unsafe-trace: the ONLY content path
         if record.exc_info:
             payload["exc_type"] = record.exc_info[0].__name__ if record.exc_info[0] else None
         return json.dumps(payload, default=str, ensure_ascii=False)
@@ -97,7 +118,10 @@ def get_logger(name: str, *, unsafe_trace: bool = False) -> logging.Logger:
     logger = logging.getLogger(name)
     if not getattr(logger, "_cold_frame_configured", False):
         handler = logging.StreamHandler(sys.stderr)
-        handler.setFormatter(JsonFormatter())
+        # the formatter is the authoritative guard (recursive); redact=False ONLY under
+        # unsafe_trace, which is what actually makes it expose content (not a no-op). RedactFilter
+        # stays as top-level defense-in-depth on the non-trace path.
+        handler.setFormatter(JsonFormatter(redact=not unsafe_trace))
         if not unsafe_trace:
             handler.addFilter(redact_filter)
         logger.addHandler(handler)
