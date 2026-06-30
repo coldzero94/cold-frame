@@ -87,4 +87,5 @@ def test_mcp_self_edit_error_maps_to_stable_code(db_path: str) -> None:
 def test_main_reports_install_hint_without_sdk(capsys: pytest.CaptureFixture[str]) -> None:
     rc = mcpmod.main()
     assert rc == 2
-    assert "[mcp]" in capsys.readouterr().out
+    # the hint goes to STDERR (a stdio MCP server reserves stdout for the JSON-RPC protocol)
+    assert "[mcp]" in capsys.readouterr().err
