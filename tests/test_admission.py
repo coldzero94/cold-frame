@@ -103,3 +103,68 @@ def test_normal_add_still_works(db_path: str, frozen_clock: FrozenClock) -> None
     m = _mem(db_path, frozen_clock)
     res = m.add("I prefer dark roast coffee", raw=True)
     assert len(res.added) == 1 and not res.blocked  # admission is a pass-through for clean text
+
+
+# ── I7: local-only admission tiebreak for an AMBIGUOUS span ────────────────────
+from cold_frame.llm.base import LLMResult, TaskTag  # noqa: E402
+from cold_frame.prompts.admission import AdmissionVerdict  # noqa: E402
+from cold_frame.write.admission import ambiguous_spans  # noqa: E402
+
+# 32 chars, verified entropy 4.25 → in the [4.0, 4.5) ambiguous band (>=32 for the _TOKEN scanner;
+# not a definite secret, not a plain hash/uuid)
+_AMBIG = "abcdefghijklmnopqrstabcdefghijkl"
+_AMBIG_TEXT = f"my deploy id is {_AMBIG} ok"
+
+
+def test_ambiguous_spans_detects_the_band() -> None:
+    assert ambiguous_spans(_AMBIG_TEXT)  # the token is in [4.0, 4.5)
+    assert scan_secret(_AMBIG_TEXT) is None  # ...but NOT a definite secret
+    assert ambiguous_spans("just a short normal sentence about coffee") == []
+
+
+def _tiebreak_mem(db_path, clock, *, verdict, is_local):  # type: ignore[no-untyped-def]
+    from cold_frame.api import Memory
+
+    from tests.conftest import ScriptedLLM
+
+    script = {TaskTag.ADMISSION_TIEBREAK: LLMResult(parsed=verdict)}
+    return Memory(
+        db_path, embedder=HashEmbedder(), llm=ScriptedLLM(script, is_local=is_local), clock=clock
+    )
+
+
+def test_ambiguous_offline_no_llm_is_allowed(db_path: str, frozen_clock: FrozenClock) -> None:
+    # I5: with no LLM there is no tiebreak — the deterministic gate stands, ambiguous proceeds.
+    res = _mem(db_path, frozen_clock).add(_AMBIG_TEXT, raw=True)
+    assert res.added and not res.blocked
+
+
+def test_ambiguous_local_llm_says_secret_blocks(db_path: str, frozen_clock: FrozenClock) -> None:
+    m = _tiebreak_mem(
+        db_path, frozen_clock, verdict=AdmissionVerdict(is_secret=True), is_local=True
+    )
+    res = m.add(_AMBIG_TEXT, raw=True)
+    assert not res.added and res.blocked and res.blocked[0].placeholder == "[BLOCKED:ambiguous]"
+
+
+def test_ambiguous_local_llm_says_clean_allows(db_path: str, frozen_clock: FrozenClock) -> None:
+    m = _tiebreak_mem(
+        db_path, frozen_clock, verdict=AdmissionVerdict(is_secret=False), is_local=True
+    )
+    res = m.add(_AMBIG_TEXT, raw=True)
+    assert res.added and not res.blocked
+
+
+def test_ambiguous_remote_llm_fails_closed_and_never_sends(
+    db_path: str, frozen_clock: FrozenClock
+) -> None:
+    # I7: a non-local LLM must NOT receive the span — assert_local_for raises BEFORE complete().
+    from cold_frame.api import Memory
+
+    from tests.conftest import ScriptedLLM
+
+    llm = ScriptedLLM({}, is_local=False)  # empty script → any complete() call would AssertionError
+    m = Memory(db_path, embedder=HashEmbedder(), llm=llm, clock=frozen_clock)
+    res = m.add(_AMBIG_TEXT, raw=True)
+    assert not res.added and res.blocked  # fail closed
+    assert TaskTag.ADMISSION_TIEBREAK not in llm.calls  # the span never reached the remote model

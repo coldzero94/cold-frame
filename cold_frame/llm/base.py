@@ -107,12 +107,10 @@ class LLM(ABC):
 
 
 def assert_local_for(task: TaskTag, llm: LLM) -> None:
-    """Enforce I-LOCAL in one place: a secret span NEVER reaches a remote endpoint (I7).
-
-    DEFERRED in v1 (D25): admission/I7 isn't wired, so no production path calls this yet, and the
-    guard behavior is NOT yet under test (only PolicyError's class hierarchy is smoke-checked; the
-    admission/remote tests are deferred with I6/I7). Ready to gate the secret-span eval when
-    admission lands (v1.1/hosted).
+    """Enforce I-LOCAL in one place: a secret span NEVER reaches a remote endpoint (I7). LIVE — the
+    admission tiebreak (``WriteCore._admission_block``) calls this before judging an ambiguous span,
+    so an ``ADMISSION_TIEBREAK`` on a non-local LLM raises PolicyError and the span is BLOCKed
+    (fail-closed) instead of sent to a remote model.
     """
     if task in LOCAL_ONLY_TASKS and not llm.is_local:
         raise PolicyError(f"task={task.value} requires a local LLM (D4/R11); got {llm.name!r}")

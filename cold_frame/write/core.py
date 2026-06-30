@@ -17,7 +17,7 @@ from datetime import datetime
 import numpy as np
 
 from cold_frame.constants import CONFLICT_CANDIDATE_FLOOR, DEDUP_AUTO_MERGE, DEDUP_NEAR_DUP
-from cold_frame.exceptions import SecretBlocked
+from cold_frame.exceptions import PolicyError, SecretBlocked
 from cold_frame.llm.base import LLM, Clock, Embedder, TaskTag
 from cold_frame.models import (
     AddResult,
@@ -28,6 +28,11 @@ from cold_frame.models import (
     RedactedSpan,
     Scope,
 )
+from cold_frame.prompts.admission import (
+    ADMISSION_SYSTEM,
+    AdmissionVerdict,
+    build_admission_user,
+)
 from cold_frame.prompts.conflict import (
     CONFLICT_SYSTEM,
     DEDUP_SYSTEM,
@@ -35,7 +40,7 @@ from cold_frame.prompts.conflict import (
     build_dedup_user,
 )
 from cold_frame.store.base import Store
-from cold_frame.write.admission import redact_pii, scan_secret
+from cold_frame.write.admission import Verdict, ambiguous_spans, redact_pii, scan_secret
 from cold_frame.write.extract import _sha256  # re-hash sources over redacted content (PII scrub)
 
 
@@ -61,6 +66,40 @@ class WriteCore:
         self._clock = clock
         # OPT-IN PII categories to scrub inline pre-disk (None = off; see admission.redact_pii)
         self._pii_redact = pii_redact
+
+    def _admission_block(self, content: str) -> Verdict | None:
+        """``(reason, placeholder)`` if ``content`` must be BLOCKed pre-disk, else None (I6/I7).
+
+        Deterministic secret scan FIRST (obvious secret → BLOCK). Then, for an AMBIGUOUS span, a
+        LOCAL-only LLM tiebreak that fails CLOSED: the span NEVER reaches a remote endpoint
+        (assert_local_for → PolicyError → block), and can't-verify (no parse / judged-secret) ⇒
+        block. With no LLM (the offline default) there is no tiebreak — the deterministic gate
+        stands and the candidate proceeds (I5), so ambiguity only activates with a local LLM.
+        """
+        verdict = scan_secret(content)
+        if verdict is not None:
+            return verdict
+        spans = ambiguous_spans(content)
+        if not spans or self._llm is None:
+            return None
+        try:
+            self._llm.assert_local_for(TaskTag.ADMISSION_TIEBREAK)  # I7: local-only or PolicyError
+        except PolicyError:
+            return ("secret", "[BLOCKED:ambiguous_remote_llm]")  # never send a span remote → block
+        for span in spans:
+            res = self._llm.complete(
+                task=TaskTag.ADMISSION_TIEBREAK,
+                system=ADMISSION_SYSTEM,
+                user=build_admission_user(span),
+                schema=AdmissionVerdict,
+            )
+            v = res.parsed
+            if not isinstance(v, AdmissionVerdict) or v.is_secret:
+                return (
+                    "secret",
+                    "[BLOCKED:ambiguous]",
+                )  # unparseable or judged-secret → fail closed
+        return None  # the local LLM cleared every ambiguous span
 
     def _redact(self, note: Note) -> tuple[Note, Counter[PiiCategory]]:
         """OPT-IN PII scrub of EVERY persisted free-text grain — content, context, AND keywords (all
@@ -102,10 +141,10 @@ class WriteCore:
     ) -> AddResult:
         """ADMISSION → DEDUP → CONFLICT → PERSIST for new candidate facts (SPEC §4).
 
-        ADMISSION (v1, D25) = a deterministic secret scan: an obvious secret/credential is
-        BLOCKed pre-disk (never embedded, never persisted, never sent to the host) and reported
-        in ``blocked`` as a content-free placeholder (I6). REDACT/CONSENT + local tiebreak (I7)
-        are deferred. Each surviving candidate is then classified against the nearest active
+        ADMISSION = a deterministic secret scan (obvious secret → BLOCK pre-disk, content-free
+        placeholder in ``blocked``, I6) PLUS, for an ambiguous span, a LOCAL-only LLM tiebreak that
+        fails CLOSED (I7, see ``_admission_block``). CONFIDENCE-GATE/CONSENT remain deferred (D25).
+        Each surviving candidate is then classified against the nearest active
         note: DEDUP (cosine≥0.93 auto-merge, [0.82,0.93) ambiguous → DEDUP LLM) → CONFLICT
         (LLM proposes contradiction) → deterministic freshness (valid_at, NEVER the LLM — I1) →
         supersede / stale-mark / triage. Quarantined/held candidates route to ``held``.
@@ -117,7 +156,7 @@ class WriteCore:
         blocked: list[BlockedSpan] = []
         pii: Counter[PiiCategory] = Counter()
         for cand in candidates:
-            verdict = scan_secret(cand.content)
+            verdict = self._admission_block(cand.content)
             if verdict is not None:  # I6: a secret never touches disk (no embed, no host call)
                 blocked.append(BlockedSpan(reason=verdict[0], placeholder=verdict[1]))
                 continue
@@ -253,7 +292,7 @@ class WriteCore:
         the conflict path uses (I15). ADMISSION (v1): a secret in ``new`` raises ``SecretBlocked``
         (strict path — this returns a single Note, so there is no ``blocked`` list to report in).
         """
-        verdict = scan_secret(new.content)
+        verdict = self._admission_block(new.content)
         if verdict is not None:  # I6: never persist a secret, even via an explicit self-edit
             raise SecretBlocked(verdict[1])
         if self._pii_redact:  # same all-grain PII scrub on the correction (one pipeline, I15)

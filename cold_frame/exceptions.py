@@ -36,11 +36,10 @@ class StoreError(ColdFrameError):
 
 
 class PolicyError(ColdFrameError):
-    """A local-only policy was violated (non-local LLM for a secret-span eval, I7). Raised by
-    ``llm.assert_local_for``; that guard is DEFERRED with admission/I7 (D25) so nothing in v1
-    dispatches it yet. The class is hierarchy-checked in the smoke test, but the guard BEHAVIOR has
-    no test yet (the admission/remote tests are deferred with I6/I7) — re-activate when admission
-    lands (v1.1/hosted)."""
+    """A local-only policy was violated — a non-local LLM was used for a local-only task (I7).
+    Raised by ``llm.assert_local_for`` and dispatched LIVE by ``WriteCore._admission_block``: the
+    admission tiebreak for an ambiguous span MUST run on a local LLM, so a non-local one fails
+    CLOSED (the span is BLOCKed, never sent remote)."""
 
 
 class ToolError(ColdFrameError):

@@ -35,6 +35,9 @@ _ASSIGNMENT = re.compile(
 )
 _TOKEN = re.compile(r"[A-Za-z0-9+/=_-]{32,}")  # a contiguous long blob (entropy backstop)
 _ENTROPY_MIN = 4.5  # Shannon bits/char; random base64 secrets ~4.5-6, hex UUIDs only ~4.0
+# the AMBIGUOUS band [4.0, 4.5): higher than a plain hash/UUID (~3.4-3.6) but below the definite
+# secret floor — "could be a secret." Not BLOCKed; routed to the I7 local tiebreak.
+_ENTROPY_AMBIGUOUS = 4.0
 
 Verdict = tuple[Literal["secret", "credential"], str]  # (reason, placeholder) — never content
 
@@ -56,6 +59,15 @@ def scan_secret(text: str) -> Verdict | None:
         if _entropy(token) >= _ENTROPY_MIN:
             return ("secret", "[BLOCKED:high_entropy]")
     return None
+
+
+def ambiguous_spans(text: str) -> list[str]:
+    """Long tokens in the AMBIGUOUS entropy band [4.0, 4.5) — suspicious but not a DEFINITE secret
+    (``scan_secret`` already catches those). These warrant the I7 local-LLM tiebreak. Empty when the
+    text is already a definite BLOCK (no point tiebreaking) or has no such token."""
+    if scan_secret(text) is not None:
+        return []
+    return [t for t in _TOKEN.findall(text) if _ENTROPY_AMBIGUOUS <= _entropy(t) < _ENTROPY_MIN]
 
 
 # ── PII redaction (OPT-IN, I6 REDACT — deterministic, no LLM) ──────────────────
