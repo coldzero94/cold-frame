@@ -10,6 +10,7 @@ core; ``main()`` reports a clean install hint when the SDK is absent.
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -224,7 +225,9 @@ def main() -> int:
     try:
         server = build_server()
     except ColdFrameError as exc:
-        print(str(exc))
+        # a stdio MCP server owns STDOUT for JSON-RPC — a human-readable startup error goes to
+        # STDERR (else it corrupts the protocol stream a client may already be reading).
+        print(str(exc), file=sys.stderr)
         return 2
     server.run()  # serve over stdio (blocks)
     return 0
