@@ -441,6 +441,7 @@ class Memory:
         as_of: datetime | None = None,
         include_archived: bool = False,
         reinforce: bool = True,
+        rerank: bool = False,
     ) -> SearchResult:
         return self._read.search(
             query,
@@ -450,6 +451,7 @@ class Memory:
             as_of=as_of,
             include_archived=include_archived,
             reinforce=reinforce,
+            rerank=rerank,
         )
 
     def get(self, id: str) -> Note:

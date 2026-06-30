@@ -17,9 +17,9 @@ First public version. Local-first, ownable memory for AI agents — one SQLite f
 ### Added
 
 - **Memory engine** — hybrid retrieval (BM25 + numpy-KNN vectors + a 1-hop graph edge channel,
-  RRF fusion), bi-temporal versions with `as_of` rewind (`search --as-of`), deterministic
-  dedup/conflict resolution, decay + consolidation (+ an archive-imminent strength sub-label) +
-  per-scope caps (bounded active set), and a token-budget packer.
+  RRF fusion) with an opt-in LLM relevance rerank (`search(rerank=True)`), bi-temporal versions with
+  `as_of` rewind (`search --as-of`), deterministic dedup/conflict resolution + tagging, decay +
+  consolidation (+ an archive-imminent strength sub-label) + per-scope caps, and a token-budget packer.
 - **CLI** — `add` / `search` / `list` / `show` / `timeline` / `doctor` / `consolidate` / `worker` /
   `jobs` / `export` / `import` / `purge` / `reembed` / `ui` / `mcp` / `setup` / `hook`.
 - **Claude Code integration** — a plugin (MCP server + recall/capture hooks + a capture skill) for
@@ -39,8 +39,9 @@ First public version. Local-first, ownable memory for AI agents — one SQLite f
 
 - PII redaction + at-rest encryption are OFF by default (opt-in); encryption is set at DB creation —
   there's no in-place plaintext→encrypted migration for an existing DB yet.
-- Deferred to v1.1/hosted: the local admission LLM tiebreak (I7) + confidence-gate/consent, and a
-  crypto-shred (key-destroy) purge. A cross-encoder/LLM rerank backend + auto-tagging are not wired.
+- Deferred to v1.1/hosted: admission confidence-gate/consent, a crypto-shred (key-destroy) purge, and
+  the remote-extraction-LLM exposure. (The I7 local tiebreak, the opt-in LLM rerank, and deterministic
+  tagging are now BUILT.)
 - The agent-push capture path is model-discretionary; the keyless backstop guarantees coverage.
 - Write/triage in the browser is partial; full event-log replay import is snapshot-based for now.
 

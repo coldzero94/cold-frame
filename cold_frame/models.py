@@ -96,7 +96,7 @@ class Signals(BaseModel):
     bm25: float | None = None  # normalized
     edge: float | None = None  # RRF score from the 1-hop graph edge channel (None if not reached)
     rrf: float  # fused rank score
-    rerank: float | None = None  # RESERVED — rerank-backend signal (rerank is a deferred extra)
+    rerank: float | None = None  # LLM relevance score (set only when search(rerank=True), opt-in)
 
 
 class SearchHit(BaseModel):

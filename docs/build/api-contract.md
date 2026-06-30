@@ -200,6 +200,7 @@ def search(
     as_of: datetime | None = None,
     include_archived: bool = False,
     reinforce: bool = True,            # bump access/decay of surfaced hits (False on historical/MCP-merge reads)
+    rerank: bool = False,              # opt-in LLM relevance rerank of the top candidates (needs an LLM)
 ) -> SearchResult: ...                 # default FILTER: status="active" AND NOT quarantined
 
 def get(self, id: str) -> Note: ...                          # raises NoteNotFound

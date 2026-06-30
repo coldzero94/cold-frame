@@ -1,7 +1,7 @@
 """RetrievePipeline — search fan-out → RRF fuse → meta-boost → token-budget pack (SPEC §5).
 
-Implemented across P1 (hybrid retrieve + RRF) and P3 (deterministic meta boost + the packer). A
-cross-encoder/LLM rerank backend is a deferred extra and is NOT wired in v1.
+Implemented across P1 (hybrid retrieve + RRF) and P3 (deterministic meta boost + the packer). An
+opt-in LLM relevance rerank (``search(rerank=True)``) re-scores the top candidates; off by default.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from cold_frame.models import Note, Scope, SearchHit, SearchResult, Signals, Sta
 from cold_frame.observability import get_logger
 from cold_frame.read.budget import pack_budget
 from cold_frame.read.fuse import rrf_fuse
-from cold_frame.read.rerank import apply_meta_boost
+from cold_frame.read.rerank import apply_meta_boost, llm_rerank
 from cold_frame.store.base import Store
 
 _log = get_logger(__name__)
@@ -56,8 +56,9 @@ class RetrievePipeline:
         as_of: datetime | None = None,
         include_archived: bool = False,
         reinforce: bool = True,
+        rerank: bool = False,
     ) -> SearchResult:
-        """Hybrid retrieve → RRF fuse → top-k → meta-boost → REINFORCE (P1; meta-boost/budget P3).
+        """Hybrid retrieve → RRF fuse → meta-boost → (opt-in LLM rerank) → top-k → REINFORCE.
 
         Default FILTER = ``status='active' AND NOT quarantined`` (G2, enforced in the
         Store channels). Never raises on no match — returns an empty SearchResult.
@@ -119,7 +120,11 @@ class RetrievePipeline:
         # META BOOST (default; the optional LLM/BGE rerank backend is an extra). Clamped to
         # +15% so it nudges, never dominates RRF — read path stays deterministic for eval.
         apply_meta_boost(hits, now=self._clock.now(), scope=scope)
-        hits = hits[:k]  # truncate to k AFTER boost (boost may promote within the candidate set)
+        # OPT-IN LLM rerank (an extra): re-score the top candidates by query relevance BEFORE the
+        # top-k cut, so it can promote within the candidate set. A failure leaves the fused order.
+        if rerank and self._llm is not None:
+            hits = llm_rerank(query, hits, self._llm)
+        hits = hits[:k]  # truncate to k AFTER boost/rerank (they may promote within the set)
 
         # BUDGET: pack whole facts under the cap BEFORE reinforce, so budget-dropped notes
         # are not reinforced (being *surfaced* is the reinforcement signal — §5.9).
