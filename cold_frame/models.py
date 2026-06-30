@@ -125,9 +125,11 @@ class Strength(BaseModel):
 
 
 class BlockedSpan(BaseModel):
-    """A secret/credential BLOCKed pre-disk (D15). NEVER carries the original content."""
+    """A span BLOCKed pre-disk (D15) — NEVER the original content. ``reason``: a deterministic
+    ``secret``/``credential`` match, or ``ambiguous`` (fail-closed: the local I7 tiebreak could not
+    confirm it safe — no/errored local LLM, or judged secret — NOT a confirmed detection)."""
 
-    reason: Literal["secret", "credential"]
+    reason: Literal["secret", "credential", "ambiguous"]
     placeholder: str  # e.g. "[BLOCKED:aws_access_key]" — a label only; original span discarded
 
 

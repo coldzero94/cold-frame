@@ -93,3 +93,16 @@ def test_cli_verbosity_flags_set_diagnostic_level(tmp_path: object) -> None:
         assert get_logger("cold_frame.cli").level == _logging.WARNING
     finally:
         set_log_level(_logging.INFO)
+
+
+def test_cli_vv_flag_is_debug(tmp_path: object) -> None:
+    import logging as _logging
+
+    from cold_frame.cli import main
+    from cold_frame.observability import get_logger, set_log_level
+
+    try:
+        main(["--db", str(tmp_path / "m.db"), "-vv", "stats"])  # type: ignore[operator]
+        assert get_logger("cold_frame.cli").level == _logging.DEBUG
+    finally:
+        set_log_level(_logging.INFO)

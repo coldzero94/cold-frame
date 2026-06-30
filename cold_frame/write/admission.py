@@ -4,8 +4,10 @@ No LLM, no key, no network: a gitleaks-style regex + Shannon-entropy scan that B
 secrets/credentials BEFORE they touch disk. Returns only a ``(reason, placeholder)`` label —
 NEVER the matched content (I6/I16). Plus ``redact_pii`` — an OPT-IN deterministic PII scrub that
 replaces emails/phones/cards/SSNs inline before persist (off by default: a personal-memory tool must
-not blanket-redact the user's OWN useful contact facts; enable per-category when wanted). The
-LLM CONFIDENCE-GATE/CONSENT tiebreak (I7) and crypto-shred purge remain deferred (v1.1 / hosted).
+not blanket-redact the user's OWN useful contact facts; enable per-category when wanted). Plus
+``ambiguous_spans`` — the entropy band that feeds the LOCAL-only I7 tiebreak in
+``WriteCore._admission_block`` (built). CONFIDENCE-GATE/CONSENT and crypto-shred purge remain
+deferred (v1.1 / hosted).
 """
 
 from __future__ import annotations
@@ -34,12 +36,15 @@ _ASSIGNMENT = re.compile(
     r"\S{6,}"
 )
 _TOKEN = re.compile(r"[A-Za-z0-9+/=_-]{32,}")  # a contiguous long blob (entropy backstop)
-_ENTROPY_MIN = 4.5  # Shannon bits/char; random base64 secrets ~4.5-6, hex UUIDs only ~4.0
-# the AMBIGUOUS band [4.0, 4.5): higher than a plain hash/UUID (~3.4-3.6) but below the definite
-# secret floor — "could be a secret." Not BLOCKed; routed to the I7 local tiebreak.
+_ENTROPY_MIN = 4.5  # Shannon bits/char; random base64 secrets ~4.5-6
+# the AMBIGUOUS band [4.0, 4.5): below the definite-secret floor but high enough to warrant a check.
+# Dashed UUIDs (~3.4) and hex SHAs (~3.95) sit just below 4.0 (thin buffer); but ordinary long
+# camelCase/path tokens (~4.1) DO land in the band — the local LLM tiebreak (NOT the band) clears.
 _ENTROPY_AMBIGUOUS = 4.0
 
-Verdict = tuple[Literal["secret", "credential"], str]  # (reason, placeholder) — never content
+# (reason, placeholder) — never content. "ambiguous" = fail-closed BLOCK because the local tiebreak
+# could not CONFIRM it safe (no local LLM / errored / judged-secret) — NOT a deterministic match.
+Verdict = tuple[Literal["secret", "credential", "ambiguous"], str]
 
 
 def _entropy(s: str) -> float:

@@ -1,7 +1,8 @@
 """Admission tests (v1, D25): deterministic secret-BLOCK before disk (I6).
 
-Lightweight scope — obvious secrets are blocked pre-disk; REDACT/purge/local-tiebreak (I7)
-are deferred. The blocked output NEVER carries the secret content (I6/I16).
+Obvious secrets are blocked pre-disk (deterministic); an AMBIGUOUS span is resolved by the
+LOCAL-only I7 tiebreak (built, exercised here). CONFIDENCE-GATE/CONSENT + crypto-shred deferred.
+The blocked output NEVER carries the secret content (I6/I16).
 """
 
 from __future__ import annotations
@@ -167,4 +168,45 @@ def test_ambiguous_remote_llm_fails_closed_and_never_sends(
     m = Memory(db_path, embedder=HashEmbedder(), llm=llm, clock=frozen_clock)
     res = m.add(_AMBIG_TEXT, raw=True)
     assert not res.added and res.blocked  # fail closed
+    assert res.blocked[0].reason == "ambiguous"  # NOT "secret" — it was unverifiable, not confirmed
+    assert res.blocked[0].placeholder == "[BLOCKED:ambiguous_remote_llm]"
     assert TaskTag.ADMISSION_TIEBREAK not in llm.calls  # the span never reached the remote model
+
+
+def test_ambiguous_band_lower_boundary_excludes_hashes_uuids() -> None:
+    # below the 4.0 floor: a hex SHA and a dashed UUID are NOT routed to the tiebreak (no LLM noise)
+    sha = "a3f5c8e1b2d4f6a8c0e2b4d6f8a0c2e4b6d8f0a2c4e6b8d0f2a4c6e8b0d2f4a6"  # 64 hex, ~3.64
+    uuid = "550e8400-e29b-41d4-a716-446655440000"  # dashed, ~3.39 (hyphens are in the _TOKEN class)
+    assert ambiguous_spans(f"commit {sha}") == []
+    assert ambiguous_spans(f"trace id {uuid}") == []
+
+
+def test_ambiguous_unparseable_verdict_fails_closed(
+    db_path: str, frozen_clock: FrozenClock
+) -> None:
+    # local LLM returns no parsed verdict → can't confirm safe → BLOCK (reason=ambiguous)
+    m = _tiebreak_mem(db_path, frozen_clock, verdict=None, is_local=True)
+    res = m.add(_AMBIG_TEXT, raw=True)
+    assert not res.added and res.blocked and res.blocked[0].reason == "ambiguous"
+
+
+def test_supersede_path_runs_the_tiebreak(db_path: str, frozen_clock: FrozenClock) -> None:
+    # the tiebreak guards commit_supersede (correct_memory), not just the add path (I15)
+    m = _tiebreak_mem(
+        db_path, frozen_clock, verdict=AdmissionVerdict(is_secret=True), is_local=True
+    )
+    fid = m.add("a clean baseline fact", raw=True).added[0].id
+    with pytest.raises(SecretBlocked):
+        m.correct_memory(fid, _AMBIG_TEXT)
+    assert m.get(fid).content == "a clean baseline fact"  # the old fact is untouched (no partial)
+
+
+def test_ambiguous_loop_checks_every_span(db_path: str, frozen_clock: FrozenClock) -> None:
+    # multiple ambiguous spans → ALL are tiebroken (a spans[0]-only loop would miss a later secret)
+    m = _tiebreak_mem(
+        db_path, frozen_clock, verdict=AdmissionVerdict(is_secret=False), is_local=True
+    )
+    ambig2 = "abcdefghijklmnopqrsabcdefghijklmnop"  # 2nd distinct >=32-char token in [4.0,4.5)
+    res = m.add(f"ids {_AMBIG} and {ambig2}", raw=True)
+    assert res.added  # the local LLM cleared both
+    assert m._write._llm.calls.count(TaskTag.ADMISSION_TIEBREAK) == 2  # the loop checked BOTH spans

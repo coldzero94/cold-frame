@@ -1,8 +1,8 @@
 """WriteCore — the single persist path (I15, D8).
 
 Every entry runs the SAME pipeline: ADMISSION → DEDUP → CONFLICT → PERSIST, in ONE Store
-transaction (I3). ADMISSION in v1 (D25) is a deterministic secret-BLOCK (``scan_secret``);
-REDACT/CONFIDENCE-GATE/CONSENT are deferred (I6 PARTIAL).
+transaction (I3). ADMISSION (``_admission_block``) = a deterministic secret-BLOCK + a LOCAL-only
+LLM tiebreak for ambiguous spans (I6/I7); CONFIDENCE-GATE/CONSENT are deferred (D25).
 
 - ``commit`` is used by ``add()`` and ``create_fact``.
 - ``commit_supersede`` is used by ``correct_memory``, ``update_fact``, ``supersede`` —
@@ -28,6 +28,7 @@ from cold_frame.models import (
     RedactedSpan,
     Scope,
 )
+from cold_frame.observability import get_logger
 from cold_frame.prompts.admission import (
     ADMISSION_SYSTEM,
     AdmissionVerdict,
@@ -42,6 +43,8 @@ from cold_frame.prompts.conflict import (
 from cold_frame.store.base import Store
 from cold_frame.write.admission import Verdict, ambiguous_spans, redact_pii, scan_secret
 from cold_frame.write.extract import _sha256  # re-hash sources over redacted content (PII scrub)
+
+_log = get_logger(__name__)
 
 
 def _iso_or_unknown(dt: datetime | None) -> str:
@@ -71,10 +74,11 @@ class WriteCore:
         """``(reason, placeholder)`` if ``content`` must be BLOCKed pre-disk, else None (I6/I7).
 
         Deterministic secret scan FIRST (obvious secret → BLOCK). Then, for an AMBIGUOUS span, a
-        LOCAL-only LLM tiebreak that fails CLOSED: the span NEVER reaches a remote endpoint
-        (assert_local_for → PolicyError → block), and can't-verify (no parse / judged-secret) ⇒
-        block. With no LLM (the offline default) there is no tiebreak — the deterministic gate
-        stands and the candidate proceeds (I5), so ambiguity only activates with a local LLM.
+        LOCAL-only LLM tiebreak that fails CLOSED. The tiebreak runs whenever an LLM IS configured:
+        a non-local one is rejected before the call (assert_local_for → PolicyError → BLOCK; never
+        sent to a remote endpoint), a local one judges it (judged-secret / unparseable / call
+        error ⇒ BLOCK). Only with NO LLM is there no tiebreak — the deterministic gate stands, the
+        candidate proceeds (I5). All BLOCK returns use reason="ambiguous" (not a confirmed match).
         """
         verdict = scan_secret(content)
         if verdict is not None:
@@ -85,20 +89,26 @@ class WriteCore:
         try:
             self._llm.assert_local_for(TaskTag.ADMISSION_TIEBREAK)  # I7: local-only or PolicyError
         except PolicyError:
-            return ("secret", "[BLOCKED:ambiguous_remote_llm]")  # never send a span remote → block
+            _log.info("admission_blocked", extra={"reason": "ambiguous_remote_llm"})
+            return (
+                "ambiguous",
+                "[BLOCKED:ambiguous_remote_llm]",
+            )  # never send a span remote → block
         for span in spans:
-            res = self._llm.complete(
-                task=TaskTag.ADMISSION_TIEBREAK,
-                system=ADMISSION_SYSTEM,
-                user=build_admission_user(span),
-                schema=AdmissionVerdict,
-            )
+            try:
+                res = self._llm.complete(
+                    task=TaskTag.ADMISSION_TIEBREAK,
+                    system=ADMISSION_SYSTEM,
+                    user=build_admission_user(span),
+                    schema=AdmissionVerdict,
+                )
+            except Exception as exc:  # tiebreak call failed → can't confirm safe → fail CLOSED
+                _log.warning("admission_tiebreak_error", extra={"exc_type": type(exc).__name__})
+                return ("ambiguous", "[BLOCKED:ambiguous_tiebreak_error]")
             v = res.parsed
             if not isinstance(v, AdmissionVerdict) or v.is_secret:
-                return (
-                    "secret",
-                    "[BLOCKED:ambiguous]",
-                )  # unparseable or judged-secret → fail closed
+                _log.info("admission_blocked", extra={"reason": "ambiguous"})
+                return ("ambiguous", "[BLOCKED:ambiguous]")  # unparseable / judged-secret → block
         return None  # the local LLM cleared every ambiguous span
 
     def _redact(self, note: Note) -> tuple[Note, Counter[PiiCategory]]:
