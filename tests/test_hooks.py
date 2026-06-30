@@ -762,3 +762,29 @@ def test_layer_a_keeps_homograph_declarative_facts() -> None:
     assert _is_durable_user_fact("review is mandatory before any merge")  # kept
     assert not _is_durable_user_fact("run the integration tests again")  # imperative → dropped
     assert not _is_durable_user_fact("fix the failing build now please")  # imperative → dropped
+
+
+def test_project_key_empty_cwd_is_isolated_not_global() -> None:
+    from cold_frame.integrations.claude_code import GLOBAL_KEY, LOCAL_KEY, project_key
+
+    assert project_key("") == LOCAL_KEY  # no cwd → isolated local bucket
+    assert project_key(None) == LOCAL_KEY
+    assert LOCAL_KEY != GLOBAL_KEY  # ...and NOT the cross-project global tier (D26 leak guard)
+
+
+def test_read_user_messages_does_not_drop_a_partial_trailing_line(tmp_path: Path) -> None:
+    # a mid-write last line (no trailing newline) must NOT be counted in the watermark, so the
+    # completed turn is still picked up on the next drain (not permanently dropped).
+    t = tmp_path / "t.jsonl"
+    rec = {
+        "type": "user",
+        "message": {
+            "role": "user",
+            "content": [{"type": "text", "text": "I use ruff for linting"}],
+        },
+    }
+    partial = '{"type": "user", "message": {"role": "user", "content": [{"type": "text", "te'
+    t.write_text(json.dumps(rec) + "\n" + partial, encoding="utf-8")  # NO trailing newline
+    msgs, watermark = read_user_messages(t, 0)
+    assert [m["content"] for m in msgs] == ["I use ruff for linting"]
+    assert watermark == 1  # only the complete record is counted; the partial isn't consumed/dropped

@@ -20,6 +20,9 @@ if TYPE_CHECKING:
 
 # ── git-based project tag + global/project tiering (D26 project scoping) ──────
 GLOBAL_KEY = "global"  # the scope (agent_id) tier for cross-project facts (recalled everywhere)
+# project facts from a session with no resolvable cwd → isolated bucket, NOT the global tier (a
+# project fact must never leak cross-project just because cwd was unknown, D26).
+LOCAL_KEY = "proj:unknown"
 
 # Clear personal identity/preference leads → a GLOBAL fact (recalled in every project).
 # Conservative: anything else stays project-scoped, so a project fact can't leak to other repos.
@@ -51,8 +54,8 @@ def _git_remote(config_text: str) -> str | None:
         s = line.strip()
         if s.startswith("["):
             in_origin = s.replace(" ", "").replace('"', "").lower() == "[remoteorigin]"
-        elif in_origin and s.lower().startswith("url"):
-            return s.split("=", 1)[1].strip()
+        elif in_origin and s.lower().startswith("url") and "=" in s:
+            return s.split("=", 1)[1].strip()  # guard: a malformed 'url' line w/o '=' is skipped
     return None
 
 
@@ -106,9 +109,11 @@ def _project_basis(cwd: str) -> str:
 
 
 def project_key(cwd: str | None) -> str:
-    """A stable per-project scope tag from cwd (git-based, hybrid). Empty cwd → the global tier."""
+    """A stable per-project scope tag from cwd (git-based, hybrid). Empty cwd → an ISOLATED local
+    bucket (LOCAL_KEY), NOT the global tier — else a project fact captured with no cwd would leak
+    cross-project. Genuinely-global facts are routed by the tier classifier, not by this."""
     if not cwd:
-        return GLOBAL_KEY
+        return LOCAL_KEY
     return "proj:" + hashlib.blake2b(_project_basis(cwd).encode("utf-8"), digest_size=8).hexdigest()
 
 
@@ -272,7 +277,11 @@ def read_user_messages(transcript_path: str | Path, since_line: int = 0) -> tupl
         text = p.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return [], since_line
-    lines = text.splitlines()
+    # split on the JSONL delimiter ONLY (not splitlines(), which also breaks on U+2028/U+2029/U+0085
+    # that can legally appear inside a JSON string) and drop the trailing fragment: a partial,
+    # mid-write last line is NOT counted, so the watermark never advances past it and it's re-read
+    # once complete (else a finished turn is permanently dropped).
+    lines = text.split("\n")[:-1]
     total = len(lines)
     start = 0 if total < since_line else since_line  # shrink/rotation → re-scan the whole file
     msgs: list[Msg] = []
