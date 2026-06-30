@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
@@ -27,6 +28,69 @@ _NAIVE_CONFIDENCE = 0.5
 _NAIVE_IMPORTANCE = 0.5
 _DURABLE_MIN_CONF = 0.6
 _DURABLE_MIN_IMPORTANCE = 0.5
+
+# Deterministic tagging (offline-first, I5): coarse labels for grouping/filtering — the memory_type
+# (a category) + a few salient content terms. Distinct from LLM `keywords` (search terms); derived
+# the same way in both the naive and LLM paths so a tag is always present.
+_TAG_TOKEN = re.compile(r"[a-z][a-z0-9]{3,}")  # lowercase word, length >= 4
+_TAG_STOPWORDS: frozenset[str] = frozenset(
+    [
+        "this",
+        "that",
+        "with",
+        "from",
+        "have",
+        "here",
+        "there",
+        "what",
+        "when",
+        "then",
+        "they",
+        "them",
+        "your",
+        "work",
+        "about",
+        "into",
+        "over",
+        "yours",
+        "mine",
+        "ours",
+        "their",
+        "been",
+        "being",
+        "will",
+        "would",
+        "should",
+        "could",
+        "prefer",
+        "using",
+        "used",
+        "like",
+        "want",
+        "need",
+        "make",
+        "made",
+        "does",
+        "done",
+        "onto",
+        "every",
+    ]
+)
+_TAG_MAX = 6  # memory_type + up to 5 salient terms
+
+
+def derive_tags(content: str, memory_type: str) -> list[str]:
+    """Coarse, deterministic tags: ``[memory_type]`` + salient content terms (lowercased, len>=4,
+    stopword-filtered, dedup'd, capped). No LLM — works in the offline default (I5)."""
+    tags: list[str] = [memory_type]
+    seen = {memory_type}
+    for tok in _TAG_TOKEN.findall(content.lower()):
+        if tok not in _TAG_STOPWORDS and tok not in seen:
+            tags.append(tok)
+            seen.add(tok)
+            if len(tags) >= _TAG_MAX:
+                break
+    return tags
 
 
 def _sha256(text: str) -> str:
@@ -108,6 +172,7 @@ def _naive(
                 id=new_id(),
                 content=content,
                 memory_type="episodic",
+                tags=derive_tags(content, "episodic"),
                 confidence=_NAIVE_CONFIDENCE,
                 importance=_NAIVE_IMPORTANCE,
                 scope=scope,
@@ -165,6 +230,7 @@ def _llm_extract(
                 content=f.text,
                 memory_type=f.memory_type,
                 keywords=f.keywords,
+                tags=derive_tags(f.text, f.memory_type),
                 context=f.context,
                 confidence=f.confidence,
                 importance=f.importance,
