@@ -283,6 +283,12 @@ class Store(ABC):
     ) -> list[Note]: ...
 
     @abstractmethod
+    def find_procedural(self, name: str, scope: Scope) -> Note | None:
+        """The single active procedural directive named ``name`` in EXACTLY ``scope`` (NULL-safe on
+        agent/session), or None. Targeted lookup — never a recency-bounded scan."""
+        ...
+
+    @abstractmethod
     def as_of(self, ids: list[str], *, at: datetime) -> list[Note]:
         """Bi-temporal snapshot of ``ids`` valid at ``at`` (valid_at<=at<invalid_at)."""
         ...

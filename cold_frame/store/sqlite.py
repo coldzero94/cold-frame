@@ -1058,6 +1058,20 @@ class SQLiteStore(Store):
         sources = self._load_sources([str(r["id"]) for r in rows])
         return [self._row_to_note(r, sources.get(str(r["id"]), [])) for r in rows]
 
+    def find_procedural(self, name: str, scope: Scope) -> Note | None:
+        # targeted EXACT-scope lookup (NULL-safe `IS ?` on agent_id/session_id) so a directive can
+        # never be missed past a recency page, nor a broad scope bleed in a narrower one's note.
+        row = self._conn.execute(
+            "SELECT * FROM notes WHERE user_id=? AND agent_id IS ? AND session_id IS ? "
+            "AND memory_type='procedural' AND context=? AND status='active' "
+            "ORDER BY created_at DESC, id LIMIT 1",
+            (scope.user_id, scope.agent_id, scope.session_id, name),
+        ).fetchone()
+        if row is None:
+            return None
+        sources = self._load_sources([str(row["id"])])
+        return self._row_to_note(row, sources.get(str(row["id"]), []))
+
     def get_history(self, id: str) -> list[Note]:
         """All persisted versions of ``id`` (oldest→newest), reconstructed from note_history."""
         rows = self._conn.execute(

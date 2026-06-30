@@ -34,7 +34,6 @@ if TYPE_CHECKING:
     from cold_frame.api import Msg
 
 _log = get_logger(__name__)
-_LIST_LIMIT = 10_000
 
 # An f-string slot, capturing the VARIABLE NAME (group 1); tolerates conversion (!r) +
 # a format spec (:>10) so a cosmetic spec change is not mistaken for a dropped variable.
@@ -64,6 +63,10 @@ def heal_vars(current: str, improved: str) -> str:
         raise VarHealerError(f"procedural edit dropped required variable(s): {missing}")
 
     text = _TO_OPTIMIZE.sub("", improved)
+    # Protect already-doubled braces FIRST so a {{name}} LITERAL is never seen as a {name} slot by
+    # _SLOT below. Otherwise, if `name` is also required, the inner {name} gets masked and the outer
+    # braces re-escaped → {{name}} corrupts to {{{name}}} (a live substitution of a literal).
+    text = text.replace("{{", "\x01").replace("}}", "\x02")
     masks: dict[str, str] = {}
 
     def _protect(match: re.Match[str]) -> str:  # keep required slots verbatim through escaping
@@ -73,11 +76,9 @@ def heal_vars(current: str, improved: str) -> str:
         masks[token] = match.group(0)
         return token
 
-    text = _SLOT.sub(_protect, text)
-    # escape stray single braces, but DON'T double-already-doubled ones ({{ }} stay literal)
-    text = text.replace("{{", "\x01").replace("}}", "\x02")
-    text = text.replace("{", "{{").replace("}", "}}")
-    text = text.replace("\x01", "{{").replace("\x02", "}}")
+    text = _SLOT.sub(_protect, text)  # only genuine SINGLE-brace slots remain to match
+    text = text.replace("{", "{{").replace("}", "}}")  # escape the remaining stray single braces
+    text = text.replace("\x01", "{{").replace("\x02", "}}")  # restore the original {{ }} literals
     for token, slot in masks.items():
         text = text.replace(token, slot)
     return text
@@ -104,18 +105,9 @@ class ProceduralOptimizer:
         self._scope = scope or Scope()
 
     def _find(self, name: str) -> Note | None:
-        # Exact-scope match: by_status with a broad scope (e.g. user-only) would otherwise
-        # bleed in a procedural note written under a narrower agent/session scope.
-        for note in self._store.by_status(
-            scope=self._scope, status="active", sort="recent", limit=_LIST_LIMIT
-        ):
-            if (
-                note.memory_type == "procedural"
-                and note.context == name
-                and note.scope == self._scope
-            ):
-                return note
-        return None
+        # targeted exact-scope SQL lookup — never a recency-bounded Python scan (which could miss a
+        # directive past the page and create a duplicate), and never bleeds a broader scope's note.
+        return self._store.find_procedural(name, self._scope)
 
     def get_procedural(self, name: str) -> str:
         """Current behavior directive for ``name``; ``""`` if none."""
