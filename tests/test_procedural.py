@@ -195,3 +195,13 @@ def test_heal_vars_idempotent_on_escaped_literal() -> None:
 def test_heal_vars_still_catches_a_real_dropped_variable() -> None:
     with pytest.raises(VarHealerError):
         heal_vars("Hello {user}", "Hello there")  # a genuine single-brace slot was dropped
+
+
+def test_heal_vars_preserves_slot_adjacent_to_escaped_braces() -> None:
+    # regression: a required {value} slot whose `}` abuts an escaped `}}` (JSON-template directives)
+    # must stay a LIVE slot — an ordered str.replace mis-paired the braces and silently demoted it.
+    healed = heal_vars("Use {value}", '{{"key": {value}}}')
+    assert healed == '{{"key": {value}}}'
+    assert healed.format(value="V") == '{"key": V}'  # value still substitutes (not a dead literal)
+    # and a {{name}} literal whose name is ALSO required stays a literal (not {{{name}}})
+    assert heal_vars("Use {name}", "see {{name}} and {name}") == "see {{name}} and {name}"

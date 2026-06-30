@@ -220,6 +220,11 @@ class Consolidator:
 
         valids = [m.valid_at for m in members if m.valid_at is not None]
         valid_at = _parse_iso(out.valid_at) or (min(valids) if valids else at)
+        min_conf = min(m.confidence for m in members)
+        # defense-in-depth (I14): if the rolled-up confidence lands below the floor, set the FULL
+        # triage triad (held + quarantined + reason) — NOT quarantined alone, which would orphan it
+        # (invisible to BOTH default search AND the triage queue). Mirrors extract.py's coupling.
+        low = min_conf < CONFIDENCE_FLOOR
         summary = Note(
             id=self._new_id(),
             content=out.summary,
@@ -229,11 +234,10 @@ class Consolidator:
             created_at=at,
             valid_at=valid_at,
             importance=max(m.importance for m in members),
-            confidence=min(m.confidence for m in members),
-            # defense-in-depth (I14): if the rolled-up confidence still lands below the floor,
-            # quarantine the summary so it can't surface in default search (members are pre-filtered
-            # above, so this only fires on a borderline edge).
-            quarantined=min(m.confidence for m in members) < CONFIDENCE_FLOOR,
+            confidence=min_conf,
+            held_for_human=low,
+            quarantined=low,
+            triage_reason="low_confidence" if low else None,
             sources=[
                 Source(
                     kind="manual",

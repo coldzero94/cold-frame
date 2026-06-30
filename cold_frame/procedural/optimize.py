@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import string
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
@@ -63,22 +64,43 @@ def heal_vars(current: str, improved: str) -> str:
         raise VarHealerError(f"procedural edit dropped required variable(s): {missing}")
 
     text = _TO_OPTIMIZE.sub("", improved)
-    # Protect already-doubled braces FIRST so a {{name}} LITERAL is never seen as a {name} slot by
-    # _SLOT below. Otherwise, if `name` is also required, the inner {name} gets masked and the outer
-    # braces re-escaped → {{name}} corrupts to {{{name}}} (a live substitution of a literal).
-    text = text.replace("{{", "\x01").replace("}}", "\x02")
+    try:
+        return _heal_via_formatter(text, required)
+    except ValueError:  # unbalanced braces → can't tokenize; fall back to the regex-mask escape
+        return _heal_via_regex(text, required)
+
+
+def _heal_via_formatter(text: str, required: set[str]) -> str:
+    """Escape via Python's OWN format tokenizer: it cleanly separates literal ``{{``/``}}`` from
+    real ``{field}`` slots (and nested specs), so adjacent brace runs like ``}}}`` are never
+    mis-paired the way ordered ``str.replace`` does (which silently demoted a required slot)."""
+    out: list[str] = []
+    for literal, field, spec, conv in string.Formatter().parse(text):
+        out.append(literal.replace("{", "{{").replace("}", "}}"))  # literal text stays literal
+        if field is None:
+            continue
+        token = "{" + field + (f"!{conv}" if conv else "") + (f":{spec}" if spec else "") + "}"
+        # a required slot stays a LIVE slot, verbatim; anything else → escaped literal (no KeyError)
+        out.append(token if field in required else token.replace("{", "{{").replace("}", "}}"))
+    return "".join(out)
+
+
+def _heal_via_regex(text: str, required: set[str]) -> str:
+    """Fallback for UNBALANCED braces (which Formatter().parse can't tokenize): mask required slots,
+    then escape the rest. Preserves required vars; handles a stray brace the tokenizer rejects."""
     masks: dict[str, str] = {}
 
-    def _protect(match: re.Match[str]) -> str:  # keep required slots verbatim through escaping
+    def _protect(match: re.Match[str]) -> str:
         if match.group(1) not in required:
             return match.group(0)  # non-required slot → fall through to be escaped (literal)
         token = f"\x00{len(masks)}\x00"
         masks[token] = match.group(0)
         return token
 
-    text = _SLOT.sub(_protect, text)  # only genuine SINGLE-brace slots remain to match
-    text = text.replace("{", "{{").replace("}", "}}")  # escape the remaining stray single braces
-    text = text.replace("\x01", "{{").replace("\x02", "}}")  # restore the original {{ }} literals
+    text = _SLOT.sub(_protect, text)  # mask required slots BEFORE touching braces
+    text = text.replace("{{", "\x01").replace("}}", "\x02")  # preserve already-doubled literals
+    text = text.replace("{", "{{").replace("}", "}}")  # escape stray single braces
+    text = text.replace("\x01", "{{").replace("\x02", "}}")
     for token, slot in masks.items():
         text = text.replace(token, slot)
     return text

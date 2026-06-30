@@ -57,13 +57,19 @@ def _is_denylisted(key: str) -> bool:
     return any(bad in lowered for bad in REDACT_DENYLIST)
 
 
-def _mask(value: Any) -> Any:  # noqa: ANN401 - masks arbitrary log `extra` values of any type
+def _mask(value: Any, _depth: int = 0) -> Any:  # noqa: ANN401 - masks arbitrary `extra` values
     """Recursively mask denylisted keys at ANY depth (I16). A top-level-only mask would leak content
-    nested under a non-denylisted key, e.g. ``extra={"meta": {"content": "<secret>"}}``."""
+    nested under a non-denylisted key, e.g. ``extra={"meta": {"content": "<secret>"}}``. A depth cap
+    keeps a cyclic / pathologically-deep ``extra`` from crashing logging with RecursionError."""
+    if _depth >= 12:  # logs aren't this deep; a cycle/runaway is collapsed rather than recursed
+        return REDACTED
     if isinstance(value, dict):
-        return {k: (REDACTED if _is_denylisted(str(k)) else _mask(v)) for k, v in value.items()}
+        return {
+            k: (REDACTED if _is_denylisted(str(k)) else _mask(v, _depth + 1))
+            for k, v in value.items()
+        }
     if isinstance(value, (list, tuple)):
-        return [_mask(v) for v in value]
+        return [_mask(v, _depth + 1) for v in value]
     return value
 
 
