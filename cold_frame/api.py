@@ -17,7 +17,7 @@ from typing import Literal, TypedDict, cast, get_args
 
 from cold_frame.branding import DB_PATH
 from cold_frame.constants import CONSOLIDATE_EVERY_N_WRITES, DEDUP_AUTO_MERGE
-from cold_frame.exceptions import EmbedderMismatchError, NoteNotFound, ToolError
+from cold_frame.exceptions import EmbedderMismatchError, NoteNotFound, StoreError, ToolError
 from cold_frame.forget.consolidate import Consolidator
 from cold_frame.forget.worker import Worker
 from cold_frame.integrations.claude_code import (
@@ -323,9 +323,15 @@ class Memory:
                 reinforce_ids.extend(known)  # only after this tier's add() actually committed
             except Exception as exc:  # one tier's failure must not abort/re-present the others
                 _log.warning("capture_tier_failed", extra={"exc_type": type(exc).__name__})
-        if reinforce_ids:  # restatements counted ONCE, post-commit (no double-fire on retry)
-            self._store.reinforce(reinforce_ids, now=self._clock.now())
+        # Advance the watermark FIRST (at-most-once), THEN best-effort reinforce. If the process
+        # dies between them, the watermark is already past these messages so a retry won't re-read
+        # and re-reinforce (I12) — the lost bump is the documented benign loss, not a double-count.
         self._store.set_meta(wkey, str(new_line))
+        if reinforce_ids:
+            try:
+                self._store.reinforce(reinforce_ids, now=self._clock.now())
+            except StoreError:
+                _log.warning("capture_reinforce_failed")
 
     def _supersede_text(
         self,

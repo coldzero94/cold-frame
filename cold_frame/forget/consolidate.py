@@ -27,10 +27,11 @@ from cold_frame.constants import (
     CAP_EPISODIC,
     CAP_PROCEDURAL,
     CAP_SEMANTIC,
+    CONFIDENCE_FLOOR,
     CONSOLIDATE_CLUSTER_COSINE,
     CONSOLIDATE_DEMOTE_FACTOR,
 )
-from cold_frame.exceptions import StoreError
+from cold_frame.exceptions import NoteNotFound, StoreError
 from cold_frame.llm.base import LLM, Clock, Embedder, TaskTag
 from cold_frame.models import ConsolidateResult, Note, Scope, Source
 from cold_frame.observability import get_logger
@@ -148,7 +149,11 @@ class Consolidator:
                 try:
                     self._store.archive(nid, now=at)
                     archived.append(nid)
-                except StoreError:
+                except (StoreError, NoteNotFound):
+                    # NoteNotFound: a concurrent delete/purge removed it (already gone → fine).
+                    # NoteNotFound is NOT a StoreError subclass, so it must be caught explicitly or
+                    # it escapes the loop and aborts the whole cap/decay pass (the opposite of the
+                    # per-note resilience this loop promises).
                     _log.warning("archive_failed", extra={"note_id_hash": hash(nid)})
 
         return ConsolidateResult(reinforced=0, merged=merged, archived=archived)
@@ -158,7 +163,14 @@ class Consolidator:
         active = self._store.by_status(
             scope=scope, status="active", sort="recent", limit=_LIST_LIMIT
         )
-        episodic = [n for n in active if n.memory_type == "episodic"]
+        # exclude quarantined / held members: by_status(active) does NOT filter them, but a
+        # sub-CONFIDENCE_FLOOR or held note must never be rolled into a SEARCHABLE summary (I14 /
+        # the human-triage gate) — the summary would otherwise leak into default search.
+        episodic = [
+            n
+            for n in active
+            if n.memory_type == "episodic" and not n.quarantined and not n.held_for_human
+        ]
         if len(episodic) < 2:
             return []
         # convergence: a note already summarized has an incoming derived_from edge — skip it,
@@ -218,6 +230,10 @@ class Consolidator:
             valid_at=valid_at,
             importance=max(m.importance for m in members),
             confidence=min(m.confidence for m in members),
+            # defense-in-depth (I14): if the rolled-up confidence still lands below the floor,
+            # quarantine the summary so it can't surface in default search (members are pre-filtered
+            # above, so this only fires on a borderline edge).
+            quarantined=min(m.confidence for m in members) < CONFIDENCE_FLOOR,
             sources=[
                 Source(
                     kind="manual",

@@ -1143,13 +1143,22 @@ class SQLiteStore(Store):
         stale = _to_iso(now - timedelta(seconds=LEASE_TTL))  # crashed-worker reclaim
         with self._txn("lease_job"):
             row = self._conn.execute(
-                "SELECT id FROM jobs WHERE (status='pending' AND run_after<=?) "
+                "SELECT id, status, attempts FROM jobs WHERE (status='pending' AND run_after<=?) "
                 "OR (status='running' AND locked_at<?) ORDER BY run_after LIMIT 1",
                 (now_iso, stale),
             ).fetchone()
             if row is None:
                 return None
             jid = str(row["id"])
+            # a stale RUNNING row is a crashed worker's job. If it already used up its attempts, it
+            # crashed every time (a poison job that never reached fail_job) — dead-letter it instead
+            # of re-leasing it forever (I12: never silently re-run a crash loop).
+            if row["status"] == "running" and int(row["attempts"]) >= MAX_ATTEMPTS:
+                self._conn.execute(
+                    "UPDATE jobs SET status='dead', last_error=?, updated_at=? WHERE id=?",
+                    ("reclaim exhausted — worker crash loop", now_iso, jid),
+                )
+                return None  # next lease() picks the following job
             self._conn.execute(
                 "UPDATE jobs SET status='running', locked_by=?, locked_at=?, "
                 "attempts=attempts+1, updated_at=? WHERE id=?",
