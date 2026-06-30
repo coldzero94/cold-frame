@@ -25,6 +25,7 @@ TriageReason = Literal["true_conflict", "ambiguous_merge", "low_confidence", "pi
 UpdateType = Literal["extract", "dedup", "conflict", "feedback", "manual", "correct", "consolidate"]
 SourceKind = Literal["message", "document", "tool", "manual"]
 Band = Literal["evergreen", "budding", "fading"]
+PiiCategory = Literal["email", "phone", "credit_card", "ssn"]  # the closed PII-redaction domain
 
 
 class Scope(BaseModel):
@@ -111,7 +112,7 @@ class SearchResult(BaseModel):
 
     hits: list[SearchHit] = Field(default_factory=list)
     used_tokens: int | None = None  # set only when token_budget given (SPEC §5 step 5)
-    truncated: bool = False  # a hit's content was partially truncated to fit budget
+    truncated: bool = False  # True if lower-ranked hits were dropped to fit the token budget
 
 
 class Strength(BaseModel):
@@ -133,7 +134,7 @@ class BlockedSpan(BaseModel):
 class RedactedSpan(BaseModel):
     """PII REDACTED inline pre-disk (opt-in, I6). Content-free: category + count, not the value."""
 
-    category: str  # email | phone | credit_card | ssn
+    category: PiiCategory
     count: int
 
 

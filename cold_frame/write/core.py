@@ -24,6 +24,7 @@ from cold_frame.models import (
     BlockedSpan,
     ConflictVerdict,
     Note,
+    PiiCategory,
     RedactedSpan,
     Scope,
 )
@@ -52,7 +53,7 @@ class WriteCore:
         embedder: Embedder,
         llm: LLM | None,
         clock: Clock,
-        pii_redact: frozenset[str] | None = None,
+        pii_redact: frozenset[PiiCategory] | None = None,
     ) -> None:
         self._store = store
         self._embedder = embedder
@@ -61,13 +62,13 @@ class WriteCore:
         # OPT-IN PII categories to scrub inline pre-disk (None = off; see admission.redact_pii)
         self._pii_redact = pii_redact
 
-    def _redact(self, note: Note) -> tuple[Note, Counter[str]]:
+    def _redact(self, note: Note) -> tuple[Note, Counter[PiiCategory]]:
         """OPT-IN PII scrub of EVERY persisted free-text grain — content, context, AND keywords (all
         stored + FTS-indexed; redacting content alone would leak PII to disk + search). On any
         redaction, rebuild each source's content_hash over the REDACTED content so no SHA of the
         original PII lingers (like notes.content_hash, which hashes the redacted text)."""
         assert self._pii_redact is not None
-        summ: Counter[str] = Counter()
+        summ: Counter[PiiCategory] = Counter()
         content, s = redact_pii(note.content, self._pii_redact)
         summ.update(s)
         context, s = redact_pii(note.context, self._pii_redact)
@@ -114,7 +115,7 @@ class WriteCore:
         deduped: list[str] = []
         superseded: list[str] = []
         blocked: list[BlockedSpan] = []
-        pii: Counter[str] = Counter()
+        pii: Counter[PiiCategory] = Counter()
         for cand in candidates:
             verdict = scan_secret(cand.content)
             if verdict is not None:  # I6: a secret never touches disk (no embed, no host call)

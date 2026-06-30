@@ -86,8 +86,9 @@ def _heal_via_formatter(text: str, required: set[str]) -> str:
 
 
 def _heal_via_regex(text: str, required: set[str]) -> str:
-    """Fallback for UNBALANCED braces (which Formatter().parse can't tokenize): mask required slots,
-    then escape the rest. Preserves required vars; handles a stray brace the tokenizer rejects."""
+    """Fallback for UNBALANCED braces (which Formatter().parse can't tokenize). Preserves required
+    vars + escapes stray braces. Protect already-doubled literals FIRST so a {{name}} literal isn't
+    re-read as a {name} slot (the same corruption the formatter path avoids structurally)."""
     masks: dict[str, str] = {}
 
     def _protect(match: re.Match[str]) -> str:
@@ -97,10 +98,10 @@ def _heal_via_regex(text: str, required: set[str]) -> str:
         masks[token] = match.group(0)
         return token
 
-    text = _SLOT.sub(_protect, text)  # mask required slots BEFORE touching braces
-    text = text.replace("{{", "\x01").replace("}}", "\x02")  # preserve already-doubled literals
+    text = text.replace("{{", "\x01").replace("}}", "\x02")  # protect literals BEFORE slot matching
+    text = _SLOT.sub(_protect, text)  # mask genuine single-brace required slots
     text = text.replace("{", "{{").replace("}", "}}")  # escape stray single braces
-    text = text.replace("\x01", "{{").replace("\x02", "}}")
+    text = text.replace("\x01", "{{").replace("\x02", "}}")  # restore the original {{ }} literals
     for token, slot in masks.items():
         text = text.replace(token, slot)
     return text

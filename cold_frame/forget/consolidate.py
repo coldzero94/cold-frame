@@ -149,12 +149,14 @@ class Consolidator:
                 try:
                     self._store.archive(nid, now=at)
                     archived.append(nid)
-                except (StoreError, NoteNotFound):
-                    # NoteNotFound: a concurrent delete/purge removed it (already gone → fine).
-                    # NoteNotFound is NOT a StoreError subclass, so it must be caught explicitly or
-                    # it escapes the loop and aborts the whole cap/decay pass (the opposite of the
-                    # per-note resilience this loop promises).
-                    _log.warning("archive_failed", extra={"note_id_hash": hash(nid)})
+                except NoteNotFound:  # a concurrent delete/purge removed it (already gone → benign)
+                    _log.info("archive_skipped_gone", extra={"note_id": nid})
+                except StoreError as exc:  # a REAL adapter failure — surface its type, but keep
+                    # going (per-note resilience). Caught explicitly, separate from the benign race,
+                    # so a genuine failure isn't silently demoted to the same "gone" log.
+                    _log.warning(
+                        "archive_failed", extra={"note_id": nid, "exc_type": type(exc).__name__}
+                    )
 
         return ConsolidateResult(reinforced=0, merged=merged, archived=archived)
 

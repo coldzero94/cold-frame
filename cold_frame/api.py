@@ -35,6 +35,7 @@ from cold_frame.models import (
     EdgeRelation,
     MemoryTypeLiteral,
     Note,
+    PiiCategory,
     ProceduralResult,
     ReembedResult,
     Scope,
@@ -81,7 +82,7 @@ class Memory:
         clock: Clock | None = None,
         id_factory: Callable[[], str] | None = None,
         consolidate_every: int | None = None,
-        pii_redact: frozenset[str] | None = None,
+        pii_redact: frozenset[PiiCategory] | None = None,
         encryption_key: str | None = None,
     ) -> None:
         # Open Store, run migrate() (idempotent), assert the configured embedder's dim

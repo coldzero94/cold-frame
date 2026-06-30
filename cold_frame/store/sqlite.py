@@ -1172,6 +1172,15 @@ class SQLiteStore(Store):
                 # (I12) and KEEP scanning; returning None here would abort the whole drain pass even
                 # though other jobs are pending.
                 if row["status"] == "running" and int(row["attempts"]) >= MAX_ATTEMPTS:
+                    # the most severe job outcome — surface it (content-free: id + attempts only).
+                    _log.error(
+                        "job_dead_lettered",
+                        extra={
+                            "job_id": jid,
+                            "attempts": int(row["attempts"]),
+                            "reason": "crash_loop",
+                        },
+                    )
                     self._conn.execute(
                         "UPDATE jobs SET status='dead', last_error=?, updated_at=? WHERE id=?",
                         ("reclaim exhausted — worker crash loop", now_iso, jid),

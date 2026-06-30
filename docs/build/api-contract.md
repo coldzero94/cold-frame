@@ -131,7 +131,10 @@ class Memory:
         embedder: "Embedder | None" = None, # default HashEmbedder (D4)
         llm: "LLM | None" = None,           # default None → naive extract (SPEC §4)
         default_scope: Scope | None = None, # default Scope(user_id="default")
-        config: "MemoryConfig | None" = None,
+        clock: "Clock | None" = None,       # injected time (G6); default SystemClock
+        consolidate_every: int | None = None,            # auto-consolidate cadence (writes)
+        pii_redact: "frozenset[PiiCategory] | None" = None,  # opt-in PII scrub (off by default)
+        encryption_key: str | None = None,  # opt-in at-rest encryption ([crypto]); else $COLD_FRAME_KEY
     ) -> None: ...
     # On init: open Store, run Store.migrate() (idempotent), assert embedder dim matches DB
     # metadata (see Store.embedder_meta); if mismatch → raise EmbedderMismatchError.
@@ -159,14 +162,15 @@ class AddResult(BaseModel):
     superseded: list[str]              # ids archived by conflict
     deduped: list[str]                 # candidate ids merged-into-existing (no new row)
     blocked: list[BlockedSpan]         # secrets BLOCKed pre-disk (D15) — content NEVER included
-    held: list[Note]                   # status="pending", held_for_human (durability gate <0.4 or quarantine)
+    redacted: list[RedactedSpan]       # opt-in PII redacted pre-disk — content-free (category+count)
+    held: list[Note]                   # active + held_for_human/quarantined (durability gate <0.4 or conflict)
 
 class BlockedSpan(BaseModel):
     reason: Literal["secret", "credential"]
     placeholder: str                   # e.g. "[REDACTED:api_key]" — original span is discarded
 ```
 
-**Invariants (D8 path-convergence):** `add()` routes EXTRACT → **WriteCore**(ADMISSION → DEDUP → CONFLICT → PERSIST), SPEC §4. Both `add()` and the self-edit tools (§2.4) call the identical `WriteCore.commit(candidates, scope, source)`. There is exactly one persist path.
+**Invariants (D8 path-convergence):** `add()` routes EXTRACT → **WriteCore**(ADMISSION → DEDUP → CONFLICT → PERSIST), SPEC §4. Both `add()` and the self-edit tools (§2.4) call the identical `WriteCore.commit(candidates, *, scope, reinforce_dedup=True)`. There is exactly one persist path.
 
 ```python
 def correct_memory(self, id: str, new_text: str, *, scope: Scope | None = None) -> CorrectResult: ...
@@ -195,13 +199,12 @@ def search(
     token_budget: int | None = None,
     as_of: datetime | None = None,
     include_archived: bool = False,
-    rerank: bool = False,              # default off (SPEC §5 step 4)
-) -> SearchResult: ...                 # default FILTER: status="active" (pending/archived/deleted excluded)
+    reinforce: bool = True,            # bump access/decay of surfaced hits (False on historical/MCP-merge reads)
+) -> SearchResult: ...                 # default FILTER: status="active" AND NOT quarantined
 
 def get(self, id: str) -> Note: ...                          # raises NoteNotFound
-def get_many(self, ids: list[str]) -> list[Note]: ...        # order preserved, missing skipped
 def strength(self, id: str) -> Strength: ...                 # canonical S (§4 below)
-def neighbors(self, id: str, *, relations: list[EdgeRelation] | None = None, hops: int = 1) -> list[Edge]: ...
+def neighbors(self, id: str, *, relations: list[EdgeRelation] | None = None) -> list[Edge]: ...
 def fork_history(self, id: str) -> list[Note]: ...           # supersedes chain (belief-fork, ux Fact Detail)
 ```
 

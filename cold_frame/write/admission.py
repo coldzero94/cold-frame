@@ -15,6 +15,8 @@ import re
 from collections import Counter
 from typing import Literal
 
+from cold_frame.models import PiiCategory
+
 # (kind label, pattern). The kind goes in the placeholder; the matched text is never returned.
 _PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("aws_access_key", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
@@ -57,12 +59,14 @@ def scan_secret(text: str) -> Verdict | None:
 
 
 # ── PII redaction (OPT-IN, I6 REDACT — deterministic, no LLM) ──────────────────
-PiiCategory = Literal["email", "phone", "credit_card", "ssn"]
-PII_CATEGORIES: frozenset[str] = frozenset({"email", "phone", "credit_card", "ssn"})
+# PiiCategory (the closed domain) lives in models.py with the other Literals; typing PII_CATEGORIES
+# + redact_pii + the public pii_redact params with it makes a typo'd category a mypy error at the
+# call site instead of a silent no-op (fail-closed on a privacy opt-in).
+PII_CATEGORIES: frozenset[PiiCategory] = frozenset({"email", "phone", "credit_card", "ssn"})
 
-# (category, pattern, placeholder, optional digit-count validator). Order matters: the more
-# specific structured patterns (email, ssn, card) run BEFORE the loose phone pattern so it can't
-# swallow them. Validators reject digit blobs that look like ports/versions, not real PII.
+# (category, pattern, placeholder) 3-tuples. Order matters: the more specific structured patterns
+# (email, ssn, card) run BEFORE the loose phone pattern so it can't swallow them. The digit-count
+# validation (rejecting ports/versions, not real PII) is applied inline in `_sub`, per category.
 _PII: list[tuple[PiiCategory, re.Pattern[str], str]] = [
     ("email", re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b"), "[email]"),
     ("ssn", re.compile(r"\b\d{3}-\d{2}-\d{4}\b"), "[ssn]"),
@@ -77,20 +81,20 @@ def _digit_count(s: str) -> int:
 
 
 def redact_pii(
-    text: str, categories: frozenset[str] = PII_CATEGORIES
-) -> tuple[str, dict[str, int]]:
+    text: str, categories: frozenset[PiiCategory] = PII_CATEGORIES
+) -> tuple[str, dict[PiiCategory, int]]:
     """Replace PII spans with typed placeholders; return ``(redacted_text, {category: count})``.
 
     Deterministic + content-free in the summary (counts only, never the matched value — I16). The
     redacted text keeps the surrounding fact intact ("my email is [email]"). card/phone are
     validated by digit count (13-16 / 10-15) so ports, versions, and counts are NOT redacted.
     """
-    summary: Counter[str] = Counter()
+    summary: Counter[PiiCategory] = Counter()
     for cat, pat, placeholder in _PII:
         if cat not in categories:
             continue
 
-        def _sub(m: re.Match[str], _cat: str = cat, _ph: str = placeholder) -> str:
+        def _sub(m: re.Match[str], _cat: PiiCategory = cat, _ph: str = placeholder) -> str:
             span = m.group(0)
             if _cat == "credit_card" and not (13 <= _digit_count(span) <= 16):
                 return span
