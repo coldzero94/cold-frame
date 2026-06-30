@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
 import time
 from typing import Any, Final
@@ -115,11 +116,39 @@ class JsonFormatter(logging.Formatter):
 # Module-level filter instance reused across loggers.
 redact_filter: Final[RedactFilter] = RedactFilter()
 
+_LEVELS: Final[dict[str, int]] = {
+    "DEBUG": logging.DEBUG,
+    "INFO": logging.INFO,
+    "WARNING": logging.WARNING,
+    "ERROR": logging.ERROR,
+}
+
+
+def _initial_level() -> int:
+    """Module default diagnostic level: ``$COLD_FRAME_LOG_LEVEL`` (DEBUG/INFO/WARNING/ERROR) else
+    INFO. Lets a library/worker user set verbosity without the CLI; the CLI's -v/-q override it."""
+    return _LEVELS.get(os.environ.get("COLD_FRAME_LOG_LEVEL", "").upper(), logging.INFO)
+
+
+_level: int = _initial_level()
+# cold_frame loggers are propagate=False (each owns its handler), so a level change must touch each
+# one — track them here. The CLI calls set_log_level() once from its -v/-q flags.
+_loggers: list[logging.Logger] = []
+
+
+def set_log_level(level: int) -> None:
+    """Set the diagnostic-log level for EVERY cold_frame logger (current + future). CLI -v/-q."""
+    global _level
+    _level = level
+    for lg in _loggers:
+        lg.setLevel(level)
+
 
 def get_logger(name: str, *, unsafe_trace: bool = False) -> logging.Logger:
     """Return a configured JSON logger writing to stderr (I16).
 
     ``unsafe_trace=True`` is the ONLY content path (off by default, ``--unsafe-trace``).
+    Level comes from ``set_log_level`` / ``$COLD_FRAME_LOG_LEVEL`` (default INFO).
     """
     logger = logging.getLogger(name)
     if not getattr(logger, "_cold_frame_configured", False):
@@ -131,7 +160,8 @@ def get_logger(name: str, *, unsafe_trace: bool = False) -> logging.Logger:
         if not unsafe_trace:
             handler.addFilter(redact_filter)
         logger.addHandler(handler)
-        logger.setLevel(logging.INFO)
+        logger.setLevel(_level)
         logger.propagate = False
         logger._cold_frame_configured = True  # type: ignore[attr-defined]
+        _loggers.append(logger)
     return logger

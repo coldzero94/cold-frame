@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import logging
 import os
 import sys
 from collections import Counter
@@ -25,7 +26,7 @@ from cold_frame.constants import NOTE_MAX_CHARS
 from cold_frame.exceptions import ColdFrameError, NoteNotFound, StoreError
 from cold_frame.integrations.claude_code import GLOBAL_KEY, project_key
 from cold_frame.models import Scope, SearchHit
-from cold_frame.observability import get_logger
+from cold_frame.observability import get_logger, set_log_level
 from cold_frame.store.sqlite import _DB_ERROR, _DB_OPERATIONAL, _connect  # keyed open for import
 from cold_frame.write.admission import PII_CATEGORIES
 
@@ -714,6 +715,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog=PKG, description="local-first memory for LLM agents")
     parser.add_argument("--version", action="version", version=f"{PKG} {__version__}")
     parser.add_argument("--db", help="path to the memory.db (else $COLD_FRAME_DB or the default)")
+    # diagnostic-log verbosity (stderr; results stay on stdout). Default: quiet (warnings+ only).
+    parser.add_argument(
+        "-v", "--verbose", action="count", default=0, help="-v: info, -vv: debug diagnostics"
+    )
+    parser.add_argument("-q", "--quiet", action="store_true", help="errors only")
     sub = parser.add_subparsers(dest="command", metavar="<command>")
 
     p_add = sub.add_parser("add", help="add a fact or messages")
@@ -813,6 +819,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     """CLI entry point. Returns a process exit code."""
     parser = build_parser()
     args = parser.parse_args(argv)
+    # diagnostic-log level from -v/-q (results are unaffected — they go to stdout via print).
+    # No flag → quiet (WARNING) so a normal command doesn't spew JSON to stderr, UNLESS the user
+    # already set $COLD_FRAME_LOG_LEVEL (then honor it).
+    if args.quiet:
+        set_log_level(logging.ERROR)
+    elif args.verbose >= 2:
+        set_log_level(logging.DEBUG)
+    elif args.verbose == 1:
+        set_log_level(logging.INFO)
+    elif not os.environ.get("COLD_FRAME_LOG_LEVEL"):
+        set_log_level(logging.WARNING)
     if args.command is None:
         parser.print_help()
         return 1

@@ -62,3 +62,34 @@ def test_unsafe_trace_formatter_exposes_content() -> None:
     rec = logging.LogRecord("cold_frame.test", logging.INFO, __file__, 1, "ev", None, None)
     rec.content = "VISIBLE_trace"
     assert "VISIBLE_trace" in fmt.format(rec)
+
+
+def test_set_log_level_updates_all_cold_frame_loggers() -> None:
+    # -v/-q wire through set_log_level; cold_frame loggers are propagate=False so each must be set.
+    from cold_frame.observability import get_logger, set_log_level
+
+    lg = get_logger("cold_frame.leveltest")
+    try:
+        set_log_level(logging.ERROR)
+        assert lg.level == logging.ERROR  # an already-configured logger is updated
+        assert get_logger("cold_frame.leveltest2").level == logging.ERROR  # ...and a future one
+    finally:
+        set_log_level(logging.INFO)  # restore the module default so other tests aren't affected
+
+
+def test_cli_verbosity_flags_set_diagnostic_level(tmp_path: object) -> None:
+    import logging as _logging
+
+    from cold_frame.cli import main
+    from cold_frame.observability import get_logger, set_log_level
+
+    db = str(tmp_path / "m.db")  # type: ignore[operator]
+    try:
+        main(["--db", db, "-q", "stats"])
+        assert get_logger("cold_frame.cli").level == _logging.ERROR
+        main(["--db", db, "-v", "stats"])
+        assert get_logger("cold_frame.cli").level == _logging.INFO
+        main(["--db", db, "stats"])  # no flag → quiet default
+        assert get_logger("cold_frame.cli").level == _logging.WARNING
+    finally:
+        set_log_level(_logging.INFO)
