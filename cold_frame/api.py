@@ -475,9 +475,6 @@ class Memory:
         for ev in self._store.iter_events():
             yield ev.model_dump_json()
 
-    def get_many(self, ids: list[str]) -> list[Note]:
-        return self._store.get_notes(ids)
-
     def strength(self, id: str) -> Strength:
         return compute_strength(self.get(id), self._clock.now())
 
