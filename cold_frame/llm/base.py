@@ -48,7 +48,7 @@ class TaskTag(StrEnum):
     DEDUP_BATCH = "dedup_batch"  # write/core._dedup_judge — near-dup (judged one pair at a time)
     CONFLICT_JUDGE = "conflict_judge"  # write/core._conflict_judge — dup-vs-contradiction
     CONSOLIDATE_SUMMARY = "consolidate_summary"  # forget/consolidate.py — episodic → semantic
-    RERANK_JUDGE = "rerank_judge"  # read/rerank.llm_rerank — opt-in relevance rerank (search rerank=True)
+    RERANK_JUDGE = "rerank_judge"  # read/rerank.llm_rerank — opt-in relevance rerank (rerank=True)
     GRADIENT_DIAGNOSE = "gradient_diagnose"  # procedural/optimize.py
     GRADIENT_EDIT = "gradient_edit"  # procedural/optimize.py
     SCOPE_CLASSIFY = "scope_classify"  # api.py — global vs project tier for an auto-captured fact
