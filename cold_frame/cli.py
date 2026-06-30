@@ -22,7 +22,7 @@ from cold_frame import __version__, branding
 from cold_frame.api import Memory
 from cold_frame.branding import PKG
 from cold_frame.constants import NOTE_MAX_CHARS
-from cold_frame.exceptions import NoteNotFound, StoreError
+from cold_frame.exceptions import ColdFrameError, NoteNotFound, StoreError
 from cold_frame.integrations.claude_code import GLOBAL_KEY, project_key
 from cold_frame.models import Scope, SearchHit
 from cold_frame.observability import get_logger
@@ -450,8 +450,9 @@ def _cmd_hook_uninstall(args: argparse.Namespace) -> int:
     path = _settings_path(user=not args.project)
     try:
         settings = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-    except (OSError, ValueError):
-        settings = {}
+    except (OSError, ValueError):  # don't clobber an unreadable/malformed settings.json with {}
+        print(f"{PKG}: couldn't read {path} — fix or remove it, then retry")
+        return 1
     hooks = settings.get("hooks", {})
     removed: list[str] = []
     if isinstance(hooks, dict):
@@ -520,6 +521,7 @@ def _cmd_hook_help(args: argparse.Namespace) -> int:
 
 
 def _cmd_mcp(args: argparse.Namespace) -> int:
+    os.environ["COLD_FRAME_DB"] = _resolve_db(args)  # forward --db to the server (it reads the env)
     from cold_frame.mcp import main as mcp_main  # lazy: keeps heavy deps out of the CLI
 
     return mcp_main()
@@ -624,8 +626,14 @@ def _cmd_import(args: argparse.Namespace) -> int:
                 if stale.exists():
                     stale.unlink()
         dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, dst)
+        # stage to a temp sibling then os.replace → an ATOMIC swap: dst is never left half-written
+        # by a partial copy, and a process still holding dst open keeps reading its old inode (no
+        # corruption) until it reopens — this also de-fangs a missed in-use check on a WAL DB.
+        tmp = Path(f"{dst}.import.tmp")
+        shutil.copy2(src, tmp)
+        tmp.replace(dst)  # atomic rename (same fs) — dst is never left half-written
     except OSError as exc:
+        Path(f"{dst}.import.tmp").unlink(missing_ok=True)  # drop a partial staged copy
         bak = Path(f"{dst}.pre-import.bak")
         hint = f"; previous DB preserved at {bak}" if bak.exists() else ""
         print(f"import failed: {exc}{hint}")
@@ -659,6 +667,9 @@ def _cmd_worker(args: argparse.Namespace) -> int:
         return 0
     import time  # background poller: run pending jobs, sleep, repeat (Ctrl-C to stop)
 
+    if args.interval <= 0:  # 0 → busy-spin; negative → time.sleep raises. Reject up front.
+        print(f"{PKG}: --interval must be > 0 (seconds)")
+        return 1
     print(f"{PKG} worker: polling every {args.interval}s (Ctrl-C to stop)")
     try:
         while True:
@@ -809,6 +820,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         result: int = func(args)
         return result
+    except (
+        ColdFrameError
+    ) as exc:  # expected failure (bad key / corrupt DB / …) → clean msg, not a trace
+        print(f"{PKG}: {exc}", file=sys.stderr)
+        return 1
     finally:  # release DB connections (so e.g. `import`'s file-replace isn't held open)
         for mem in _OPENED:
             mem.close()
