@@ -17,7 +17,7 @@ from datetime import datetime
 import numpy as np
 
 from cold_frame.constants import CONFLICT_CANDIDATE_FLOOR, DEDUP_AUTO_MERGE, DEDUP_NEAR_DUP
-from cold_frame.exceptions import PolicyError, SecretBlocked
+from cold_frame.exceptions import ColdFrameError, PolicyError, SecretBlocked
 from cold_frame.llm.base import LLM, Clock, Embedder, TaskTag
 from cold_frame.models import (
     AddResult,
@@ -95,14 +95,19 @@ class WriteCore:
                 "[BLOCKED:ambiguous_remote_llm]",
             )  # never send a span remote → block
         for span in spans:
-            try:
+            user = build_admission_user(span)  # OUTSIDE the try — a prompt-builder bug is not a
+            try:  # tiebreak failure and must surface, not become a silent block
                 res = self._llm.complete(
                     task=TaskTag.ADMISSION_TIEBREAK,
                     system=ADMISSION_SYSTEM,
-                    user=build_admission_user(span),
+                    user=user,
                     schema=AdmissionVerdict,
                 )
-            except Exception as exc:  # tiebreak call failed → can't confirm safe → fail CLOSED
+            except (AssertionError, ColdFrameError):
+                # the ScriptedLLM/EvalError undeclared-call signal + in-process contract errors MUST
+                # surface (CLAUDE.md §2 / I16 no-silent-failure) — never become a silent block.
+                raise
+            except Exception as exc:  # a genuine provider/transport failure → can't confirm → BLOCK
                 _log.warning("admission_tiebreak_error", extra={"exc_type": type(exc).__name__})
                 return ("ambiguous", "[BLOCKED:ambiguous_tiebreak_error]")
             v = res.parsed

@@ -210,3 +210,41 @@ def test_ambiguous_loop_checks_every_span(db_path: str, frozen_clock: FrozenCloc
     res = m.add(f"ids {_AMBIG} and {ambig2}", raw=True)
     assert res.added  # the local LLM cleared both
     assert m._write._llm.calls.count(TaskTag.ADMISSION_TIEBREAK) == 2  # the loop checked BOTH spans
+
+
+def test_unscripted_local_tiebreak_propagates_not_silently_blocks(
+    db_path: str, frozen_clock: FrozenClock
+) -> None:
+    # an undeclared local-LLM call MUST stay a hard failure (CLAUDE.md §2 / I16) — the tiebreak's
+    # except must NOT swallow ScriptedLLM's AssertionError into a silent "ambiguous" block.
+    from cold_frame.api import Memory
+
+    from tests.conftest import ScriptedLLM
+
+    m = Memory(  # local, but ADMISSION_TIEBREAK NOT scripted
+        db_path, embedder=HashEmbedder(), llm=ScriptedLLM({}, is_local=True), clock=frozen_clock
+    )
+    with pytest.raises(AssertionError):
+        m.add(_AMBIG_TEXT, raw=True)
+
+
+def test_tiebreak_provider_failure_fails_closed(db_path: str, frozen_clock: FrozenClock) -> None:
+    # a genuine provider/transport error (NOT a harness/contract error) → fail CLOSED, not a crash
+    from cold_frame.api import Memory
+    from cold_frame.llm.base import LLM
+
+    class _RaisingLLM(LLM):
+        name = "raising"
+
+        @property
+        def is_local(self) -> bool:
+            return True
+
+        def complete(self, **kw: object) -> LLMResult:  # type: ignore[override]
+            raise RuntimeError("simulated provider outage")
+
+    m = Memory(db_path, embedder=HashEmbedder(), llm=_RaisingLLM(), clock=frozen_clock)
+    res = m.add(_AMBIG_TEXT, raw=True)
+    assert not res.added and res.blocked
+    assert res.blocked[0].reason == "ambiguous"
+    assert res.blocked[0].placeholder == "[BLOCKED:ambiguous_tiebreak_error]"
