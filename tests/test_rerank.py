@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from cold_frame.api import Memory
 from cold_frame.llm.base import LLM, HashEmbedder, LLMResult, TaskTag
+from cold_frame.llm.tokens import HeuristicCounter
 from cold_frame.prompts.rerank import RerankOutput, RerankScore
 from pydantic import BaseModel
 
@@ -113,3 +114,37 @@ def test_rerank_llm_transport_error_keeps_fused_order(
     base = [h.note.id for h in m.search(_QUERY, k=10).hits]
     res = m.search(_QUERY, k=10, rerank=True)  # must NOT propagate the RuntimeError
     assert [h.note.id for h in res.hits] == base  # fused order preserved, results not dropped
+
+
+def test_rerank_reorders_before_budget_packing(db_path: str, frozen_clock: FrozenClock) -> None:
+    # rerank runs BEFORE the token-budget packer, so a budget that fits one fact keeps the
+    # rerank-promoted b (not the fused-order top). Proves the pipeline order rerank→pack.
+    llm = ScriptedLLM({}, is_local=True)
+    m = _mem(db_path, frozen_clock, llm)
+    a = m.add(_A, raw=True).added[0].id
+    b = m.add(_B, raw=True).added[0].id
+    llm._script[TaskTag.RERANK_JUDGE] = LLMResult(
+        parsed=RerankOutput(
+            scores=[RerankScore(id=b, relevance=0.99), RerankScore(id=a, relevance=0.01)]
+        )
+    )
+    budget = HeuristicCounter().count(_B)  # fits exactly one fact
+    res = m.search(_QUERY, k=10, rerank=True, token_budget=budget)
+    assert res.truncated  # the lower-reranked fact was budget-dropped
+    assert [h.note.id for h in res.hits] == [b]  # packed the rerank-promoted one, not the fused top
+
+
+def test_rerank_applies_on_a_historical_as_of_read(db_path: str, frozen_clock: FrozenClock) -> None:
+    # as_of gates the edge channel + reinforce, but rerank still runs — a historical read is
+    # reranked too. (Both notes are valid at the frozen instant.)
+    llm = ScriptedLLM({}, is_local=True)
+    m = _mem(db_path, frozen_clock, llm)
+    a = m.add(_A, raw=True).added[0].id
+    b = m.add(_B, raw=True).added[0].id
+    llm._script[TaskTag.RERANK_JUDGE] = LLMResult(
+        parsed=RerankOutput(
+            scores=[RerankScore(id=b, relevance=0.99), RerankScore(id=a, relevance=0.05)]
+        )
+    )
+    res = m.search(_QUERY, k=10, rerank=True, as_of=frozen_clock.now())
+    assert res.hits[0].note.id == b  # rerank applied even on a historical (as_of) read

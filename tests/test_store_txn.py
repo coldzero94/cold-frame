@@ -451,3 +451,14 @@ def test_to_iso_fixed_width_is_lexicographically_sortable() -> None:
     later = datetime(2026, 1, 1, 0, 0, 0, 500000, tzinfo=UTC)  # 0.5s later, sub-second
     assert _to_iso(earlier) <= _to_iso(later)  # was False with bare isoformat()
     assert _to_iso(earlier).endswith(".000000Z")  # fixed width, not truncated to '...00Z'
+
+
+def test_provenance_trigger_aborts_reactivating_a_sourceless_note(store: SQLiteStore) -> None:
+    # I14 defense-in-depth: the Python guard (_assert_provenance) is one layer; the DB trigger
+    # trg_provenance_active is the backstop. Bypass the guard by mutating SQL directly — stripping a
+    # note's only source then flipping status to active must be ABORTed by the trigger, not allowed.
+    n = _note("prov1", "a fact that has provenance")
+    store.add_note(n, HashEmbedder().embed_one(n.content))  # inserts with 1 source (passes)
+    store._conn.execute("DELETE FROM sources WHERE note_id=?", (n.id,))  # strip provenance directly
+    with pytest.raises(sqlite3.IntegrityError, match="provenance invariant"):
+        store._conn.execute("UPDATE notes SET status='active' WHERE id=?", (n.id,))
