@@ -1,8 +1,8 @@
 """``cold-frame`` CLI (SPEC §9). Entry point: ``cold-frame = "cold_frame.cli:main"``.
 
 Offline-first (I5): ``add``/``search`` work with zero keys/network. Every subcommand is wired —
-``add search list show stats timeline path doctor consolidate worker jobs export import ui mcp
-setup purge reembed hook``. The DB location resolves ``--db`` → ``$COLD_FRAME_DB`` →
+``add search list show stats timeline path doctor consolidate worker jobs export import encrypt ui
+mcp setup purge reembed hook``. The DB location resolves ``--db`` → ``$COLD_FRAME_DB`` →
 ``branding.DB_PATH`` (no literal path strings, branding rule).
 """
 
@@ -27,7 +27,12 @@ from cold_frame.exceptions import ColdFrameError, NoteNotFound, StoreError
 from cold_frame.integrations.claude_code import GLOBAL_KEY, project_key
 from cold_frame.models import Scope, SearchHit
 from cold_frame.observability import get_logger, set_log_level
-from cold_frame.store.sqlite import _DB_ERROR, _DB_OPERATIONAL, _connect  # keyed open for import
+from cold_frame.store.sqlite import (  # keyed open for import; plaintext→encrypted migration
+    _DB_ERROR,
+    _DB_OPERATIONAL,
+    _connect,
+    migrate_to_encrypted,
+)
 from cold_frame.write.admission import PII_CATEGORIES
 
 _log = get_logger(__name__)
@@ -648,6 +653,25 @@ def _cmd_import(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_encrypt(args: argparse.Namespace) -> int:
+    """Write an at-rest-encrypted copy of the current (plaintext) DB — the create-time-only
+    encryption escape hatch (there is no in-place migration; this is non-destructive)."""
+    src = Path(_resolve_db(args))
+    dst = Path(args.out)
+    key = args.key or os.environ.get("COLD_FRAME_KEY")
+    if not key:
+        print("encrypt: no key — pass --key KEY or set $COLD_FRAME_KEY")
+        return 1
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        migrate_to_encrypted(str(src), str(dst), key)  # key never printed (I16)
+    except _OPEN_ERR as exc:  # StoreError (validation) + driver errors (e.g. src already encrypted)
+        print(f"encrypt: {exc}")
+        return 1
+    print(f"encrypted copy → {dst}  (open it with your key to verify, then replace {src})")
+    return 0
+
+
 def _cmd_worker(args: argparse.Namespace) -> int:
     """Drain the durable jobs queue (consolidation + dead-letter recovery, I12). When the `claude`
     CLI is on PATH, captures extract via the user's Claude session (headless `claude -p` — no API
@@ -769,6 +793,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_import = sub.add_parser("import", help="restore memory from a snapshot (replaces current)")
     p_import.add_argument("path", help="snapshot file to restore from")
     p_import.set_defaults(func=_cmd_import)
+    p_encrypt = sub.add_parser("encrypt", help="write an encrypted copy of the DB ([crypto] extra)")
+    p_encrypt.add_argument("--out", required=True, help="destination path for the encrypted copy")
+    p_encrypt.add_argument("--key", default=None, help="encryption key (else $COLD_FRAME_KEY)")
+    p_encrypt.set_defaults(func=_cmd_encrypt)
     p_worker = sub.add_parser("worker", help="drain the background jobs queue (maintenance)")
     p_worker.add_argument("--once", action="store_true", help="run one drain pass and exit")
     p_worker.add_argument("--interval", type=float, default=5.0, help="poll interval seconds")

@@ -233,6 +233,42 @@ def _connect(
     return conn  # type: ignore[no-any-return]  # _sqlcipher untyped → conn is Connection-compatible
 
 
+def migrate_to_encrypted(src_path: str, dst_path: str, key: str) -> None:
+    """Offline plaintext→encrypted migration (SQLCipher, the ``[crypto]`` extra).
+
+    Encryption is otherwise create-time only because the online-backup API (used by ``snapshot``)
+    copies raw pages and CANNOT change encryption. This opens the PLAINTEXT ``src`` with the
+    SQLCipher driver (no key → it reads plaintext) and uses ``sqlcipher_export()`` to write a fully
+    re-encrypted ``dst`` (full schema + data, incl. the FTS5 shadow tables). ``dst`` must not exist;
+    ``key`` must be non-blank. The source is left untouched — verify ``dst`` opens with the key,
+    THEN swap it in. The key is never logged (I16).
+    """
+    if not key or not key.strip():
+        raise StoreError("encryption key must not be blank (a blank key would fail open)")
+    if Path(dst_path).exists():
+        raise StoreError(f"destination already exists, refusing to overwrite: {dst_path}")
+    if not Path(src_path).exists():
+        raise StoreError(f"source database not found: {src_path}")
+    try:
+        from sqlcipher3 import dbapi2 as _sqlcipher
+    except ImportError as exc:
+        raise StoreError(
+            "at-rest encryption needs the [crypto] extra: pip install 'cold-frame[crypto]'"
+        ) from exc
+    src = _sqlcipher.connect(src_path)  # no PRAGMA key → SQLCipher reads the plaintext DB as-is
+    try:
+        # ATTACH's KEY takes a string LITERAL (like PRAGMA key), not a bind param; the path binds
+        # fine. Quotes doubled → injection-safe (a key cannot break out of the literal).
+        src.execute(
+            "ATTACH DATABASE ? AS encrypted KEY '" + key.replace("'", "''") + "'", (dst_path,)
+        )
+        src.execute("SELECT sqlcipher_export('encrypted')")
+        src.execute("DETACH DATABASE encrypted")
+        src.commit()
+    finally:
+        src.close()
+
+
 class SQLiteStore(Store):
     """Single-file SQLite adapter (one ``.db``: notes + FTS + vectors + edges + jobs)."""
 

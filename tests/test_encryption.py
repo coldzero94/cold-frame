@@ -104,6 +104,61 @@ def test_purge_under_encryption_verifies_via_keyed_connection(tmp_path: Path) ->
 
 
 @_needs_sqlcipher
+def test_migrate_plaintext_to_encrypted(tmp_path: Path) -> None:
+    # the create-time-only escape hatch: a plaintext DB → a fully-encrypted copy (notes + FTS +
+    # vectors), non-destructive. sqlcipher_export (NOT the raw-page backup API, which can't change
+    # encryption) does the re-encrypt.
+    from cold_frame.store.sqlite import migrate_to_encrypted
+
+    src = str(tmp_path / "plain.db")
+    m = Memory(src)
+    m.add(f"my secret project is {_NEEDLE}")
+    m.add("the mitochondria is the powerhouse of the cell")
+    m.close()
+
+    dst = str(tmp_path / "enc.db")
+    migrate_to_encrypted(src, dst, _KEY)
+
+    enc = Memory(dst, encryption_key=_KEY)
+    assert enc.health()["encrypted"] is True
+    assert any(_NEEDLE in n.content for n in enc.list_active())  # notes copied
+    assert enc.search("mitochondria").hits  # the FTS index survived the migration
+    enc.close()
+    assert _NEEDLE.encode() not in _disk_bytes(dst)  # encrypted at rest — no plaintext
+    with pytest.raises(StoreError):  # wrong key cannot open the encrypted copy
+        Memory(dst, encryption_key="totally-wrong-key")
+    assert _NEEDLE.encode() in Path(src).read_bytes()  # source untouched (non-destructive)
+
+
+@_needs_sqlcipher
+def test_migrate_refuses_blank_key_and_existing_dst(tmp_path: Path) -> None:
+    from cold_frame.store.sqlite import migrate_to_encrypted
+
+    src = str(tmp_path / "plain.db")
+    Memory(src).add("a fact")
+    with pytest.raises(StoreError, match="blank"):  # blank key would fail open — refuse
+        migrate_to_encrypted(src, str(tmp_path / "a.db"), "  ")
+    existing = tmp_path / "exists.db"
+    existing.write_bytes(b"do not clobber")
+    with pytest.raises(StoreError, match="already exists"):  # never overwrite the destination
+        migrate_to_encrypted(src, str(existing), _KEY)
+
+
+@_needs_sqlcipher
+def test_cli_encrypt_command(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from cold_frame.cli import main
+
+    src = str(tmp_path / "plain.db")
+    Memory(src).add(f"cli secret {_NEEDLE}")
+    dst = str(tmp_path / "enc.db")
+    monkeypatch.setenv("COLD_FRAME_KEY", _KEY)  # key from the env (not echoed to argv)
+    assert main(["--db", src, "encrypt", "--out", dst]) == 0
+    assert _NEEDLE.encode() not in _disk_bytes(dst)  # the produced copy is encrypted at rest
+    restored = Memory(dst, encryption_key=_KEY)
+    assert any(_NEEDLE in n.content for n in restored.list_active())
+
+
+@_needs_sqlcipher
 def test_cli_import_restores_an_encrypted_snapshot(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
