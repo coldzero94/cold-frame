@@ -153,20 +153,3 @@ def test_extract_llm_path_applies_gates() -> None:
     # held-below-gate behavior is tested end-to-end via add() in test_consent.py).
     assert low.confidence == 0.3
     assert not low.held_for_human and not low.quarantined
-
-
-def test_derive_tags_offline_and_via_add() -> None:
-    from cold_frame.write.extract import derive_tags
-
-    tags = derive_tags("I deploy the backend with ship.sh every morning", "episodic")
-    assert tags[0] == "episodic"  # the memory_type leads (coarse category)
-    assert "deploy" in tags and "backend" in tags  # salient terms
-    assert "with" not in tags and "every" not in tags  # stopwords excluded
-    assert len(tags) <= 6 and len(tags) == len(set(tags))  # capped + deduped
-
-
-def test_add_populates_tags(memory: object) -> None:
-    res = memory.add("I prefer dark roast coffee in the morning")  # type: ignore[attr-defined]
-    note = res.added[0]
-    assert note.tags and note.tags[0] == "episodic"  # tags are no longer empty (was dead)
-    assert any(t in note.tags for t in ("dark", "roast", "coffee", "morning"))

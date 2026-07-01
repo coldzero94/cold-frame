@@ -277,13 +277,3 @@ def test_edge_channel_excludes_currently_invalid_stale_note(memory: Memory) -> N
     ids = [h.note.id for h in memory.search("deploy", scope=s).hits]
     assert a in ids
     assert "stale-b" not in ids  # currently-invalid note must not leak via the edge channel
-
-
-def test_memory_type_label_is_not_a_searchable_bm25_term(memory: Memory) -> None:
-    # tags (which carry the memory_type label) must NOT be FTS-indexed — else the literal word
-    # "episodic"/"semantic" would match every note of that type, polluting BM25. The word does not
-    # appear in either content, so a correct index returns nothing for it.
-    memory.add("Paris is the capital of France")
-    memory.add("The mitochondria is the powerhouse of the cell")
-    assert memory.search("episodic").hits == []  # the type label is not a search term
-    assert memory.search("Paris").hits  # sanity: real content is still retrievable

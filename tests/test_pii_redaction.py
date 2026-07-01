@@ -90,20 +90,6 @@ def test_redact_scrubs_content_context_and_keywords_and_rehashes_source(db_path:
     assert all("@corp.com" not in k for k in scrubbed.keywords)  # keyword PII scrubbed too
     assert summ["email"] == 3  # content + context + 1 keyword
     assert scrubbed.sources[0].content_hash != "ORIGINAL_HASH"  # re-hashed over redacted content
-    # tags are ALSO a persisted grain — re-derived from the redacted content, so no PII TOKEN (the
-    # email local-part/domain) survives as a tag (regression: derive_tags runs on RAW content).
-    assert all("corp" not in t and "alice" not in t and "bob" not in t for t in scrubbed.tags)
-
-
-def test_redact_scrubs_pii_from_tags_on_disk_and_search(db_path: str) -> None:
-    # derive_tags splits an email into letter-leading tokens ("jane"/"corp") that the tag regex
-    # accepts — they must NOT land on disk or be searchable when redaction is on. (Token-level, not
-    # the full-string check the other tests use, so a split-token leak can't slip through.)
-    m = Memory(db_path, pii_redact=frozenset({"email"}))
-    note = m.add("my work email is jane@corp.com and I prefer dark roast coffee").added[0]
-    assert all("jane" not in t and "corp" not in t for t in note.tags)  # in-memory result
-    assert all("jane" not in t and "corp" not in t for t in m.get(note.id).tags)  # rehydrated
-    assert b"jane" not in _db_bytes(db_path) and b"corp" not in _db_bytes(db_path)  # never on disk
 
 
 def test_correct_memory_redacts_pii_on_the_supersede_path(db_path: str) -> None:

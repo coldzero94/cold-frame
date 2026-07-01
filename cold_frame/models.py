@@ -55,7 +55,7 @@ class Note(BaseModel):
     content: str
     memory_type: MemoryTypeLiteral
     keywords: list[str] = Field(default_factory=list)
-    tags: list[str] = Field(default_factory=list)  # coarse labels (memory_type + salient terms), I5
+    tags: list[str] = Field(default_factory=list)  # RESERVED (dormant seam; no writer/reader in v1)
     context: str = ""
     confidence: float = 1.0  # extraction confidence (≠ importance)
     scope: Scope
