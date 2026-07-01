@@ -40,11 +40,15 @@ def test_budget_caps_tokens_and_keeps_top_rank(memory: Memory) -> None:
 
 
 def test_budget_guarantees_nonempty_even_when_top_exceeds(memory: Memory) -> None:
-    memory.add("a fairly long fact about dark roast coffee preferences in the early morning")
+    content = "a fairly long fact about dark roast coffee preferences in the early morning"
+    memory.add(content)
     res = memory.search("coffee", token_budget=1)  # tiny budget < the top hit
     assert len(res.hits) == 1  # the top hit is still emitted (never an empty result)
-    assert res.used_tokens is not None and res.used_tokens <= 1  # cap NEVER exceeded
-    assert res.truncated is True  # but the bend is flagged
+    # HONEST reporting: used_tokens is the REAL emitted size (exceeds the budget in this bend), NOT
+    # a capped lie of `budget`. truncated=True flags that the cap was blown to keep a result.
+    real = HeuristicCounter().count(res.hits[0].note.content)
+    assert res.used_tokens == real and real > 1
+    assert res.truncated is True
 
 
 def test_budget_zero_returns_empty(memory: Memory) -> None:

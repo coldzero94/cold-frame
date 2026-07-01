@@ -18,10 +18,11 @@ def pack_budget(
 ) -> tuple[list[SearchHit], int, bool]:
     """Pack whole facts in rank order under ``budget``.
 
-    Returns ``(kept hits, used tokens, truncated)``. ``used`` NEVER exceeds ``budget`` (a
-    hard cap). The non-empty guarantee is the single bend: when even the top-ranked fact
-    alone exceeds the budget it is still emitted (better one fact than none), but ``used``
-    is reported as the full budget and ``truncated=True`` flags that the cap was hit.
+    Returns ``(kept hits, used tokens, truncated)``. ``used`` is the ACTUAL token count of the
+    emitted facts (so a caller can size its prompt honestly). It exceeds ``budget`` ONLY in the
+    single non-empty bend: when even the top-ranked fact alone is over budget it is still emitted
+    (better one fact than none), and ``used`` reports its REAL (over-budget) size — not a capped
+    lie — with ``truncated=True`` flagging that the cap was blown to keep a result.
     """
     if budget <= 0 or not hits:
         return [], 0, False
@@ -32,11 +33,9 @@ def pack_budget(
         tokens = counter.count(hit.note.content)
         if not kept:  # non-empty guarantee: the top-ranked hit is always emitted
             kept.append(hit)
-            if tokens > budget:  # oversized top fact → emit whole, but report a capped used
-                used = budget
+            used = tokens  # the REAL count — honest even when it exceeds budget (the bend below)
+            if tokens > budget:  # oversized top fact → emitted whole; flag the blown cap
                 truncated = True
-            else:
-                used = tokens
             continue
         if used + tokens <= budget:  # whole fact fits → include
             kept.append(hit)
