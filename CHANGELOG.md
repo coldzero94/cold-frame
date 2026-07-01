@@ -16,10 +16,11 @@ First public version. Local-first, ownable memory for AI agents — one SQLite f
 
 ### Added
 
-- **Memory engine** — hybrid retrieval (BM25 + numpy-KNN vectors + a 1-hop graph edge channel,
-  RRF fusion) with an opt-in LLM relevance rerank (`search(rerank=True)`), bi-temporal versions with
-  `as_of` rewind (`search --as-of`), deterministic dedup/conflict resolution + tagging, decay +
-  consolidation (+ an archive-imminent strength sub-label) + per-scope caps, and a token-budget packer.
+- **Memory engine** — hybrid retrieval (BM25 + numpy-KNN vectors, RRF fusion), bi-temporal versions
+  with `as_of` rewind (`search --as-of`), deterministic dedup/conflict resolution, decay +
+  consolidation (+ an archive-imminent strength sub-label) + per-scope caps, and a token-budget
+  packer. (The v1-scope trim cut the search-time graph edge channel — edge rows kept — plus the
+  deterministic tagger and the opt-in LLM rerank surface; see ADR-D27.)
 - **CLI** — `add` / `search` / `list` / `show` / `timeline` / `doctor` / `consolidate` / `worker` /
   `jobs` / `export` / `import` / `purge` / `reembed` / `ui` / `mcp` / `setup` / `hook`.
 - **Claude Code integration** — a plugin (MCP server + recall/capture hooks + a capture skill) for
