@@ -37,11 +37,14 @@ First public version. Local-first, ownable memory for AI agents — one SQLite f
 
 ### Known limitations (planned / deferred)
 
-- PII redaction + at-rest encryption are OFF by default (opt-in); encryption is set at DB creation —
-  there's no in-place plaintext→encrypted migration for an existing DB yet.
-- Deferred to v1.1/hosted: admission confidence-gate/consent, a crypto-shred (key-destroy) purge, and
-  the remote-extraction-LLM exposure. (The I7 local tiebreak, the opt-in LLM rerank, and deterministic
-  tagging are now BUILT.)
+- PII redaction + at-rest encryption are OFF by default (opt-in); encryption is set at DB creation.
+  There's no *in-place* migration, but `cold-frame encrypt --out enc.db` writes an encrypted copy of
+  an existing plaintext DB (non-destructive; needs the `[crypto]` extra).
+- The raw-chat-to-a-REMOTE-extractor exposure is now narrowed: an obvious secret (or an ambiguous
+  high-entropy span) in the chat forces a fallback to LOCAL naive extraction, so it never reaches a
+  remote endpoint. Residual: a non-pattern secret the deterministic scan misses could still be sent.
+- Deferred to v1.1/hosted: admission confidence-gate/consent, and a crypto-shred (key-destroy) purge.
+  (The I7 local tiebreak, the opt-in LLM rerank, and deterministic tagging are now BUILT.)
 - The agent-push capture path is model-discretionary; the keyless backstop guarantees coverage.
 - Write/triage in the browser is partial; full event-log replay import is snapshot-based for now.
 
