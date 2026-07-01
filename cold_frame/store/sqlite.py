@@ -496,18 +496,23 @@ class SQLiteStore(Store):
 
     def _insert_fts(self, rowid: int, note: Note) -> None:
         # external-content FTS5 does not auto-sync — write the index explicitly (I10).
+        # ``tags`` are coarse structured labels (memory_type + salient terms) for display/filter,
+        # NOT a full-text facet — indexing them would make the memory_type word ("semantic" etc.) a
+        # matchable BM25 term and double-index content-derived terms. ``keywords`` are the search
+        # facet; the tags FTS column is left empty on purpose (schema keeps it, no migration). Both
+        # FTS writes MUST pass identical column values (external-content delete replays them).
         self._conn.execute(
             "INSERT INTO note_fts(rowid, content, keywords, tags) VALUES (?,?,?,?)",
-            (rowid, note.content, json.dumps(note.keywords), json.dumps(note.tags)),
+            (rowid, note.content, json.dumps(note.keywords), ""),
         )
 
     def _delete_fts(self, rowid: int, note: Note) -> None:
         # external-content FTS5 has no auto-sync/FK-cascade — drop the OLD index row explicitly,
-        # passing the exact values that were indexed (I10). Mirrors _insert_fts.
+        # passing the exact values that were indexed (I10). Mirrors _insert_fts (tags empty).
         self._conn.execute(
             "INSERT INTO note_fts(note_fts, rowid, content, keywords, tags) "
             "VALUES ('delete', ?, ?, ?, ?)",
-            (rowid, note.content, json.dumps(note.keywords), json.dumps(note.tags)),
+            (rowid, note.content, json.dumps(note.keywords), ""),
         )
 
     def _insert_vec(self, note_id: str, emb: np.ndarray, *, embedder_id: str | None = None) -> None:
