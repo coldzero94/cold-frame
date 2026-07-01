@@ -30,6 +30,11 @@ _CORE_MODULES = [
     "cold_frame.forget.consolidate",
     "cold_frame.procedural.optimize",
 ]
+# NOTE: sqlcipher3 is intentionally NOT forbidden — store/sqlite.py guard-imports it at MODULE level
+# (try/except) to build the SQLCipher exception-class tuples, so it lands in sys.modules whenever the
+# [crypto] extra is installed. That's the sanctioned import-guarded pattern (core still works without
+# it); the invariant is "core doesn't REQUIRE heavy deps", not "core never touches an installed
+# optional accelerator". tiktoken is lazy (function-level), so it's safe to forbid.
 _FORBIDDEN = [
     "fastapi",
     "psycopg",
@@ -40,7 +45,6 @@ _FORBIDDEN = [
     "tiktoken",
     "sentence_transformers",
     "sqlite_vec",
-    "sqlcipher3",
 ]
 
 
