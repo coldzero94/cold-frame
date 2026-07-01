@@ -34,6 +34,8 @@ def test_session_start_emits_recall_context(
     assert payload["hookSpecificOutput"]["hookEventName"] == "SessionStart"
     ctx = payload["hookSpecificOutput"]["additionalContext"]
     assert "Coldframe" in ctx and "dark roast" in ctx  # the user's belief is surfaced
+    # visible receipt (audit #5): the block leads with a COUNT so recall isn't a silent injection.
+    assert "recalled 3 memories" in ctx
 
 
 def test_session_start_empty_memory_emits_nothing(

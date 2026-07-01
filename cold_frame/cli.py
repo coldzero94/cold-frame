@@ -349,8 +349,11 @@ def _cmd_hook_session_start(args: argparse.Namespace) -> int:
         lines = [f"- {n.content}" for s, n in ranked if s.band != "fading"][:_RECALL_K]
         if not lines:
             return 0  # silence > noise: nothing worth surfacing
+        # Lead with a COUNT so the recall is a visible receipt ("N memories fired"), not a silent
+        # injection — the one signal a new user gets that Coldframe is working (audit #5).
         ctx = (
-            "Relevant memory from Coldframe (this user's local memory):\n"
+            f"🧊 Coldframe recalled {len(lines)} "
+            f"{'memory' if len(lines) == 1 else 'memories'} about this user:\n"
             + "\n".join(lines)
             + f"\n(Full memory: run `{PKG} ui`.)"
         )
@@ -392,7 +395,10 @@ def _cmd_hook_user_prompt(args: argparse.Namespace) -> int:
         if not top:
             return 0
         lines = [f"- {h.note.content}" for h in top]
-        ctx = "Possibly relevant memory (Coldframe):\n" + "\n".join(lines)
+        ctx = (
+            f"🧊 Coldframe: {len(lines)} possibly-relevant "
+            f"{'memory' if len(lines) == 1 else 'memories'}:\n" + "\n".join(lines)
+        )
         ev = "UserPromptSubmit"
         out = {"hookSpecificOutput": {"hookEventName": ev, "additionalContext": ctx}}
         print(json.dumps(out))
