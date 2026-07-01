@@ -44,9 +44,12 @@ First public version. Local-first, ownable memory for AI agents — one SQLite f
   high-entropy span) in the chat forces a fallback to LOCAL naive extraction, so it never reaches a
   remote endpoint. Residual: a non-pattern secret the deterministic scan misses could still be sent.
 - Admission confidence-gate + opt-in `require_consent` (hold every new memory for approval) are
-  BUILT (`Memory(confidence_gate=…, require_consent=…)`); `cold-frame rekey` rotates the at-rest key
-  (crypto-shred foundation). Now BUILT this line previously deferred: I7 tiebreak, LLM rerank,
-  tagging, confidence-gate/consent, key rotation.
+  BUILT (`Memory(confidence_gate=…, require_consent=…)`); `cold-frame rekey` rotates the at-rest key.
+- The I7 local-LLM admission tiebreak was REMOVED (ADR-I7-cut): dead in prod (no local LLM ships) and
+  it silently fail-closed-BLOCKed legit facts with a high-entropy token. Admission is now a
+  deterministic secret-scan only; the ambiguous entropy band proceeds (real secrets still caught by
+  the vendor-prefix patterns + ≥4.5 entropy). I7's "no secret span reaches a remote endpoint" still
+  holds via the pre-disk BLOCK + the remote-extraction egress fallback.
 - Event-log replay import is BUILT (`cold-frame import <log.ndjson> --events` / `Memory.import_events`
   — idempotent, last-writer-wins by HLC, note-only). Deferred to v1.1/hosted: *per-note* crypto-shred
   (per-record envelope keys — rekey is whole-DB rotation), and cross-device conflict resolution
