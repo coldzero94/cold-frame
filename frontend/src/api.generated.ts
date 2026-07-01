@@ -21,7 +21,7 @@ export type Status = 'active' | 'archived' | 'deleted'
  * This interface was referenced by `ColdframeApiContract`'s JSON-Schema
  * via the `definition` "TriageReason".
  */
-export type TriageReason = 'true_conflict' | 'ambiguous_merge' | 'low_confidence' | 'pin_adjacent_archive'
+export type TriageReason = 'true_conflict' | 'ambiguous_merge' | 'low_confidence' | 'pin_adjacent_archive' | 'consent'
 
 export interface ColdframeApiContract {
   [k: string]: unknown

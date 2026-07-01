@@ -119,7 +119,7 @@ def test_extract_llm_path_applies_gates() -> None:
                         importance=0.2,
                         durability="ephemeral",
                     ),
-                    ExtractedFact(  # confidence < 0.4 → HELD for human (quarantined)
+                    ExtractedFact(  # low confidence — kept by extract; HELD later by WriteCore
                         text="User might be stressed",
                         memory_type="semantic",
                         confidence=0.3,
@@ -148,10 +148,11 @@ def test_extract_llm_path_applies_gates() -> None:
     assert durable.confidence == 0.9
     assert durable.keywords == ["coffee", "roast"]
     assert not durable.held_for_human and not durable.quarantined
-    # low-confidence fact persisted but quarantined for triage (I14)
+    # extraction applies only the DURABILITY gate; the confidence/consent HOLD is centralized in
+    # WriteCore._consent_gate (I15) — so extract() no longer marks the low-conf fact held here (the
+    # held-below-gate behavior is tested end-to-end via add() in test_consent.py).
     assert low.confidence == 0.3
-    assert low.held_for_human and low.quarantined
-    assert low.triage_reason == "low_confidence"
+    assert not low.held_for_human and not low.quarantined
 
 
 def test_derive_tags_offline_and_via_add() -> None:

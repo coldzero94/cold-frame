@@ -21,7 +21,9 @@ from pydantic import BaseModel, Field
 MemoryTypeLiteral = Literal["semantic", "episodic", "procedural"]
 StatusLiteral = Literal["active", "archived", "deleted"]
 EdgeRelation = Literal["supersedes", "relates_to", "mentions", "derived_from", "caused_by"]
-TriageReason = Literal["true_conflict", "ambiguous_merge", "low_confidence", "pin_adjacent_archive"]
+TriageReason = Literal[
+    "true_conflict", "ambiguous_merge", "low_confidence", "pin_adjacent_archive", "consent"
+]
 UpdateType = Literal["extract", "dedup", "conflict", "feedback", "manual", "correct", "consolidate"]
 SourceKind = Literal["message", "document", "tool", "manual"]
 Band = Literal["evergreen", "budding", "fading"]

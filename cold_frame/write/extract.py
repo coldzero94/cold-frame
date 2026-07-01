@@ -15,9 +15,8 @@ from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from cold_frame.constants import CONFIDENCE_FLOOR
 from cold_frame.llm.base import LLM, Clock, TaskTag
-from cold_frame.models import Note, Scope, Source, TriageReason
+from cold_frame.models import Note, Scope, Source
 from cold_frame.observability import get_logger
 from cold_frame.prompts import EXTRACT_SYSTEM
 from cold_frame.prompts.extract import ExtractionOutput, build_user
@@ -233,9 +232,10 @@ def _llm_extract(
             f.confidence >= _DURABLE_MIN_CONF and f.importance >= _DURABLE_MIN_IMPORTANCE
         ):
             continue
-        # confidence gate → quarantine for human triage (I14; code uses 'low_confidence')
-        held = f.confidence < CONFIDENCE_FLOOR
-        triage: TriageReason | None = "low_confidence" if held else None
+        # NOTE: the confidence/consent HOLD decision is NOT made here — it's centralized in the
+        # single WriteCore admission path (WriteCore._consent_gate, I15) so the configurable gate +
+        # require_consent apply uniformly to naive, LLM, and self-edit candidates. Extraction only
+        # proposes the confidence; code disposes.
         src = source or Source(
             kind="message",
             ref="conversation",
@@ -258,9 +258,6 @@ def _llm_extract(
                 status="active",
                 created_at=clock.now(),
                 valid_at=_parse_valid_at(f.valid_at, observed_at),
-                held_for_human=held,
-                quarantined=held,
-                triage_reason=triage,
                 decay_S=1.0,
             )
         )

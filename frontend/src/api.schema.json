@@ -535,7 +535,8 @@
         "true_conflict",
         "ambiguous_merge",
         "low_confidence",
-        "pin_adjacent_archive"
+        "pin_adjacent_archive",
+        "consent"
       ]
     },
     "TriageResolveResponse": {

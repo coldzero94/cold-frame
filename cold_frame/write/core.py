@@ -16,7 +16,12 @@ from datetime import datetime
 
 import numpy as np
 
-from cold_frame.constants import CONFLICT_CANDIDATE_FLOOR, DEDUP_AUTO_MERGE, DEDUP_NEAR_DUP
+from cold_frame.constants import (
+    CONFIDENCE_FLOOR,
+    CONFLICT_CANDIDATE_FLOOR,
+    DEDUP_AUTO_MERGE,
+    DEDUP_NEAR_DUP,
+)
 from cold_frame.exceptions import ColdFrameError, PolicyError, SecretBlocked
 from cold_frame.llm.base import LLM, Clock, Embedder, TaskTag
 from cold_frame.models import (
@@ -27,6 +32,7 @@ from cold_frame.models import (
     PiiCategory,
     RedactedSpan,
     Scope,
+    TriageReason,
 )
 from cold_frame.observability import get_logger
 from cold_frame.prompts.admission import (
@@ -65,6 +71,8 @@ class WriteCore:
         llm: LLM | None,
         clock: Clock,
         pii_redact: frozenset[PiiCategory] | None = None,
+        confidence_gate: float = CONFIDENCE_FLOOR,
+        require_consent: bool = False,
     ) -> None:
         self._store = store
         self._embedder = embedder
@@ -72,6 +80,26 @@ class WriteCore:
         self._clock = clock
         # OPT-IN PII categories to scrub inline pre-disk (None = off; see admission.redact_pii)
         self._pii_redact = pii_redact
+        # Admission gate (D25): a candidate below this confidence is HELD for human approval (not
+        # auto-admitted); default = the CONFIDENCE_FLOOR (prior behavior). require_consent holds
+        # EVERY new candidate regardless of confidence (opt-in strict mode). Separate from the I14
+        # provenance requirement (a distinct DB-trigger invariant, unchanged).
+        self._confidence_gate = confidence_gate
+        self._require_consent = require_consent
+
+    def _consent_gate(self, cand: Note) -> TriageReason | None:
+        """Reason to HOLD this candidate for human approval instead of auto-admitting it, or None.
+
+        ``require_consent`` holds EVERYTHING (opt-in strict mode); otherwise a candidate below
+        ``confidence_gate`` is held. Independent of the I14 provenance requirement (a separate
+        DB-trigger invariant). This is the ONE place the confidence/consent decision is made (I15) —
+        applies uniformly to naive, LLM-extracted, and self-edit candidates.
+        """
+        if self._require_consent:
+            return "consent"
+        if cand.confidence < self._confidence_gate:
+            return "low_confidence"
+        return None
 
     def _admission_block(self, content: str) -> Verdict | None:
         """``(reason, placeholder)`` if ``content`` must be BLOCKed pre-disk, else None (I6/I7).
@@ -165,7 +193,8 @@ class WriteCore:
 
         ADMISSION = a deterministic secret scan (obvious secret → BLOCK pre-disk, content-free
         placeholder in ``blocked``, I6) PLUS, for an ambiguous span, a LOCAL-only LLM tiebreak that
-        fails CLOSED (I7, see ``_admission_block``). CONFIDENCE-GATE/CONSENT remain deferred (D25).
+        fails CLOSED (I7, see ``_admission_block``). Then the CONFIDENCE-GATE/CONSENT check
+        (``_consent_gate``) holds a below-gate / consent-required candidate for human approval.
         Each surviving candidate is then classified against the nearest active
         note: DEDUP (cosine≥0.93 auto-merge, [0.82,0.93) ambiguous → DEDUP LLM) → CONFLICT
         (LLM proposes contradiction) → deterministic freshness (valid_at, NEVER the LLM — I1) →
@@ -186,6 +215,14 @@ class WriteCore:
                 cand, summ = self._redact(cand)
                 pii.update(summ)
             emb = self._embedder.embed_one(cand.content)
+            gate = self._consent_gate(cand)
+            if gate is not None:  # HOLD for human approval — a pending note never touches the
+                tied = cand.model_copy(  # active belief set (no dedup/supersede until promoted).
+                    update={"held_for_human": True, "quarantined": True, "triage_reason": gate}
+                )
+                self._store.add_note(tied, emb)
+                held.append(tied)
+                continue
             kind, payload = self._classify(cand, emb, scope)
             if kind == "dedup":
                 deduped.append(str(payload))  # non-destructive: drop the dup, existing stays

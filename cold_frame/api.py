@@ -16,7 +16,7 @@ from datetime import datetime
 from typing import Literal, TypedDict, cast, get_args
 
 from cold_frame.branding import DB_PATH
-from cold_frame.constants import CONSOLIDATE_EVERY_N_WRITES, DEDUP_AUTO_MERGE
+from cold_frame.constants import CONFIDENCE_FLOOR, CONSOLIDATE_EVERY_N_WRITES, DEDUP_AUTO_MERGE
 from cold_frame.exceptions import EmbedderMismatchError, NoteNotFound, StoreError, ToolError
 from cold_frame.forget.consolidate import Consolidator
 from cold_frame.forget.worker import Worker
@@ -84,6 +84,8 @@ class Memory:
         consolidate_every: int | None = None,
         pii_redact: frozenset[PiiCategory] | None = None,
         encryption_key: str | None = None,
+        confidence_gate: float = CONFIDENCE_FLOOR,
+        require_consent: bool = False,
     ) -> None:
         # Open Store, run migrate() (idempotent), assert the configured embedder's dim
         # matches DB meta else raise EmbedderMismatchError. Clock + id-factory injected (G6):
@@ -133,6 +135,8 @@ class Memory:
             llm=self._llm,
             clock=self._clock,
             pii_redact=pii_redact,  # opt-in PII scrub (None = off; a personal store keeps facts)
+            confidence_gate=confidence_gate,  # admission gate; below → held for approval (D25)
+            require_consent=require_consent,  # opt-in: hold EVERY new memory for approval
         )
         self._read = RetrievePipeline(
             self._store, embedder=self._embedder, llm=self._llm, clock=self._clock
