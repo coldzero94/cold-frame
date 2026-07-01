@@ -18,6 +18,7 @@ from cold_frame.api import Memory
 from cold_frame.branding import MCP_ID, PKG, fact_deeplink
 from cold_frame.exceptions import ColdFrameError, StoreError, mcp_code_for
 from cold_frame.integrations.claude_code import GLOBAL_KEY, project_key
+from cold_frame.llm import resolve_embedder
 from cold_frame.models import Scope
 from cold_frame.observability import get_logger
 
@@ -212,7 +213,12 @@ def build_server(memory: Memory | None = None) -> Any:  # noqa: ANN401 - FastMCP
         _MEMORY = memory
     else:
         root = os.environ.get("PROJECT_ROOT") or str(Path.cwd())
-        _MEMORY = Memory(default_scope=Scope(agent_id=project_key(root)))
+        # $COLD_FRAME_EMBEDDER selects the recall model (unset/"hash" = offline default; "local" =
+        # the [local-llm] semantic embedder). Reembed after switching on an existing DB.
+        _MEMORY = Memory(
+            embedder=resolve_embedder(os.environ.get("COLD_FRAME_EMBEDDER")),
+            default_scope=Scope(agent_id=project_key(root)),
+        )
     server.tool()(search_memory)
     server.tool()(add_memory)
     for tool in (create_fact, update_fact, supersede, forget):  # self-edit tools (one WriteCore)

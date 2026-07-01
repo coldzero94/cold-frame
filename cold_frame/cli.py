@@ -25,6 +25,7 @@ from cold_frame.branding import PKG
 from cold_frame.constants import NOTE_MAX_CHARS
 from cold_frame.exceptions import ColdFrameError, NoteNotFound, StoreError
 from cold_frame.integrations.claude_code import GLOBAL_KEY, project_key
+from cold_frame.llm import Embedder, resolve_embedder
 from cold_frame.models import Scope, SearchHit
 from cold_frame.observability import get_logger, set_log_level
 from cold_frame.store.sqlite import (  # keyed open for import; plaintext→encrypted migration
@@ -49,10 +50,16 @@ def _resolve_db(args: argparse.Namespace) -> str:
 _OPENED: list[Memory] = []  # memories opened this invocation, closed in main()'s finally
 
 
+def _embedder() -> Embedder:
+    # $COLD_FRAME_EMBEDDER selects the recall model: unset/"hash" = offline lexical default (I5),
+    # "local" = the [local-llm] semantic embedder (needs the extra; reembed after switching).
+    return resolve_embedder(os.environ.get("COLD_FRAME_EMBEDDER"))
+
+
 def _memory(args: argparse.Namespace) -> Memory:
     # opt-in PII scrub when --redact-pii is set (only the `add` subcommand exposes the flag)
     pii = PII_CATEGORIES if getattr(args, "redact_pii", False) else None
-    mem = Memory(_resolve_db(args), pii_redact=pii)  # offline default: HashEmbedder + llm=None
+    mem = Memory(_resolve_db(args), embedder=_embedder(), pii_redact=pii)  # llm=None (offline)
     _OPENED.append(mem)  # tracked so the connection is closed before the process/command ends
     return mem
 
@@ -704,7 +711,7 @@ def _cmd_worker(args: argparse.Namespace) -> int:
     from cold_frame.llm.claude_cli import ClaudeCliLLM
 
     extractor = ClaudeCliLLM() if ClaudeCliLLM.available() else None
-    mem = Memory(_resolve_db(args), llm=extractor)
+    mem = Memory(_resolve_db(args), embedder=_embedder(), llm=extractor)
     _OPENED.append(mem)
     print(
         f"{PKG} worker: extraction via the claude CLI (session auth, no key)"

@@ -71,6 +71,10 @@ cold-frame doctor          # health: counts, integrity, embedder
   SQLCipher (set at creation; the default stays plaintext + zero-config).
 - **Per-project + global** — facts are tagged by git project; clear personal facts go to a global
   tier recalled everywhere.
+- **Semantic recall (opt-in)** — the zero-config default recall is lexical (offline `HashEmbedder`,
+  no download). For semantic recall, `pip install 'cold-frame[local-llm]'` and set
+  `COLD_FRAME_EMBEDDER=local` (a small local `bge-small` model, downloaded once — nothing leaves the
+  machine). After switching on an existing DB, run `cold-frame reembed` to re-index.
 
 It's a standard stdio MCP server, so it works with any MCP client — not just Claude Code.
 

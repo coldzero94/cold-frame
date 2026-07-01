@@ -33,6 +33,10 @@ First public version. Local-first, ownable memory for AI agents — one SQLite f
   content-free logs; **opt-in PII redaction** (email/phone/card/ssn — `add --redact-pii` /
   `Memory(pii_redact=…)`); **opt-in at-rest encryption** (the `[crypto]` extra = SQLCipher;
   `Memory(encryption_key=…)` / `$COLD_FRAME_KEY`; whole DB + WAL + snapshots).
+- **Recall model (opt-in)** — the default is the offline lexical `HashEmbedder` (I5: no deps, no
+  download); `COLD_FRAME_EMBEDDER=local` (needs the `[local-llm]` extra) switches CLI + MCP to a
+  local `bge-small` semantic embedder. `Memory(embedder=…)` for programmatic use. Reembed after a
+  switch (`cold-frame reembed`; `doctor` reports the stale-vector count).
 - **Distribution** — `uv tool` / `pipx`, a Homebrew tap formula, and a standalone single-file binary
   (no Python needed); a Release workflow that publishes on tag.
 
