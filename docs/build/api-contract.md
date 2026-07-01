@@ -35,10 +35,10 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 MemoryType = Literal["semantic", "episodic", "procedural"]
-# CHANGED from design.md: Status gains "pending" to carry quarantine (audit: provenance invariant / D16).
-Status = Literal["active", "archived", "deleted", "pending"]
-#   active   : default, included in search
-#   pending  : quarantined (provenance-less or confidence<0.4 held_for_human) — EXCLUDED from default search, visible in Triage
+# G2 RATIFIED (code wins): Status is EXACTLY 3 values; quarantine is a flag column
+# (held_for_human / quarantined / triage_reason), NOT a 4th Status. See cold_frame/models.py.
+Status = Literal["active", "archived", "deleted"]
+#   active   : default, included in search (a quarantined active row is EXCLUDED via the flag, shown in Triage)
 #   archived : soft-forgotten, excluded from search, revivable
 #   deleted  : tombstone only (secret hard-purge; row retained as worthless marker, content scrubbed everywhere)
 

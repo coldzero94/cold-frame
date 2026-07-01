@@ -11,39 +11,30 @@
 ### 5.0 Entry signature & result types
 
 ```python
-# cold_frame/api.py  (Memory facade)
-async def search(
-    self, query: str, *, scope: Scope, k: int = 10,
+# cold_frame/api.py  (Memory facade) — SYNC (I4: the only async is mcp.py)
+def search(
+    self, query: str, *, scope: Scope | None = None, k: int = 10,
     token_budget: int | None = None, as_of: datetime | None = None,
-    include_archived: bool = False, rerank: bool = False,
-    explain: bool = False,
+    include_archived: bool = False, reinforce: bool = True, rerank: bool = False,
 ) -> SearchResult: ...
 
-# cold_frame/models.py
-class Signals(BaseModel):           # per-hit provenance of the ranking (recall-receipt)
-    rrf: float                      # fused RRF score (primary sort key pre-rerank)
-    semantic: float | None = None   # cosine ∈ [-1,1] if note appeared in KNN list
-    bm25: float | None = None       # sigmoid-normalized ∈ [0,1] if matched FTS
-    edge_boost: float = 0.0         # additive RRF contribution from edge channel
-    rerank: float | None = None     # cross-encoder/LLM score if rerank=True
-    meta_boost: float = 1.0         # recency/scope multiplier actually applied
-    strength: float                 # display S (§6 canonical formula), recomputed at read
-    rank_in: dict[str, int]         # {"semantic":3,"bm25":1,"edge":7} 0-based ranks per channel
+# cold_frame/models.py  (canonical shapes — code wins)
+class Signals(BaseModel):           # per-hit retrieval explainability
+    semantic: float | None = None   # cosine if the note appeared in the KNN list
+    bm25: float | None = None       # normalized if it matched FTS
+    edge: float | None = None       # RRF contribution from the 1-hop edge channel (None if not reached)
+    rrf: float                      # fused rank score (primary sort key)
+    rerank: float | None = None     # LLM relevance score, set only when search(rerank=True)
 
-class Hit(BaseModel):
+class SearchHit(BaseModel):
     note: Note
-    score: float                    # final score used for ordering (rrf or rerank-adjusted)
+    score: float                    # final fused / reranked score used for ordering
     signals: Signals
-    truncated: bool = False         # set by packer if content was cut to fit budget
-    packed_content: str             # content actually emitted (== note.content unless truncated)
-    tokens: int                     # token count of packed_content under active counter
 
 class SearchResult(BaseModel):
-    hits: list[Hit]
-    used: int = 0                   # sum of hits[].tokens (0 if no budget given)
-    budget: int | None = None
-    dropped: int = 0                # candidates ranked but excluded by budget cap
-    counter: str                    # "tiktoken:cl100k_base" | "heuristic-chars4"
+    hits: list[SearchHit]
+    used_tokens: int | None = None  # set only when token_budget given
+    truncated: bool = False         # True if lower-ranked hits were dropped to fit the budget
 ```
 
 `k` is the **final** result count (post-fusion, pre/post-budget). Over-fetch factor `FANOUT = 4` (per-channel candidate count = `k * FANOUT`, min 20, capped at 200).
@@ -53,7 +44,7 @@ class SearchResult(BaseModel):
 ### 5.1 Pipeline (top-level, deterministic)
 
 ```python
-async def search(query, scope, k, token_budget, as_of, include_archived, rerank, explain):
+def search(query, scope, k, token_budget, as_of, include_archived, reinforce, rerank):
     statuses = ("active",) if not include_archived else ("active", "archived")
     # quarantined notes (held_for_human/provenance-less) are NEVER in default search:
     #   the FILTER below adds `AND quarantined = 0` (see §5.2). include_archived does NOT
@@ -456,4 +447,4 @@ Update SPEC §6 to list the 0.10 ember cut so the glyph band matches ux §8.2 ex
 
 **Archive must not disagree with the glyph (audit: a fact showing 🌳 while archive-imminent).** Pin the rule: **a note is archive-eligible ONLY when its display `S < ARCHIVE_FLOOR = 0.10`** (i.e. inside the ember sub-band) AND `consolidate()`'s capacity-cap/`archive_score` selects it. So archive ⊆ ember. The capacity-cap path (SPEC §6 step4) still ranks ember-band notes by `archive_score` to pick which to demote, but never archives anything ≥ 0.10. This guarantees the §8.10 render contract: nothing labeled evergreen/budding can be silently archived.
 
-**Capacity-cap concrete numbers (audit: §6 'episodic 활성 N' has no value).** Defaults (config-overridable): `cap = {"episodic": 2000, "semantic": 5000, "procedural": 500}` active notes per type per scope. On overflow, demote lowest `archive_score` first, restricted to the ember band; pinned and pin-adjacent notes are exempt (§6 Triage (d)).
+**Capacity-cap concrete numbers (audit: §6 'episodic 활성 N' has no value).** Defaults (code wins — `cold_frame/constants.py`): `cap = {"semantic": 2000, "episodic": 500, "procedural": 100}` active notes per type per scope. On overflow, demote lowest `archive_score` first, restricted to the ember band; pinned and pin-adjacent notes are exempt (§6 Triage (d)).

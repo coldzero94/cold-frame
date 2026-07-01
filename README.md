@@ -100,10 +100,11 @@ you can browse facts and pin / correct / forget them (writes are CSRF-guarded an
 ## Status
 
 The engine, CLI, MCP server, Claude Code plugin, secret-blocking + grep-verified hard-purge, opt-in
-PII redaction + at-rest encryption, and a local web UI are built and tested end-to-end on a fully
-offline gate (`ruff` + `mypy --strict` + ~370 deterministic mock-LLM tests green on a 3.12/3.13 CI
-matrix). The automatic recall + capture loop is verified end-to-end against real Claude Code.
-Planned: the local admission LLM tiebreak + confidence-gate, a crypto-shred purge, a write web UI,
-event-log replay import, and a PyPI release (PyPI/trademark clearance pending).
+PII redaction + at-rest encryption, the local-only admission LLM tiebreak, an opt-in LLM relevance
+rerank, and a local web UI are built and tested end-to-end on a fully offline gate (`ruff` +
+`mypy --strict` + ~400 deterministic mock-LLM tests green on a 3.12/3.13 CI matrix). The automatic
+recall + capture loop is verified end-to-end against real Claude Code. Planned: an admission
+confidence-gate, a crypto-shred purge, a write web UI, event-log replay import, and a PyPI release
+(PyPI/trademark clearance pending).
 
 Apache-2.0.
