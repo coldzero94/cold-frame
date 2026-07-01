@@ -22,7 +22,7 @@ from cold_frame.constants import (
     DEDUP_AUTO_MERGE,
     DEDUP_NEAR_DUP,
 )
-from cold_frame.exceptions import ColdFrameError, PolicyError, SecretBlocked
+from cold_frame.exceptions import SecretBlocked
 from cold_frame.llm.base import LLM, Clock, Embedder, TaskTag
 from cold_frame.models import (
     AddResult,
@@ -34,12 +34,6 @@ from cold_frame.models import (
     Scope,
     TriageReason,
 )
-from cold_frame.observability import get_logger
-from cold_frame.prompts.admission import (
-    ADMISSION_SYSTEM,
-    AdmissionVerdict,
-    build_admission_user,
-)
 from cold_frame.prompts.conflict import (
     CONFLICT_SYSTEM,
     DEDUP_SYSTEM,
@@ -47,13 +41,11 @@ from cold_frame.prompts.conflict import (
     build_dedup_user,
 )
 from cold_frame.store.base import Store
-from cold_frame.write.admission import Verdict, ambiguous_spans, redact_pii, scan_secret
+from cold_frame.write.admission import Verdict, redact_pii, scan_secret
 from cold_frame.write.extract import (  # re-hash sources / re-derive tags over redacted content
     _sha256,
     derive_tags,
 )
-
-_log = get_logger(__name__)
 
 
 def _iso_or_unknown(dt: datetime | None) -> str:
@@ -102,50 +94,17 @@ class WriteCore:
         return None
 
     def _admission_block(self, content: str) -> Verdict | None:
-        """``(reason, placeholder)`` if ``content`` must be BLOCKed pre-disk, else None (I6/I7).
+        """``(reason, placeholder)`` if ``content`` holds an obvious secret/credential, else None
+        (I6). DETERMINISTIC scan only (``scan_secret``): vendor-prefix patterns (AWS/GitHub/…) +
+        credential assignments + a Shannon-entropy floor (>=4.5).
 
-        Deterministic secret scan FIRST (obvious secret → BLOCK). Then, for an AMBIGUOUS span, a
-        LOCAL-only LLM tiebreak that fails CLOSED. The tiebreak runs whenever an LLM IS configured:
-        a non-local one is rejected before the call (assert_local_for → PolicyError → BLOCK; never
-        sent to a remote endpoint), a local one judges it (judged-secret / unparseable / call
-        error ⇒ BLOCK). Only with NO LLM is there no tiebreak — the deterministic gate stands, the
-        candidate proceeds (I5). All BLOCK returns use reason="ambiguous" (not a confirmed match).
+        The old LOCAL-only LLM tiebreak for the ambiguous [4.0,4.5) entropy band was REMOVED (v1
+        scope): no local LLM ships (``ClaudeCliLLM`` is remote), so it was dead in production, and
+        with a remote LLM attached it fail-closed-BLOCKed legit facts carrying any long high-entropy
+        token (camelCase / paths land in that band). The band now proceeds — real secrets are still
+        caught by the vendor-prefix patterns and the >=4.5 entropy gate regardless of the band.
         """
-        verdict = scan_secret(content)
-        if verdict is not None:
-            return verdict
-        spans = ambiguous_spans(content)
-        if not spans or self._llm is None:
-            return None
-        try:
-            self._llm.assert_local_for(TaskTag.ADMISSION_TIEBREAK)  # I7: local-only or PolicyError
-        except PolicyError:
-            _log.info("admission_blocked", extra={"reason": "ambiguous_remote_llm"})
-            return (
-                "ambiguous",
-                "[BLOCKED:ambiguous_remote_llm]",
-            )  # never send a span remote → block
-        for span in spans:
-            user = build_admission_user(span)  # OUTSIDE the try — a prompt-builder bug is not a
-            try:  # tiebreak failure and must surface, not become a silent block
-                res = self._llm.complete(
-                    task=TaskTag.ADMISSION_TIEBREAK,
-                    system=ADMISSION_SYSTEM,
-                    user=user,
-                    schema=AdmissionVerdict,
-                )
-            except (AssertionError, ColdFrameError):
-                # the ScriptedLLM/EvalError undeclared-call signal + in-process contract errors MUST
-                # surface (CLAUDE.md §2 / I16 no-silent-failure) — never become a silent block.
-                raise
-            except Exception as exc:  # a genuine provider/transport failure → can't confirm → BLOCK
-                _log.warning("admission_tiebreak_error", extra={"exc_type": type(exc).__name__})
-                return ("ambiguous", "[BLOCKED:ambiguous_tiebreak_error]")
-            v = res.parsed
-            if not isinstance(v, AdmissionVerdict) or v.is_secret:
-                _log.info("admission_blocked", extra={"reason": "ambiguous"})
-                return ("ambiguous", "[BLOCKED:ambiguous]")  # unparseable / judged-secret → block
-        return None  # the local LLM cleared every ambiguous span
+        return scan_secret(content)
 
     def _redact(self, note: Note) -> tuple[Note, Counter[PiiCategory]]:
         """OPT-IN PII scrub of EVERY persisted free-text grain — content, context, keywords, AND

@@ -5,9 +5,9 @@ secrets/credentials BEFORE they touch disk. Returns only a ``(reason, placeholde
 NEVER the matched content (I6/I16). Plus ``redact_pii`` — an OPT-IN deterministic PII scrub that
 replaces emails/phones/cards/SSNs inline before persist (off by default: a personal-memory tool must
 not blanket-redact the user's OWN useful contact facts; enable per-category when wanted). Plus
-``ambiguous_spans`` — the entropy band that feeds the LOCAL-only I7 tiebreak in
-``WriteCore._admission_block`` (built). CONFIDENCE-GATE/CONSENT and crypto-shred purge remain
-deferred (v1.1 / hosted).
+``ambiguous_spans`` — the [4.0,4.5) entropy band; it NO LONGER gates storage (the local-only LLM
+tiebreak was removed as dead-in-prod — no local LLM ships), it only feeds ``write/extract``'s
+remote-extraction egress guard (don't ship a maybe-secret span to a REMOTE extractor).
 """
 
 from __future__ import annotations
@@ -37,13 +37,14 @@ _ASSIGNMENT = re.compile(
 )
 _TOKEN = re.compile(r"[A-Za-z0-9+/=_-]{32,}")  # a contiguous long blob (entropy backstop)
 _ENTROPY_MIN = 4.5  # Shannon bits/char; random base64 secrets ~4.5-6
-# the AMBIGUOUS band [4.0, 4.5): below the definite-secret floor but high enough to warrant a check.
-# Dashed UUIDs (~3.4) and hex SHAs (~3.95) sit just below 4.0 (thin buffer); but ordinary long
-# camelCase/path tokens (~4.1) DO land in the band — the local LLM tiebreak (NOT the band) clears.
+# the AMBIGUOUS band [4.0, 4.5): below the definite-secret floor but high enough to warrant a check
+# BEFORE shipping a span to a REMOTE extractor (the egress guard's use). Dashed UUIDs (~3.4) / hex
+# SHAs (~3.95) sit just below 4.0; ordinary long camelCase/path tokens (~4.1) land in the band —
+# which is why it does NOT gate storage (too many false positives), only the remote-egress decision.
 _ENTROPY_AMBIGUOUS = 4.0
 
-# (reason, placeholder) — never content. "ambiguous" = fail-closed BLOCK because the local tiebreak
-# could not CONFIRM it safe (no local LLM / errored / judged-secret) — NOT a deterministic match.
+# (reason, placeholder) — never content. scan_secret only ever returns "secret"/"credential"; the
+# "ambiguous" arm stays in the type for the (now storage-inert) band but scan_secret never emits it.
 Verdict = tuple[Literal["secret", "credential", "ambiguous"], str]
 
 
@@ -68,8 +69,9 @@ def scan_secret(text: str) -> Verdict | None:
 
 def ambiguous_spans(text: str) -> list[str]:
     """Long tokens in the AMBIGUOUS entropy band [4.0, 4.5) — suspicious but not a DEFINITE secret
-    (``scan_secret`` already catches those). These warrant the I7 local-LLM tiebreak. Empty when the
-    text is already a definite BLOCK (no point tiebreaking) or has no such token."""
+    (``scan_secret`` already catches those). Used by ``write/extract``'s remote-extraction egress
+    guard to avoid shipping a maybe-secret span to a REMOTE extractor (NOT a storage gate). Empty
+    when the text is already a definite BLOCK or has no such token."""
     if scan_secret(text) is not None:
         return []
     return [t for t in _TOKEN.findall(text) if _ENTROPY_AMBIGUOUS <= _entropy(t) < _ENTROPY_MIN]

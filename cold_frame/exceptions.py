@@ -36,10 +36,9 @@ class StoreError(ColdFrameError):
 
 
 class PolicyError(ColdFrameError):
-    """A local-only policy was violated — a non-local LLM was used for a local-only task (I7).
-    Raised by ``llm.assert_local_for`` and dispatched LIVE by ``WriteCore._admission_block``: the
-    admission tiebreak for an ambiguous span MUST run on a local LLM, so a non-local one fails
-    CLOSED (the span is BLOCKed, never sent remote)."""
+    """A configured policy was violated (e.g. a task requiring a local LLM given a remote one).
+    Kept as a seam in the hierarchy + MCP error map; the v1 admission path no longer raises it —
+    the local-only LLM tiebreak was removed as dead-in-prod (no local LLM ships)."""
 
 
 class ToolError(ColdFrameError):

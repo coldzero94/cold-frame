@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from cold_frame.llm.base import (
     LLM,
-    LOCAL_ONLY_TASKS,
     Clock,
     Embedder,
     EmbedderMeta,
@@ -13,12 +12,10 @@ from cold_frame.llm.base import (
     SystemClock,
     TaskTag,
     Usage,
-    assert_local_for,
 )
 
 __all__ = [
     "LLM",
-    "LOCAL_ONLY_TASKS",
     "Clock",
     "Embedder",
     "EmbedderMeta",
@@ -27,5 +24,4 @@ __all__ = [
     "SystemClock",
     "TaskTag",
     "Usage",
-    "assert_local_for",
 ]

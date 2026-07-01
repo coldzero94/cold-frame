@@ -15,13 +15,12 @@ import math
 from abc import ABC, abstractmethod
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Final, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 import numpy as np
 from pydantic import BaseModel
 
 from cold_frame.constants import HASH_EMBED_DIM
-from cold_frame.exceptions import PolicyError
 
 
 # ── Clock seam (G6 determinism) ─────────────────────────────────────────────
@@ -41,10 +40,9 @@ class SystemClock:
 
 # ── TaskTag (closed enum; every LLM call MUST pass one) ─────────────────────
 class TaskTag(StrEnum):
-    """Per-call dispatch + local-only enforcement + log key (eval §A)."""
+    """Per-call dispatch + log key (eval §A)."""
 
     EXTRACT = "extract"  # write/extract.py — chat → candidate facts
-    ADMISSION_TIEBREAK = "admission_tiebreak"  # ambiguous secret/PII span (MUST be local, I7)
     DEDUP_BATCH = "dedup_batch"  # write/core._dedup_judge — near-dup (judged one pair at a time)
     CONFLICT_JUDGE = "conflict_judge"  # write/core._conflict_judge — dup-vs-contradiction
     CONSOLIDATE_SUMMARY = "consolidate_summary"  # forget/consolidate.py — episodic → semantic
@@ -52,10 +50,6 @@ class TaskTag(StrEnum):
     GRADIENT_DIAGNOSE = "gradient_diagnose"  # procedural/optimize.py
     GRADIENT_EDIT = "gradient_edit"  # procedural/optimize.py
     SCOPE_CLASSIFY = "scope_classify"  # api.py — global vs project tier for an auto-captured fact
-
-
-# Tasks that may ONLY run on a local LLM (I7 / I-LOCAL). Fail-closed otherwise.
-LOCAL_ONLY_TASKS: Final[frozenset[TaskTag]] = frozenset({TaskTag.ADMISSION_TIEBREAK})
 
 
 # ── LLM result types ────────────────────────────────────────────────────────
@@ -100,20 +94,6 @@ class LLM(ABC):
     ) -> LLMResult:
         """Complete for ``task``. Returns text, or structured ``parsed`` when a schema is given."""
         ...
-
-    def assert_local_for(self, task: TaskTag) -> None:
-        """Raise ``PolicyError`` if ``task`` is local-only and this LLM is not local (I7)."""
-        assert_local_for(task, self)
-
-
-def assert_local_for(task: TaskTag, llm: LLM) -> None:
-    """Enforce I-LOCAL in one place: a secret span NEVER reaches a remote endpoint (I7). LIVE — the
-    admission tiebreak (``WriteCore._admission_block``) calls this before judging an ambiguous span,
-    so an ``ADMISSION_TIEBREAK`` on a non-local LLM raises PolicyError and the span is BLOCKed
-    (fail-closed) instead of sent to a remote model.
-    """
-    if task in LOCAL_ONLY_TASKS and not llm.is_local:
-        raise PolicyError(f"task={task.value} requires a local LLM (D4/R11); got {llm.name!r}")
 
 
 # ── Embedder ABC ─────────────────────────────────────────────────────────────

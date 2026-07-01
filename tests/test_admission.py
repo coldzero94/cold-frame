@@ -1,8 +1,8 @@
 """Admission tests (v1, D25): deterministic secret-BLOCK before disk (I6).
 
-Obvious secrets are blocked pre-disk (deterministic); an AMBIGUOUS span is resolved by the
-LOCAL-only I7 tiebreak (built, exercised here). CONFIDENCE-GATE/CONSENT + crypto-shred deferred.
-The blocked output NEVER carries the secret content (I6/I16).
+Obvious secrets are blocked pre-disk (deterministic, no LLM). The ambiguous [4.0,4.5) entropy band
+no longer gates STORAGE — the local-only LLM tiebreak was removed (v1 scope) — it only feeds
+write/extract's remote-egress guard now. Blocked output NEVER carries the secret content (I6/I16).
 """
 
 from __future__ import annotations
@@ -10,8 +10,7 @@ from __future__ import annotations
 import pytest
 from cold_frame.api import Memory
 from cold_frame.exceptions import SecretBlocked
-from cold_frame.llm.base import LLM, HashEmbedder, LLMResult, TaskTag
-from cold_frame.prompts.admission import AdmissionVerdict
+from cold_frame.llm.base import HashEmbedder, LLMResult, TaskTag
 from cold_frame.prompts.extract import ExtractionOutput
 from cold_frame.write.admission import ambiguous_spans, scan_secret
 
@@ -108,9 +107,9 @@ def test_normal_add_still_works(db_path: str, frozen_clock: FrozenClock) -> None
     assert len(res.added) == 1 and not res.blocked  # admission is a pass-through for clean text
 
 
-# ── I7: local-only admission tiebreak for an AMBIGUOUS span ────────────────────
-# 32 chars, verified entropy 4.25 → in the [4.0, 4.5) ambiguous band (>=32 for the _TOKEN scanner;
-# not a definite secret, not a plain hash/uuid)
+# ── ambiguous entropy band [4.0, 4.5): a detection fn (feeds the remote-egress guard) ──
+# The band NO LONGER gates storage — the local-only LLM tiebreak was removed (v1 scope: no local LLM
+# ships, and a remote LLM made it fail-closed-BLOCK legit facts). 32 chars, entropy ~4.25 → in band.
 _AMBIG = "abcdefghijklmnopqrstabcdefghijkl"
 _AMBIG_TEXT = f"my deploy id is {_AMBIG} ok"
 
@@ -121,46 +120,15 @@ def test_ambiguous_spans_detects_the_band() -> None:
     assert ambiguous_spans("just a short normal sentence about coffee") == []
 
 
-def _tiebreak_mem(db_path, clock, *, verdict, is_local):  # type: ignore[no-untyped-def]
-    script = {TaskTag.ADMISSION_TIEBREAK: LLMResult(parsed=verdict)}
-    return Memory(
-        db_path, embedder=HashEmbedder(), llm=ScriptedLLM(script, is_local=is_local), clock=clock
-    )
-
-
-def test_ambiguous_offline_no_llm_is_allowed(db_path: str, frozen_clock: FrozenClock) -> None:
-    # I5: with no LLM there is no tiebreak — the deterministic gate stands, ambiguous proceeds.
-    res = _mem(db_path, frozen_clock).add(_AMBIG_TEXT, raw=True)
-    assert res.added and not res.blocked
-
-
-def test_ambiguous_local_llm_says_secret_blocks(db_path: str, frozen_clock: FrozenClock) -> None:
-    m = _tiebreak_mem(
-        db_path, frozen_clock, verdict=AdmissionVerdict(is_secret=True), is_local=True
-    )
-    res = m.add(_AMBIG_TEXT, raw=True)
-    assert not res.added and res.blocked and res.blocked[0].placeholder == "[BLOCKED:ambiguous]"
-
-
-def test_ambiguous_local_llm_says_clean_allows(db_path: str, frozen_clock: FrozenClock) -> None:
-    m = _tiebreak_mem(
-        db_path, frozen_clock, verdict=AdmissionVerdict(is_secret=False), is_local=True
-    )
-    res = m.add(_AMBIG_TEXT, raw=True)
-    assert res.added and not res.blocked
-
-
-def test_ambiguous_remote_llm_fails_closed_and_never_sends(
-    db_path: str, frozen_clock: FrozenClock
-) -> None:
-    # I7: a non-local LLM must NOT receive the span — assert_local_for raises BEFORE complete().
+def test_ambiguous_band_proceeds_on_storage(db_path: str, frozen_clock: FrozenClock) -> None:
+    # STORAGE no longer gates the ambiguous band: the removed LLM tiebreak used to fail-closed-BLOCK
+    # here (the worker footgun). A long high-entropy token now proceeds; real secrets are still
+    # caught by scan_secret (vendor patterns + >=4.5 entropy). Even a REMOTE LLM is never called.
     llm = ScriptedLLM({}, is_local=False)  # empty script → any complete() call would AssertionError
     m = Memory(db_path, embedder=HashEmbedder(), llm=llm, clock=frozen_clock)
     res = m.add(_AMBIG_TEXT, raw=True)
-    assert not res.added and res.blocked  # fail closed
-    assert res.blocked[0].reason == "ambiguous"  # NOT "secret" — it was unverifiable, not confirmed
-    assert res.blocked[0].placeholder == "[BLOCKED:ambiguous_remote_llm]"
-    assert TaskTag.ADMISSION_TIEBREAK not in llm.calls  # the span never reached the remote model
+    assert res.added and not res.blocked  # proceeds — no tiebreak, no fail-closed block
+    assert llm.calls == []  # admission made ZERO LLM calls (the tiebreak apparatus is gone)
 
 
 def test_ambiguous_band_lower_boundary_excludes_hashes_uuids() -> None:
@@ -171,69 +139,7 @@ def test_ambiguous_band_lower_boundary_excludes_hashes_uuids() -> None:
     assert ambiguous_spans(f"trace id {uuid}") == []
 
 
-def test_ambiguous_unparseable_verdict_fails_closed(
-    db_path: str, frozen_clock: FrozenClock
-) -> None:
-    # local LLM returns no parsed verdict → can't confirm safe → BLOCK (reason=ambiguous)
-    m = _tiebreak_mem(db_path, frozen_clock, verdict=None, is_local=True)
-    res = m.add(_AMBIG_TEXT, raw=True)
-    assert not res.added and res.blocked and res.blocked[0].reason == "ambiguous"
-
-
-def test_supersede_path_runs_the_tiebreak(db_path: str, frozen_clock: FrozenClock) -> None:
-    # the tiebreak guards commit_supersede (correct_memory), not just the add path (I15)
-    m = _tiebreak_mem(
-        db_path, frozen_clock, verdict=AdmissionVerdict(is_secret=True), is_local=True
-    )
-    fid = m.add("a clean baseline fact", raw=True).added[0].id
-    with pytest.raises(SecretBlocked):
-        m.correct_memory(fid, _AMBIG_TEXT)
-    assert m.get(fid).content == "a clean baseline fact"  # the old fact is untouched (no partial)
-
-
-def test_ambiguous_loop_checks_every_span(db_path: str, frozen_clock: FrozenClock) -> None:
-    # multiple ambiguous spans → ALL are tiebroken (a spans[0]-only loop would miss a later secret)
-    m = _tiebreak_mem(
-        db_path, frozen_clock, verdict=AdmissionVerdict(is_secret=False), is_local=True
-    )
-    ambig2 = "abcdefghijklmnopqrsabcdefghijklmnop"  # 2nd distinct >=32-char token in [4.0,4.5)
-    res = m.add(f"ids {_AMBIG} and {ambig2}", raw=True)
-    assert res.added  # the local LLM cleared both
-    assert m._write._llm.calls.count(TaskTag.ADMISSION_TIEBREAK) == 2  # the loop checked BOTH spans
-
-
-def test_unscripted_local_tiebreak_propagates_not_silently_blocks(
-    db_path: str, frozen_clock: FrozenClock
-) -> None:
-    # an undeclared local-LLM call MUST stay a hard failure (CLAUDE.md §2 / I16) — the tiebreak's
-    # except must NOT swallow ScriptedLLM's AssertionError into a silent "ambiguous" block.
-    m = Memory(  # local, but ADMISSION_TIEBREAK NOT scripted
-        db_path, embedder=HashEmbedder(), llm=ScriptedLLM({}, is_local=True), clock=frozen_clock
-    )
-    with pytest.raises(AssertionError):
-        m.add(_AMBIG_TEXT, raw=True)
-
-
-def test_tiebreak_provider_failure_fails_closed(db_path: str, frozen_clock: FrozenClock) -> None:
-    # a genuine provider/transport error (NOT a harness/contract error) → fail CLOSED, not a crash
-    class _RaisingLLM(LLM):
-        name = "raising"
-
-        @property
-        def is_local(self) -> bool:
-            return True
-
-        def complete(self, **kw: object) -> LLMResult:  # type: ignore[override]
-            raise RuntimeError("simulated provider outage")
-
-    m = Memory(db_path, embedder=HashEmbedder(), llm=_RaisingLLM(), clock=frozen_clock)
-    res = m.add(_AMBIG_TEXT, raw=True)
-    assert not res.added and res.blocked
-    assert res.blocked[0].reason == "ambiguous"
-    assert res.blocked[0].placeholder == "[BLOCKED:ambiguous_tiebreak_error]"
-
-
-# ── I7 extraction leg: raw chat must not reach a REMOTE extractor if it holds a secret ──────────
+# ── extraction leg: raw chat must not reach a REMOTE extractor if it holds a secret ──
 def test_remote_extractor_never_receives_secret_bearing_chat(
     db_path: str, frozen_clock: FrozenClock
 ) -> None:
