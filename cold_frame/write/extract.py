@@ -18,11 +18,15 @@ from typing import TYPE_CHECKING
 from cold_frame.constants import CONFIDENCE_FLOOR
 from cold_frame.llm.base import LLM, Clock, TaskTag
 from cold_frame.models import Note, Scope, Source, TriageReason
+from cold_frame.observability import get_logger
 from cold_frame.prompts import EXTRACT_SYSTEM
 from cold_frame.prompts.extract import ExtractionOutput, build_user
+from cold_frame.write.admission import ambiguous_spans, scan_secret
 
 if TYPE_CHECKING:
     from cold_frame.api import Msg
+
+_log = get_logger(__name__)
 
 _NAIVE_CONFIDENCE = 0.5
 _NAIVE_IMPORTANCE = 0.5
@@ -135,6 +139,15 @@ def extract(
         return _naive(
             msgs, clock=clock, new_id=new_id, observed_at=observed_at, scope=scope, source=source
         )
+    # I7 (extraction leg): the admission tiebreak is local-only, but EXTRACTION can use a REMOTE
+    # LLM. Never send raw chat holding an obvious secret — or an ambiguous high-entropy span we
+    # can't clear with the local tiebreak — to a remote endpoint. Fall back to LOCAL naive
+    # extraction; admission (WriteCore) then BLOCKs the secret pre-disk, so it never leaves the box.
+    if not llm.is_local and _remote_extract_unsafe(msgs):
+        _log.warning("remote_extract_secret_fallback", extra={"message_count": len(msgs)})
+        return _naive(
+            msgs, clock=clock, new_id=new_id, observed_at=observed_at, scope=scope, source=source
+        )
     return _llm_extract(
         msgs,
         llm=llm,
@@ -144,6 +157,12 @@ def extract(
         scope=scope,
         source=source,
     )
+
+
+def _remote_extract_unsafe(msgs: list[dict[str, str]]) -> bool:
+    """True if any message trips the deterministic secret scan or holds an ambiguous high-entropy
+    span — either MUST NOT be sent to a remote extractor (I7 fail-closed; content-free)."""
+    return any(scan_secret(m["content"]) is not None or ambiguous_spans(m["content"]) for m in msgs)
 
 
 def _naive(
