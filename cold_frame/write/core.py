@@ -42,7 +42,10 @@ from cold_frame.prompts.conflict import (
 )
 from cold_frame.store.base import Store
 from cold_frame.write.admission import Verdict, ambiguous_spans, redact_pii, scan_secret
-from cold_frame.write.extract import _sha256  # re-hash sources over redacted content (PII scrub)
+from cold_frame.write.extract import (  # re-hash sources / re-derive tags over redacted content
+    _sha256,
+    derive_tags,
+)
 
 _log = get_logger(__name__)
 
@@ -117,9 +120,12 @@ class WriteCore:
         return None  # the local LLM cleared every ambiguous span
 
     def _redact(self, note: Note) -> tuple[Note, Counter[PiiCategory]]:
-        """OPT-IN PII scrub of EVERY persisted free-text grain — content, context, AND keywords (all
-        stored + FTS-indexed; redacting content alone would leak PII to disk + search). On any
-        redaction, rebuild each source's content_hash over the REDACTED content so no SHA of the
+        """OPT-IN PII scrub of EVERY persisted free-text grain — content, context, keywords, AND
+        tags (all stored on disk; redacting content alone would leak PII to disk + search). ``tags``
+        are a pure deterministic function of (content, memory_type), so they are RE-DERIVED from the
+        already-redacted content — a tag like an email local-part can't survive (derive_tags runs on
+        the raw content during extraction, so this is the only place it sees the redacted text). On
+        any redaction, rebuild each source's content_hash over the REDACTED content so no SHA of the
         original PII lingers (like notes.content_hash, which hashes the redacted text)."""
         assert self._pii_redact is not None
         summ: Counter[PiiCategory] = Counter()
@@ -142,6 +148,7 @@ class WriteCore:
                 "content": content,
                 "context": context,
                 "keywords": keywords,
+                "tags": derive_tags(content, note.memory_type),
                 "sources": sources,
             }
         )
