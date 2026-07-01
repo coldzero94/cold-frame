@@ -11,9 +11,11 @@ from __future__ import annotations
 import hashlib
 import os
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from datetime import datetime
 from typing import Literal, TypedDict, cast, get_args
+
+from pydantic import ValidationError
 
 from cold_frame.branding import DB_PATH
 from cold_frame.constants import CONFIDENCE_FLOOR, CONSOLIDATE_EVERY_N_WRITES, DEDUP_AUTO_MERGE
@@ -33,6 +35,7 @@ from cold_frame.models import (
     CorrectResult,
     Edge,
     EdgeRelation,
+    ImportEventsResult,
     MemoryTypeLiteral,
     Note,
     PiiCategory,
@@ -51,7 +54,7 @@ from cold_frame.procedural.optimize import ProceduralOptimizer
 from cold_frame.prompts.scope import SCOPE_SYSTEM, ScopeVerdict, build_scope_user
 from cold_frame.read.retrieve import RetrievePipeline
 from cold_frame.read.strength import compute_strength
-from cold_frame.store.base import Job, PurgeReport
+from cold_frame.store.base import Event, Job, PurgeReport
 from cold_frame.store.sqlite import SQLiteStore
 from cold_frame.write.core import WriteCore
 from cold_frame.write.extract import extract
@@ -488,6 +491,23 @@ class Memory:
         """Yield the append-only event log as NDJSON lines (portable, inspectable)."""
         for ev in self._store.iter_events():
             yield ev.model_dump_json()
+
+    def import_events(self, lines: Iterable[str]) -> ImportEventsResult:
+        """Replay an NDJSON event log (from ``export_events``) into this store (I17). Idempotent
+        (skip already-stored event_id), last-writer-wins by HLC. Unparseable lines are skipped and
+        counted in the result — never raised — so a truncated dump imports what it can."""
+        events: list[Event] = []
+        unparseable = 0
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                events.append(Event.model_validate_json(line))
+            except ValidationError:
+                unparseable += 1
+        res = self._store.import_events(events)
+        return res.model_copy(update={"skipped": res.skipped + unparseable})
 
     def strength(self, id: str) -> Strength:
         return compute_strength(self.get(id), self._clock.now())

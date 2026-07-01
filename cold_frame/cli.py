@@ -592,7 +592,8 @@ def _db_is_busy(path: Path, key: str | None) -> bool:
 
 
 def _cmd_import(args: argparse.Namespace) -> int:
-    """Restore the memory DB from a snapshot (replaces the current DB; current is backed up)."""
+    """Restore the memory DB from a snapshot (replaces the current DB; current is backed up), OR
+    replay an NDJSON event log with --events (idempotent merge into the current DB)."""
     import shutil
 
     src = Path(args.path)
@@ -600,6 +601,14 @@ def _cmd_import(args: argparse.Namespace) -> int:
     if not src.exists():
         print(f"import: source not found: {src}")
         return 1
+    if args.events:  # event-log replay: merge into the current DB (idempotent, LWW-by-HLC)
+        with src.open(encoding="utf-8") as f:
+            res = _memory(args).import_events(f)
+        print(
+            f"imported {res.applied} events → {res.materialized} notes "
+            f"({res.skipped} skipped) into {dst}"
+        )
+        return 0
     # keyed so an ENCRYPTED snapshot can be validated (else it reads as ciphertext)
     key = _import_key()
     try:  # validate it's a cold-frame snapshot: (decryptable) SQLite + migrated + notes table
@@ -807,7 +816,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_export.add_argument("--events", action="store_true", help="dump the event log as NDJSON")
     p_export.set_defaults(func=_cmd_export)
     p_import = sub.add_parser("import", help="restore memory from a snapshot (replaces current)")
-    p_import.add_argument("path", help="snapshot file to restore from")
+    p_import.add_argument("path", help="snapshot file, or an NDJSON event log with --events")
+    p_import.add_argument(
+        "--events", action="store_true", help="replay an NDJSON event log (idempotent merge)"
+    )
     p_import.set_defaults(func=_cmd_import)
     p_encrypt = sub.add_parser("encrypt", help="write an encrypted copy of the DB ([crypto] extra)")
     p_encrypt.add_argument("--out", required=True, help="destination path for the encrypted copy")

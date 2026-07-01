@@ -181,6 +181,14 @@ class ConsolidateResult(BaseModel):
     held_for_human: list[str] = Field(default_factory=list)  # newly flagged triage items
 
 
+class ImportEventsResult(BaseModel):
+    """Result of ``Memory.import_events`` (I17 event-log replay)."""
+
+    applied: int = 0  # events newly recorded (not already-stored by event_id)
+    skipped: int = 0  # events skipped (already stored, non-note, or unparseable)
+    materialized: int = 0  # notes upserted (highest-HLC event won LWW)
+
+
 class ReembedResult(BaseModel):
     """Result of ``Memory.reembed`` — re-indexing notes under a swapped embedder (I8/I10)."""
 

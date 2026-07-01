@@ -19,7 +19,7 @@ import re
 import sqlite3
 import uuid
 from collections import defaultdict
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -45,6 +45,7 @@ from cold_frame.llm.base import Clock, Embedder, EmbedderMeta, SystemClock
 from cold_frame.models import (
     Edge,
     EdgeRelation,
+    ImportEventsResult,
     Note,
     Scope,
     Source,
@@ -1370,6 +1371,65 @@ class SQLiteStore(Store):
                 payload=row["payload"],
                 ts=_from_iso(row["ts"]),
             )
+
+    def _upsert_note_grains(self, note: Note) -> None:
+        """Insert-or-REPLACE a note's grains from an imported snapshot — re-embeds with the CURRENT
+        embedder, NO optimistic version-lock and NO event co-write (import_events records the
+        ORIGINAL event). Replace = drop old grains (fts + history + the notes row, which cascades
+        vec/sources) then insert fresh."""
+        self._assert_provenance(
+            note
+        )  # I14 still holds locally (imported active notes carry sources)
+        old = self.get_notes([note.id])
+        if old:
+            rowid = int(
+                self._conn.execute("SELECT rowid FROM notes WHERE id=?", (note.id,)).fetchone()[0]
+            )
+            self._delete_fts(rowid, old[0])  # external-content FTS5: no FK cascade
+            self._conn.execute("DELETE FROM note_history WHERE id=?", (note.id,))
+            self._conn.execute("DELETE FROM notes WHERE id=?", (note.id,))  # cascades vec/sources
+        new_rowid = self._insert_note_row(note)
+        self._insert_fts(new_rowid, note)
+        if self._embedder is not None:  # re-embed with the current embedder (None → BM25-only, I10)
+            self._insert_vec(note.id, self._embedder.embed_one(note.content))
+        self._insert_sources(note)
+        self._insert_history(note, update_type="manual")
+
+    def import_events(self, events: Iterable[Event]) -> ImportEventsResult:
+        applied = materialized = 0
+        all_events = list(events)  # single-pass safe; needed to count skipped
+        with self._txn("import_events"):  # one txn: all grains + events + the HLC bump (I3)
+            seen: set[str] = {r[0] for r in self._conn.execute("SELECT event_id FROM events")}
+            # current max HLC per note id (local + already-imported) — the LWW watermark
+            maxhlc: dict[str, str] = {
+                r[0]: r[1]
+                for r in self._conn.execute(
+                    "SELECT entity_id, MAX(hlc) FROM events WHERE entity='note' GROUP BY entity_id"
+                )
+            }
+            # apply in HLC order so successive events for one note converge on the highest
+            fresh = sorted(
+                (e for e in all_events if e.entity == "note" and e.event_id not in seen),
+                key=lambda e: e.hlc,
+            )
+            hlc_high = self.get_meta("hlc_last") or ""
+            for ev in fresh:
+                self.append_event(ev)  # record with the ORIGINAL event_id/hlc (audit + idempotency)
+                applied += 1
+                hlc_high = max(hlc_high, ev.hlc)
+                if ev.hlc <= maxhlc.get(ev.entity_id, ""):
+                    continue  # a newer state for this note already exists → don't clobber (LWW)
+                maxhlc[ev.entity_id] = ev.hlc
+                if ev.op in ("delete", "purge") or not ev.payload:
+                    continue  # final state is gone / payload scrubbed — nothing to materialize
+                self._upsert_note_grains(Note.model_validate_json(ev.payload))
+                materialized += 1
+            if hlc_high > (self.get_meta("hlc_last") or ""):
+                self.set_meta(
+                    "hlc_last", hlc_high
+                )  # later local writes stay causally after imports
+        skipped = len(all_events) - applied  # non-note + already-stored event_ids
+        return ImportEventsResult(applied=applied, skipped=skipped, materialized=materialized)
 
     def snapshot(self, dst: str) -> None:
         """Consistent checkpointed copy of the WHOLE DB to ``dst`` (I17: a snapshot, never the

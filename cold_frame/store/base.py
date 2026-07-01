@@ -22,7 +22,7 @@ serializes it to a float32 BLOB. ALL writes are ONE transaction (I3): notes + no
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import AbstractContextManager
 from datetime import datetime
 from typing import Any, Literal
@@ -34,6 +34,7 @@ from cold_frame.llm.base import EmbedderMeta
 from cold_frame.models import (
     Edge,
     EdgeRelation,
+    ImportEventsResult,
     Note,
     Scope,
     StatusLiteral,
@@ -361,6 +362,12 @@ class Store(ABC):
 
     @abstractmethod
     def iter_events(self, *, since_hlc: str | None = None) -> Iterator[Event]: ...
+
+    @abstractmethod
+    def import_events(self, events: Iterable[Event]) -> ImportEventsResult:
+        """Replay an event log into this store (I17): idempotent (skip already-stored event_id),
+        last-writer-wins by HLC. Note-only (edges aren't logged). Advances the local HLC clock."""
+        ...
 
     @abstractmethod
     def snapshot(self, dst: str) -> None:
