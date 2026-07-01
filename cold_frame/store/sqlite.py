@@ -1381,6 +1381,24 @@ class SQLiteStore(Store):
         finally:
             out.close()
 
+    def rekey(self, new_key: str) -> None:
+        """Rotate the at-rest encryption key IN PLACE (SQLCipher ``PRAGMA rekey``). Requires an
+        already-ENCRYPTED store — a plaintext DB has no key to rotate (use ``migrate_to_encrypted``
+        to create an encrypted copy first). After this the OLD key no longer opens the DB; combined
+        with discarding the old key + old backups, it crypto-shreds pre-rotation ciphertext
+        (finishing the plaintext scrub a secret ``purge`` did). The key is never logged (I16).
+        """
+        if self._key is None:
+            raise StoreError(
+                "rekey requires an encrypted DB; the plaintext default has no key to rotate "
+                "(use `cold-frame encrypt` to create an encrypted copy first)"
+            )
+        if not new_key or not new_key.strip():
+            raise StoreError("new encryption key must not be blank")
+        # PRAGMA rekey takes a string LITERAL (like PRAGMA key); quotes doubled → injection-safe.
+        self._conn.execute("PRAGMA rekey = '" + new_key.replace("'", "''") + "'")
+        self._key = new_key  # subsequent reconnects / snapshots use the rotated key
+
     # ── secret hard-purge (the ONE append-only carve-out, I2/I17/§7) ─────────
     def _purge_targets(self, id: str, *, cascade: bool) -> list[str]:
         """The id plus, if cascade, every note derived FROM it (BFS over ``derived_from``

@@ -477,6 +477,13 @@ class Memory:
         """Write a complete consistent backup of the whole memory DB to ``dst``."""
         self._store.snapshot(dst)
 
+    def rekey(self, new_key: str) -> None:
+        """Rotate the at-rest encryption key in place (SQLCipher; needs [crypto]). Requires an
+        encrypted store — the old key stops opening the DB. Combined with discarding the old key +
+        old backups, this crypto-shreds pre-rotation ciphertext."""
+        self._store.rekey(new_key)
+        self._encryption_key = new_key
+
     def export_events(self) -> Iterator[str]:
         """Yield the append-only event log as NDJSON lines (portable, inspectable)."""
         for ev in self._store.iter_events():

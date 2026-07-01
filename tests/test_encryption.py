@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 from cold_frame.api import Memory
+from cold_frame.cli import main
 from cold_frame.exceptions import StoreError
 
 # the encrypt/decrypt tests need the SQLCipher wheel (CI Linux); key-resolution tests don't.
@@ -146,8 +147,6 @@ def test_migrate_refuses_blank_key_and_existing_dst(tmp_path: Path) -> None:
 
 @_needs_sqlcipher
 def test_cli_encrypt_command(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from cold_frame.cli import main
-
     src = str(tmp_path / "plain.db")
     Memory(src).add(f"cli secret {_NEEDLE}")
     dst = str(tmp_path / "enc.db")
@@ -162,8 +161,6 @@ def test_cli_encrypt_command(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
 def test_cli_import_restores_an_encrypted_snapshot(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from cold_frame.cli import main
-
     monkeypatch.setenv("COLD_FRAME_KEY", _KEY)  # the import path resolves the key from the env
     src = str(tmp_path / "enc.db")
     Memory(src, encryption_key=_KEY).add(f"backed up {_NEEDLE}")
@@ -173,3 +170,37 @@ def test_cli_import_restores_an_encrypted_snapshot(
     assert main(["--db", dst, "import", snap]) == 0  # validates + restores (no crash on ciphertext)
     restored = Memory(dst, encryption_key=_KEY)
     assert any(_NEEDLE in n.content for n in restored.list_active())
+
+
+@_needs_sqlcipher
+def test_rekey_rotates_the_master_key(tmp_path: Path) -> None:
+    # key rotation via SQLCipher PRAGMA rekey: after rotating, the OLD key no longer opens the DB;
+    # the new key reads all data. Combined with discarding the old key + old backups, this
+    # crypto-shreds pre-rotation ciphertext (completes a purge's plaintext scrub).
+    db = str(tmp_path / "enc.db")
+    m = Memory(db, encryption_key=_KEY)
+    m.add(f"rotate {_NEEDLE}")
+    m.rekey("new-rotated-key-9999")  # rekey on the same open connection
+    m.close()
+    with pytest.raises(StoreError):  # the old key is now dead
+        Memory(db, encryption_key=_KEY)
+    again = Memory(db, encryption_key="new-rotated-key-9999")
+    assert any(_NEEDLE in n.content for n in again.list_active())
+
+
+@_needs_sqlcipher
+def test_rekey_on_a_plaintext_db_raises(tmp_path: Path) -> None:
+    m = Memory(str(tmp_path / "plain.db"))  # no key → plaintext, nothing to rotate
+    m.add("a plain note")
+    with pytest.raises(StoreError, match="encrypted"):
+        m.rekey("some-new-key")
+
+
+@_needs_sqlcipher
+def test_cli_rekey_command(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db = str(tmp_path / "enc.db")
+    Memory(db, encryption_key=_KEY).add(f"cli rotate {_NEEDLE}")
+    monkeypatch.setenv("COLD_FRAME_KEY", _KEY)  # the CURRENT key (resolved on open)
+    assert main(["--db", db, "rekey", "--new-key", "cli-brand-new-key"]) == 0
+    again = Memory(db, encryption_key="cli-brand-new-key")
+    assert any(_NEEDLE in n.content for n in again.list_active())

@@ -1,8 +1,8 @@
 """``cold-frame`` CLI (SPEC §9). Entry point: ``cold-frame = "cold_frame.cli:main"``.
 
 Offline-first (I5): ``add``/``search`` work with zero keys/network. Every subcommand is wired —
-``add search list show stats timeline path doctor consolidate worker jobs export import encrypt ui
-mcp setup purge reembed hook``. The DB location resolves ``--db`` → ``$COLD_FRAME_DB`` →
+``add search list show stats timeline path doctor consolidate worker jobs export import encrypt
+rekey ui mcp setup purge reembed hook``. The DB location resolves ``--db`` → ``$COLD_FRAME_DB`` →
 ``branding.DB_PATH`` (no literal path strings, branding rule).
 """
 
@@ -672,6 +672,22 @@ def _cmd_encrypt(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_rekey(args: argparse.Namespace) -> int:
+    """Rotate the at-rest encryption key in place (crypto-shred: old key + copies become useless).
+    Opens with the CURRENT key ($COLD_FRAME_KEY), rotates to --new-key / $COLD_FRAME_NEW_KEY."""
+    new_key = args.new_key or os.environ.get("COLD_FRAME_NEW_KEY")
+    if not new_key or not new_key.strip():
+        print("rekey: no new key — pass --new-key KEY or set $COLD_FRAME_NEW_KEY")
+        return 1
+    try:
+        _memory(args).rekey(new_key)  # opens with the current key; keys never printed (I16)
+    except _OPEN_ERR as exc:  # plaintext DB / wrong-or-missing current key / driver error
+        print(f"rekey: {exc}")
+        return 1
+    print("rekey: key rotated — the old key no longer opens this DB. Update $COLD_FRAME_KEY.")
+    return 0
+
+
 def _cmd_worker(args: argparse.Namespace) -> int:
     """Drain the durable jobs queue (consolidation + dead-letter recovery, I12). When the `claude`
     CLI is on PATH, captures extract via the user's Claude session (headless `claude -p` — no API
@@ -797,6 +813,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_encrypt.add_argument("--out", required=True, help="destination path for the encrypted copy")
     p_encrypt.add_argument("--key", default=None, help="encryption key (else $COLD_FRAME_KEY)")
     p_encrypt.set_defaults(func=_cmd_encrypt)
+    p_rekey = sub.add_parser("rekey", help="rotate the at-rest encryption key ([crypto] extra)")
+    p_rekey.add_argument("--new-key", default=None, help="the new key (else $COLD_FRAME_NEW_KEY)")
+    p_rekey.set_defaults(func=_cmd_rekey)
     p_worker = sub.add_parser("worker", help="drain the background jobs queue (maintenance)")
     p_worker.add_argument("--once", action="store_true", help="run one drain pass and exit")
     p_worker.add_argument("--interval", type=float, default=5.0, help="poll interval seconds")
