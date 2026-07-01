@@ -6,21 +6,13 @@ opt-in LLM relevance rerank (``search(rerank=True)``) re-scores the top candidat
 
 from __future__ import annotations
 
-from collections import defaultdict
 from datetime import datetime
 
-from cold_frame.constants import (
-    EDGE_PROMISCUITY_PENALTY,
-    EDGE_SEED_K,
-    FANOUT,
-    FANOUT_MAX,
-    FANOUT_MIN,
-    RRF_K,
-)
+from cold_frame.constants import FANOUT, FANOUT_MAX, FANOUT_MIN, RRF_K
 from cold_frame.exceptions import StoreError
 from cold_frame.llm.base import LLM, Clock, Embedder
 from cold_frame.llm.tokens import get_token_counter
-from cold_frame.models import Note, Scope, SearchHit, SearchResult, Signals, StatusLiteral
+from cold_frame.models import Scope, SearchHit, SearchResult, Signals, StatusLiteral
 from cold_frame.observability import get_logger
 from cold_frame.read.budget import pack_budget
 from cold_frame.read.fuse import rrf_fuse
@@ -82,17 +74,15 @@ class RetrievePipeline:
             return SearchResult(hits=[], used_tokens=None, truncated=False)
 
         note_map = {n.id: n for n in self._store.get_notes(cand_ids)}
-        # EDGE CHANNEL: expand the strongest candidates to their 1-hop graph neighbors so a
-        # graph-connected fact surfaces even if it didn't match semantically/lexically. A neighbor
-        # reached via a promiscuous hub is down-weighted; edge-reached notes are scope+status
-        # filtered (NEVER a cross-scope leak) before they can be returned.
-        edge_ids, edge_weight = self._edge_channel(cand_ids, scope, statuses, note_map, as_of)
+        # The 1-hop graph edge channel was cut from the recall path (v1 scope): the graph is
+        # sparsely populated (only supersedes/derived_from + rare manual relates_to) so it rarely
+        # surfaced anything, and it twice caused cross-scope/quarantine leak bugs. Edge ROWS stay
+        # (consolidation + history + supersede links); they just no longer expand search results.
         by_recency = sorted(note_map.values(), key=lambda n: n.created_at, reverse=True)
         recency = {n.id: i for i, n in enumerate(by_recency)}
         fused = rrf_fuse(
-            {"semantic": sem_ids, "bm25": bm_ids, "edge": edge_ids},
+            {"semantic": sem_ids, "bm25": bm_ids},
             RRF_K,
-            weight_fn=lambda nid: edge_weight.get(nid, 1.0),
             recency_rank=lambda nid: recency.get(nid, len(recency)),
         )
 
@@ -111,7 +101,7 @@ class RetrievePipeline:
                         rrf=rrf_score,
                         semantic=sem_scores.get(nid),
                         bm25=bm_scores.get(nid),
-                        edge=edge_weight.get(nid),
+                        edge=None,
                         rerank=None,
                     ),
                 )
@@ -149,55 +139,3 @@ class RetrievePipeline:
                 )
 
         return SearchResult(hits=hits, used_tokens=used_tokens, truncated=truncated)
-
-    def _edge_channel(
-        self,
-        cand_ids: list[str],
-        scope: Scope,
-        statuses: list[StatusLiteral],
-        note_map: dict[str, Note],
-        as_of: datetime | None,
-    ) -> tuple[list[str], dict[str, float]]:
-        """1-hop graph expansion of the top candidates → (edge-reached ids, promiscuity weight).
-
-        Mutates ``note_map`` to include the scope+status-filtered reached notes. NEVER yields a note
-        outside ``scope.user_id`` (leak guard). Skipped on a historical (as_of) read — the edge
-        channel is a current-recall enhancer, and graph validity at a past instant isn't modeled.
-        """
-        if as_of is not None:
-            return [], {}
-        seeds = cand_ids[:EDGE_SEED_K]
-        edges = self._store.neighbors(seeds, relations=None)
-        if not edges:
-            return [], {}
-        # promiscuity = RAW edge count touching a hub (intentionally unfiltered by scope/status: a
-        # hub wired to many things is a weak signal regardless of which neighbors are surfaceable).
-        degree: dict[str, int] = defaultdict(int)
-        for e in edges:
-            degree[e.src_id] += 1
-            degree[e.dst_id] += 1
-        seed_set = set(seeds)
-        weight: dict[str, float] = {}
-        order: list[str] = []
-        for e in edges:
-            for hub, other in ((e.src_id, e.dst_id), (e.dst_id, e.src_id)):
-                if hub not in seed_set or other in seed_set or other in note_map:
-                    continue  # only NEW notes reached FROM a seed
-                w = 1.0 / (1.0 + EDGE_PROMISCUITY_PENALTY * (degree[hub] - 1) ** 2)
-                if other not in weight:
-                    order.append(other)
-                weight[other] = max(weight.get(other, 0.0), w)
-        if not order:
-            return [], {}
-        # deterministic (eval-stable) rank: strongest weight first, id as tiebreak; then cap the
-        # fan-out so a high-degree hub can't pull an unbounded set into get_notes/the fuse.
-        order.sort(key=lambda nid: (-weight[nid], nid))
-        order = order[:FANOUT_MAX]
-        # Apply the EXACT search guard (scope + status + quarantine + bi-temporal in-effect gate)
-        # by reusing the Store's `_where_clauses` via get_notes_filtered — NOT a hand-rolled Python
-        # filter (which twice drifted: missed quarantine, then the invalid_at gate). as_of is always
-        # None here (the channel early-returns above for historical reads).
-        for n in self._store.get_notes_filtered(order, scope=scope, statuses=statuses, as_of=as_of):
-            note_map[n.id] = n
-        edge_ids = [nid for nid in order if nid in note_map]
-        return edge_ids, {nid: weight[nid] for nid in edge_ids}

@@ -770,8 +770,9 @@ class SQLiteStore(Store):
         as_of: datetime | None = None,
     ) -> list[Note]:
         """``get_notes`` restricted to the SAME predicate knn/bm25 apply — scope + status +
-        quarantine + bi-temporal in-effect gate — by reusing ``_where_clauses`` VERBATIM (no Python
-        re-implementation, so the edge channel can't drift from the search guard). Order preserved.
+        quarantine + bi-temporal in-effect gate — by reusing ``_where_clauses`` VERBATIM. RESERVED:
+        no caller in v1 (its only user, the edge recall channel, was cut); kept as a general
+        filtered-get Store seam. Order preserved.
         """
         if not ids:
             return []

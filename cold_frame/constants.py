@@ -57,8 +57,10 @@ RRF_K: Final[int] = 60  # Reciprocal Rank Fusion k_const (NO global divisor foot
 FANOUT: Final[int] = 4  # per-signal over-fetch multiplier (k * FANOUT)
 FANOUT_MIN: Final[int] = 20  # floor on per-signal candidate count
 FANOUT_MAX: Final[int] = 200  # ceiling on per-signal candidate count
-# edge channel: expand the top EDGE_SEED_K candidates to their 1-hop neighbors; a neighbor reached
-# via a promiscuous hub (many edges) is down-weighted by 1 / (1 + EDGE_PROMISCUITY_PENALTY·(n-1)^2).
+# edge channel constants — RESERVED (the 1-hop graph edge RECALL channel was cut from v1: sparse
+# graph, rarely useful, leak-prone; edge ROWS stay for consolidation/history). Kept for a future
+# re-add: expand the top EDGE_SEED_K candidates to 1-hop neighbors; a neighbor reached via a
+# promiscuous hub (many edges) is down-weighted by 1 / (1 + EDGE_PROMISCUITY_PENALTY·(n-1)^2).
 EDGE_PROMISCUITY_PENALTY: Final[float] = 0.001
 EDGE_SEED_K: Final[int] = 10  # only the strongest hits seed the graph expansion (bounded)
 # (meta boost lives in read/rerank.py with its own +15% factor clamp — no constant needed here)

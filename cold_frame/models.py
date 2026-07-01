@@ -96,7 +96,7 @@ class Signals(BaseModel):
 
     semantic: float | None = None  # cosine
     bm25: float | None = None  # normalized
-    edge: float | None = None  # RRF score from the 1-hop graph edge channel (None if not reached)
+    edge: float | None = None  # RESERVED: always None in v1 (the graph edge recall channel was cut)
     rrf: float  # fused rank score
     rerank: float | None = None  # LLM relevance score (set only when search(rerank=True), opt-in)
 
