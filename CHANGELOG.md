@@ -47,8 +47,10 @@ First public version. Local-first, ownable memory for AI agents — one SQLite f
   BUILT (`Memory(confidence_gate=…, require_consent=…)`); `cold-frame rekey` rotates the at-rest key
   (crypto-shred foundation). Now BUILT this line previously deferred: I7 tiebreak, LLM rerank,
   tagging, confidence-gate/consent, key rotation.
-- Deferred to v1.1/hosted: *per-note* crypto-shred (per-record envelope keys — rekey is whole-DB
-  rotation), and event-log replay import (only snapshot export/restore ships today).
+- Event-log replay import is BUILT (`cold-frame import <log.ndjson> --events` / `Memory.import_events`
+  — idempotent, last-writer-wins by HLC, note-only). Deferred to v1.1/hosted: *per-note* crypto-shred
+  (per-record envelope keys — rekey is whole-DB rotation), and cross-device conflict resolution
+  beyond last-writer-wins.
 - The agent-push capture path is model-discretionary; the keyless backstop guarantees coverage.
 - Write/triage in the browser is partial; full event-log replay import is snapshot-based for now.
 
