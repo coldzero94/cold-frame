@@ -25,7 +25,7 @@ from cold_frame.branding import PKG
 from cold_frame.constants import NOTE_MAX_CHARS
 from cold_frame.exceptions import ColdFrameError, NoteNotFound, StoreError
 from cold_frame.integrations.claude_code import GLOBAL_KEY, project_key
-from cold_frame.llm import Embedder, resolve_embedder
+from cold_frame.llm import Embedder, resolve_embedder, resolve_llm
 from cold_frame.models import Scope, SearchHit
 from cold_frame.observability import get_logger, set_log_level
 from cold_frame.store.sqlite import (  # keyed open for import; plaintext→encrypted migration
@@ -59,7 +59,10 @@ def _embedder() -> Embedder:
 def _memory(args: argparse.Namespace) -> Memory:
     # opt-in PII scrub when --redact-pii is set (only the `add` subcommand exposes the flag)
     pii = PII_CATEGORIES if getattr(args, "redact_pii", False) else None
-    mem = Memory(_resolve_db(args), embedder=_embedder(), pii_redact=pii)  # llm=None (offline)
+    # $COLD_FRAME_LLM: unset = offline (dedup + explicit corrections, no auto conflict detection);
+    # "claude" = the session-auth Claude CLI → extraction + dedup/conflict judges (detection on).
+    llm = resolve_llm(os.environ.get("COLD_FRAME_LLM"))
+    mem = Memory(_resolve_db(args), embedder=_embedder(), llm=llm, pii_redact=pii)
     _OPENED.append(mem)  # tracked so the connection is closed before the process/command ends
     return mem
 

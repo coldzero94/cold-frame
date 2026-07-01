@@ -12,7 +12,8 @@ from pathlib import Path
 import pytest
 from cold_frame.cli import main
 from cold_frame.exceptions import ColdFrameError
-from cold_frame.llm import HashEmbedder, resolve_embedder
+from cold_frame.llm import HashEmbedder, resolve_embedder, resolve_llm
+from cold_frame.llm.claude_cli import ClaudeCliLLM
 
 _HAS_ST = importlib.util.find_spec("sentence_transformers") is not None
 
@@ -49,4 +50,30 @@ def test_cli_bad_embedder_env_exits_clean(
 ) -> None:
     monkeypatch.setenv("COLD_FRAME_EMBEDDER", "gpt-4o")
     assert main(["--db", str(tmp_path / "m.db"), "add", "hi"]) == 1  # clean exit, not a traceback
+    assert "unknown" in capsys.readouterr().err.lower()
+
+
+def test_resolve_llm_defaults_to_none() -> None:
+    assert resolve_llm(None) is None  # offline default (no auto conflict detection)
+    assert resolve_llm("none") is None and resolve_llm("  OFF ") is None
+
+
+def test_resolve_llm_unknown_name_raises_cleanly() -> None:
+    with pytest.raises(ColdFrameError, match="unknown"):
+        resolve_llm("gpt-4o")
+
+
+def test_resolve_llm_claude_needs_the_cli_or_returns_it() -> None:
+    if ClaudeCliLLM.available():  # `claude` on PATH → the session-auth backend
+        assert isinstance(resolve_llm("claude"), ClaudeCliLLM)
+    else:  # absent → a clean, actionable error (not a silent None that hides the misconfig)
+        with pytest.raises(ColdFrameError, match="claude"):
+            resolve_llm("claude")
+
+
+def test_cli_bad_llm_env_exits_clean(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("COLD_FRAME_LLM", "gpt-4o")
+    assert main(["--db", str(tmp_path / "m.db"), "add", "hi"]) == 1
     assert "unknown" in capsys.readouterr().err.lower()

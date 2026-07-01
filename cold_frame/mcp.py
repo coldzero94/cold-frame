@@ -18,7 +18,7 @@ from cold_frame.api import Memory
 from cold_frame.branding import MCP_ID, PKG, fact_deeplink
 from cold_frame.exceptions import ColdFrameError, StoreError, mcp_code_for
 from cold_frame.integrations.claude_code import GLOBAL_KEY, project_key
-from cold_frame.llm import resolve_embedder
+from cold_frame.llm import resolve_embedder, resolve_llm
 from cold_frame.models import Scope
 from cold_frame.observability import get_logger
 
@@ -214,9 +214,11 @@ def build_server(memory: Memory | None = None) -> Any:  # noqa: ANN401 - FastMCP
     else:
         root = os.environ.get("PROJECT_ROOT") or str(Path.cwd())
         # $COLD_FRAME_EMBEDDER selects the recall model (unset/"hash" = offline default; "local" =
-        # the [local-llm] semantic embedder). Reembed after switching on an existing DB.
+        # the [local-llm] semantic embedder). $COLD_FRAME_LLM="claude" turns on the dedup/conflict
+        # judges (auto conflict detection) via the session-auth Claude CLI; unset = deterministic.
         _MEMORY = Memory(
             embedder=resolve_embedder(os.environ.get("COLD_FRAME_EMBEDDER")),
+            llm=resolve_llm(os.environ.get("COLD_FRAME_LLM")),
             default_scope=Scope(agent_id=project_key(root)),
         )
     server.tool()(search_memory)

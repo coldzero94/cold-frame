@@ -37,6 +37,10 @@ First public version. Local-first, ownable memory for AI agents — one SQLite f
   download); `COLD_FRAME_EMBEDDER=local` (needs the `[local-llm]` extra) switches CLI + MCP to a
   local `bge-small` semantic embedder. `Memory(embedder=…)` for programmatic use. Reembed after a
   switch (`cold-frame reembed`; `doctor` reports the stale-vector count).
+- **Conflict detection (opt-in)** — supersession is always deterministic (`valid_at`, never the LLM),
+  but *detecting* a contradiction is LLM-gated. `COLD_FRAME_LLM=claude` turns on the dedup/conflict
+  judges for CLI `add` + MCP `add_memory` via the session-auth Claude CLI (the `worker` already
+  auto-uses it); unset = the offline default (duplicate-merge + explicit corrections only).
 - **Distribution** — `uv tool` / `pipx`, a Homebrew tap formula, and a standalone single-file binary
   (no Python needed); a Release workflow that publishes on tag.
 

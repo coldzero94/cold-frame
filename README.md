@@ -54,6 +54,10 @@ cold-frame doctor          # health: counts, integrity, embedder
   the engine keeps it lean instead of hoarding everything.
 - ⏪ **Rewindable belief** — facts are corrected and superseded, never silently overwritten. Ask
   *"what did I believe back in March?"* and get the answer as of that date.
+- 🧭 **Conflict resolution** — supersession is always deterministic (code decides by `valid_at`, never
+  the LLM). *Detecting* that two facts contradict needs a model: the `cold-frame worker` (and
+  `COLD_FRAME_LLM=claude`, using your Claude session — no API key) turn it on; the zero-key offline
+  default still does exact/near-duplicate merging and honors explicit `correct`/`supersede`.
 
 ## How the memory works
 
