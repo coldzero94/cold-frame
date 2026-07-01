@@ -8,8 +8,9 @@ A failure/no-LLM must never DROP results — the fused order stands.
 from __future__ import annotations
 
 from cold_frame.api import Memory
-from cold_frame.llm.base import HashEmbedder, LLMResult, TaskTag
+from cold_frame.llm.base import LLM, HashEmbedder, LLMResult, TaskTag
 from cold_frame.prompts.rerank import RerankOutput, RerankScore
+from pydantic import BaseModel
 
 from tests.conftest import FrozenClock, ScriptedLLM
 
@@ -64,3 +65,51 @@ def test_rerank_unparseable_keeps_fused_order(db_path: str, frozen_clock: Frozen
     base = [h.note.id for h in m.search(_QUERY, k=10).hits]
     res = m.search(_QUERY, k=10, rerank=True)  # unparseable verdict → fused order, never dropped
     assert [h.note.id for h in res.hits] == base
+
+
+def test_rerank_empty_scores_keeps_fused_order(db_path: str, frozen_clock: FrozenClock) -> None:
+    # a VALID but empty RerankOutput takes the scored-mapping branch (not the isinstance early-out):
+    # every hit gets rerank=None, so the stable sort preserves fused order and nothing is dropped.
+    llm = ScriptedLLM(
+        {TaskTag.RERANK_JUDGE: LLMResult(parsed=RerankOutput(scores=[]))}, is_local=True
+    )
+    m = _mem(db_path, frozen_clock, llm)
+    m.add(_A, raw=True)
+    m.add(_B, raw=True)
+    base = [h.note.id for h in m.search(_QUERY, k=10).hits]
+    res = m.search(_QUERY, k=10, rerank=True)
+    assert [h.note.id for h in res.hits] == base
+    assert all(h.signals.rerank is None for h in res.hits)
+
+
+def test_rerank_llm_transport_error_keeps_fused_order(
+    db_path: str, frozen_clock: FrozenClock
+) -> None:
+    # a genuine provider/transport failure (complete() RAISES) must degrade to fused order, never
+    # crash search() — the fail-soft promise. (A ScriptedLLM undeclared-call AssertionError still
+    # surfaces; this covers the OTHER branch: a real backend exception.)
+    class _RaisingLLM(LLM):
+        name = "boom"
+
+        @property
+        def is_local(self) -> bool:
+            return True
+
+        def complete(
+            self,
+            *,
+            task: TaskTag,
+            system: str,
+            user: str,
+            schema: type[BaseModel] | None = None,
+            temperature: float = 0.0,
+            max_tokens: int = 1024,
+        ) -> LLMResult:
+            raise RuntimeError("provider transport failure")
+
+    m = Memory(db_path, embedder=HashEmbedder(), llm=_RaisingLLM(), clock=frozen_clock)
+    m.add(_A, raw=True)
+    m.add(_B, raw=True)
+    base = [h.note.id for h in m.search(_QUERY, k=10).hits]
+    res = m.search(_QUERY, k=10, rerank=True)  # must NOT propagate the RuntimeError
+    assert [h.note.id for h in res.hits] == base  # fused order preserved, results not dropped

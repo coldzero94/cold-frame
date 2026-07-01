@@ -12,6 +12,7 @@ from __future__ import annotations
 import math
 from datetime import datetime
 
+from cold_frame.exceptions import ColdFrameError
 from cold_frame.llm.base import LLM, TaskTag
 from cold_frame.models import Scope, SearchHit
 from cold_frame.prompts.rerank import RERANK_SYSTEM, RerankOutput, build_rerank_user
@@ -43,16 +44,24 @@ def llm_rerank(query: str, hits: list[SearchHit], llm: LLM) -> list[SearchHit]:
     a candidate the LLM omits keeps ``rerank=None`` and sinks below scored ones (ties → fused).
     Any LLM/parse failure leaves ``hits`` untouched (the fused order stands — relevance is additive,
     not a gate, so a rerank failure must NOT drop results).
+
+    EXPOSURE: with a REMOTE LLM this ships up to ``_RERANK_TOP_K`` full note contents outward per
+    call (broader than extraction, which sends only the current chat). RERANK_JUDGE is not
+    local-only; the shipped LLM is the local session-auth Claude CLI, so this stays within the
+    documented remote-LLM known-limit — but callers opting in with a remote backend should know.
     """
     if not hits:
         return hits
     head = hits[:_RERANK_TOP_K]
-    res = llm.complete(
-        task=TaskTag.RERANK_JUDGE,
-        system=RERANK_SYSTEM,
-        user=build_rerank_user(query, [(h.note.id, h.note.content) for h in head]),
-        schema=RerankOutput,
-    )
+    user = build_rerank_user(query, [(h.note.id, h.note.content) for h in head])
+    try:
+        res = llm.complete(
+            task=TaskTag.RERANK_JUDGE, system=RERANK_SYSTEM, user=user, schema=RerankOutput
+        )
+    except (AssertionError, ColdFrameError):
+        raise  # ScriptedLLM undeclared-call signal + in-process contract errors MUST surface (§2)
+    except Exception:  # genuine provider/transport failure → keep fused order (never drop results)
+        return hits
     if not isinstance(res.parsed, RerankOutput):
         return hits  # unparseable → keep the fused order (rerank never drops results)
     scored = {s.id: s.relevance for s in res.parsed.scores}
