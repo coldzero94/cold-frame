@@ -43,8 +43,12 @@ First public version. Local-first, ownable memory for AI agents — one SQLite f
 - The raw-chat-to-a-REMOTE-extractor exposure is now narrowed: an obvious secret (or an ambiguous
   high-entropy span) in the chat forces a fallback to LOCAL naive extraction, so it never reaches a
   remote endpoint. Residual: a non-pattern secret the deterministic scan misses could still be sent.
-- Deferred to v1.1/hosted: admission confidence-gate/consent, and a crypto-shred (key-destroy) purge.
-  (The I7 local tiebreak, the opt-in LLM rerank, and deterministic tagging are now BUILT.)
+- Admission confidence-gate + opt-in `require_consent` (hold every new memory for approval) are
+  BUILT (`Memory(confidence_gate=…, require_consent=…)`); `cold-frame rekey` rotates the at-rest key
+  (crypto-shred foundation). Now BUILT this line previously deferred: I7 tiebreak, LLM rerank,
+  tagging, confidence-gate/consent, key rotation.
+- Deferred to v1.1/hosted: *per-note* crypto-shred (per-record envelope keys — rekey is whole-DB
+  rotation), and event-log replay import (only snapshot export/restore ships today).
 - The agent-push capture path is model-discretionary; the keyless backstop guarantees coverage.
 - Write/triage in the browser is partial; full event-log replay import is snapshot-based for now.
 
