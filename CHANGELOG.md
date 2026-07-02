@@ -4,13 +4,9 @@ All notable changes to coldframe. Format loosely follows [Keep a Changelog]; ver
 
 ## [Unreleased]
 
-The engine, CLI, MCP server, and Claude Code plugin are built and tested. The core auto-memory loop
-is **verified end-to-end against real Claude Code** (headless `claude -p`): a fact stated in one
-session is captured and recalled (unprompted) in the next. Remaining before tagging `v0.1.0`:
-confirm the `claude plugin install` path + register the PyPI trusted publisher, then
-`git tag v0.1.0 && git push` (the Release workflow publishes to PyPI + attaches binaries).
+_Nothing yet._
 
-## [0.1.0] — unreleased
+## [0.1.0] — 2026-07-02
 
 First public version. Local-first, ownable memory for AI agents — one SQLite file, offline, no key.
 
