@@ -14,6 +14,9 @@ PKG: Final[str] = "cold-frame"  # distribution / PyPI name, MCP server id, URL s
 IMPORT: Final[str] = "cold_frame"  # importable Python package name
 MCP_ID: Final[str] = "cold-frame"  # `claude mcp add cold-frame -- cold-frame mcp`
 URL_SCHEME: Final[str] = "cold-frame"  # cold-frame://fact/{id} resources
+REPO_URL: Final[str] = "https://github.com/coldzero94/cold-frame"  # from-source install target
+# Extras aren't on PyPI (ADR-D28: Homebrew binary distribution) — a working `pip install` of an
+# extra must point at the repo. Error messages compose: pip install '{PKG}[extra] @ git+{REPO_URL}'
 
 # --- on-disk locations ---
 DB_DIR: Final[Path] = Path.home() / ".cold-frame"

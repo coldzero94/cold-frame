@@ -138,5 +138,5 @@ jobs:
           /tmp/smoke/bin/cold-frame doctor
 
   # ── Publishing ───────────────────────────────────────────────────────────
-  # Release/publish is NOT in this CI; it lives in release.yml (fires on a `v*` tag → PyPI via OIDC
-  # trusted publishing + per-platform binaries). D19 name (`cold-frame`) is locked; cut a tag to ship.
+  # Release/publish is NOT in this CI; it lives in release.yml (fires on a `v*` tag → GitHub Release
+  # + per-platform binaries + Homebrew tap bump; NOT PyPI, ADR-D28). D19 name is locked; tag to ship.

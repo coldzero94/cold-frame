@@ -27,6 +27,7 @@ from typing import Any, Literal
 
 import numpy as np
 
+from cold_frame.branding import PKG, REPO_URL
 from cold_frame.constants import (
     ACCESS_LOG_CAP_PER_NOTE,
     BUSY_TIMEOUT_MS,
@@ -218,7 +219,8 @@ def _connect(
         from sqlcipher3 import dbapi2 as _sqlcipher
     except ImportError as exc:  # encryption requested but the extra isn't installed
         raise StoreError(
-            "at-rest encryption needs the [crypto] extra: pip install 'cold-frame[crypto]'"
+            "at-rest encryption needs the [crypto] extra (from-source only; not in the Homebrew "
+            f"binary, not on PyPI): pip install '{PKG}[crypto] @ git+{REPO_URL}'"
         ) from exc
     conn = _sqlcipher.connect(
         db_path,
@@ -254,7 +256,8 @@ def migrate_to_encrypted(src_path: str, dst_path: str, key: str) -> None:
         from sqlcipher3 import dbapi2 as _sqlcipher
     except ImportError as exc:
         raise StoreError(
-            "at-rest encryption needs the [crypto] extra: pip install 'cold-frame[crypto]'"
+            "at-rest encryption needs the [crypto] extra (from-source only; not in the Homebrew "
+            f"binary, not on PyPI): pip install '{PKG}[crypto] @ git+{REPO_URL}'"
         ) from exc
     src = _sqlcipher.connect(src_path)  # no PRAGMA key → SQLCipher reads the plaintext DB as-is
     try:

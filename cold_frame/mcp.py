@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from cold_frame.api import Memory
-from cold_frame.branding import MCP_ID, PKG, fact_deeplink
+from cold_frame.branding import MCP_ID, PKG, REPO_URL, fact_deeplink
 from cold_frame.exceptions import ColdFrameError, StoreError, mcp_code_for
 from cold_frame.integrations.claude_code import GLOBAL_KEY, project_key
 from cold_frame.llm import resolve_embedder, resolve_llm
@@ -25,8 +25,8 @@ from cold_frame.observability import get_logger
 _log = get_logger(__name__)
 
 _INSTALL_HINT = (
-    f"{MCP_ID}: the MCP server needs an optional dependency — "
-    f"install it with `pip install {PKG}[mcp]` (or `uv sync --extra mcp`)."
+    f"{MCP_ID}: the MCP server needs an optional dependency — install it with "
+    f"`uv sync --extra mcp` (or `pip install '{PKG}[mcp] @ git+{REPO_URL}'`; not on PyPI)."
 )
 
 # One Memory per server process, set by build_server() at serve time.

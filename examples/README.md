@@ -17,7 +17,8 @@ The zero-config default recall is **lexical** (offline `HashEmbedder` — no dep
 finds facts that share words with your query, but misses paraphrases. For semantic recall:
 
 ```bash
-pip install 'cold-frame[local-llm]'          # a small local bge-small model
+# extras are from-source only (not in the Homebrew binary, not on PyPI — ADR-D28):
+pip install 'cold-frame[local-llm] @ git+https://github.com/coldzero94/cold-frame'
 export COLD_FRAME_EMBEDDER=local              # CLI + MCP now embed semantically
 cold-frame reembed                            # re-index existing notes under the new embedder
 ```
@@ -50,7 +51,7 @@ text are never sent to the model (the pre-send scan falls back to local extracti
 cold-frame export backup.db                   # a consistent snapshot (or --events for an NDJSON log)
 cold-frame import backup.db                    # restore (or import <log.ndjson> --events to replay)
 
-pip install 'cold-frame[crypto]'
+pip install 'cold-frame[crypto] @ git+https://github.com/coldzero94/cold-frame'   # from-source (ADR-D28)
 cold-frame encrypt --out enc.db --key "…"      # write an encrypted copy (or $COLD_FRAME_KEY)
 cold-frame rekey --new-key "…"                 # rotate the at-rest key
 ```

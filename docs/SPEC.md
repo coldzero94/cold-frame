@@ -26,7 +26,7 @@
 - 코어 `cold-frame`: SQLite + 오프라인 기본 + 라이브러리 + CLI + MCP 서버. deps = `pydantic`,`numpy`만. `fastapi`/`psycopg` **import 금지**.
 - extras: `[openai]`/`[local-llm]`(오프라인 실품질)/`[vec]`(sqlite-vec 가속)/`[ui]`(로컬 화면)/`[server]`(분리된 Postgres+FastAPI 제품 레이어).
 - **원스톱 설치/셋업**:
-  1. `uv tool install cold-frame` (또는 `pip install cold-frame` / `uvx cold-frame`) — 1 명령.
+  1. `brew install coldzero94/coldframe/cold-frame` — 1 명령. (ADR-D28로 대체: 배포 = Homebrew 바이너리 + GitHub Releases, PyPI 아님. ~~`uv tool install cold-frame` / `pip install cold-frame` / `uvx`~~)
   2. (옵션, Claude Code 연동까지) `cold-frame setup` — DB 보장 + **Claude Code에 MCP 자동 등록**(`claude mcp add cold-frame -- cold-frame mcp`, 멱등, `--scope` 선택; `claude` 없으면 `.mcp.json` 작성/안내 fallback) + 상태 출력.
   - 한 줄: `uv tool install cold-frame && cold-frame setup`.
   - DB(`~/.cold-frame/memory.db`)는 첫 실행에 **자동 생성**(별도 마이그레이션 없음, 프로그램과 분리·백업=복사). 기본 **오프라인**(HashEmbedder)이라 키 없이 즉시 동작. **네이티브 확장 불요**(numpy KNN 기본; `[vec]`는 옵션 가속).

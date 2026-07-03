@@ -42,6 +42,9 @@ Open an issue first for anything non-trivial. PRs should keep the gate green and
 
 ## Releasing (maintainers)
 
-`git tag vX.Y.Z && git push origin vX.Y.Z` triggers `.github/workflows/release.yml` (publishes to
-PyPI via OIDC trusted publishing + attaches per-platform binaries). One-time PyPI setup: register
-the trusted publisher (project `cold-frame`, this repo, workflow `Release`, environment `pypi`).
+Bump the version first (`pyproject.toml`, `cold_frame/__init__.py`, `tests/test_smoke.py`) and roll
+the CHANGELOG. Then `git tag vX.Y.Z && git push origin vX.Y.Z` triggers
+`.github/workflows/release.yml`: it creates the GitHub Release, builds a self-contained binary per
+platform (macOS arm64 + Linux x86_64 — CLI, MCP server, and web UI in one file), attaches them, and
+auto-bumps the Homebrew tap formula (`coldzero94/homebrew-coldframe`). Distribution is Homebrew +
+direct binary download, NOT PyPI (ADR-D28). Full runbook: `packaging/homebrew/RELEASE.md`.

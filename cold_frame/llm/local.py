@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from cold_frame.branding import PKG, REPO_URL
 from cold_frame.llm.base import Embedder, EmbedderMeta
 
 _DEFAULT_MODEL = "BAAI/bge-small-en-v1.5"  # 384-dim, small + strong; downloaded once, then local
@@ -30,8 +31,9 @@ class SentenceTransformerEmbedder(Embedder):
             from sentence_transformers import SentenceTransformer
         except ImportError as exc:  # the one place the optional dep is required
             raise ImportError(
-                "SentenceTransformerEmbedder needs the '[local-llm]' extra — install it with: "
-                "uv sync --extra local-llm  (or pip install 'cold-frame[local-llm]')"
+                "SentenceTransformerEmbedder needs the '[local-llm]' extra (from-source only; "
+                "not in the Homebrew binary, not on PyPI): uv sync --extra local-llm in a "
+                f"checkout, or pip install '{PKG}[local-llm] @ git+{REPO_URL}'"
             ) from exc
         self._model = SentenceTransformer(model)
         dim = int(self._model.get_sentence_embedding_dimension())
