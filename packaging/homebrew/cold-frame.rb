@@ -4,8 +4,10 @@
 # self-contained binary built by the Release workflow (CLI + MCP server in one file — no Python,
 # no dependency resolution, works offline). NOT distributed via PyPI.
 #
-# RELEASE: after the tag's Release workflow attaches the per-platform binaries, fill the three
-# sha256 values below (`shasum -a 256 cold-frame-<target>`), then copy this file into the tap repo.
+# RELEASE: the tap copy (coldzero94/homebrew-coldframe) is REGENERATED AUTOMATICALLY on every tag by
+# the Release workflow's `bump-tap` job (packaging/homebrew/bump-tap.sh rewrites version + urls +
+# sha256 and pushes) — no manual step. This in-repo copy is a human-readable reference/fallback; if
+# you ever bump it by hand, fill the sha256 values with `shasum -a 256 cold-frame-<target>`.
 class ColdFrame < Formula
   desc "Local-first ownable memory layer for LLM agents (one offline SQLite file)"
   homepage "https://github.com/coldzero94/cold-frame"

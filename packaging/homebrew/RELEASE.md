@@ -1,65 +1,69 @@
 # Homebrew distribution
 
-`brew install` is the first-class macOS/Linux path for a developer CLI like Coldframe. There are two
-formula styles; ship the **tap** one first, graduate to **homebrew-core** later.
+`brew install` is the first-class macOS/Linux path for a developer CLI like Coldframe. We ship a
+**tap** with a **binary formula** — the release attaches a self-contained `cold-frame` binary per
+platform (CLI + MCP in one file, no Python at runtime), and the formula just downloads + installs it.
+NOT distributed via PyPI (ADR-D28).
 
-## What's blocked vs ready
+> Why a binary and not an isolated-venv formula: Homebrew's build sandbox blocks network, so a
+> `venv.pip_install` formula can't fetch `pydantic`/`numpy` at build time and crashes at runtime with
+> `ModuleNotFoundError`. A self-contained PyInstaller binary sidesteps dependency resolution entirely.
 
-- **Ready now:** the formula structure, install method (isolated venv + the `[mcp]` extra so the MCP
-  server works out of the box), `test do`, and caveats — all in `cold-frame.rb`.
-- **Filled at release (gated on D19 — name/repo/PyPI clearance):** the `url` + `sha256` of the
-  GitHub release tarball, and the `coldzero94` repo/homepage. These can't be real until the name is
-  final and a tag is cut.
-
-## A. Tap release (do this first — works without PyPI)
-
-A third-party tap may resolve dependencies from PyPI at build time, so we don't have to vendor 30
-sha256-pinned `resource` blocks. `cold-frame.rb` uses this style.
-
-1. Cut a release tag and let GitHub produce the source tarball:
-   ```bash
-   git tag v0.1.0 && git push origin v0.1.0
-   ```
-2. Fill the formula's `url`, `sha256`, and `homepage`:
-   ```bash
-   curl -fsSL https://github.com/coldzero94/cold-frame/archive/refs/tags/v0.1.0.tar.gz | shasum -a 256
-   ```
-3. Create the tap repo `coldzero94/homebrew-coldframe` and drop `cold-frame.rb` in its `Formula/`.
-4. Test locally before publishing:
-   ```bash
-   brew install --build-from-source ./packaging/homebrew/cold-frame.rb
-   brew test cold-frame
-   brew audit --strict --formula ./packaging/homebrew/cold-frame.rb
-   ```
-5. Users then:
-   ```bash
-   brew install coldzero94/coldframe/cold-frame
-   cold-frame hook install
-   claude mcp add cold-frame -- cold-frame mcp
-   ```
-
-## B. homebrew-core submission (later — fully reproducible)
-
-homebrew-core forbids network during `install`, so every dependency must be a vendored, pinned
-`resource`. Generate those automatically against PyPI (do NOT hand-write them):
+## Cutting a release — one manual step (the tag)
 
 ```bash
-brew update-python-resources ./Formula/cold-frame.rb     # autofills resource blocks from PyPI
+git tag v0.1.1 && git push origin v0.1.1
 ```
 
-then replace the `def install` body with `virtualenv_install_with_resources`. The dependency set
-the resource generator must reproduce (core + the `[mcp]` extra, resolved 2026-06) is pinned in
-`requirements-mcp.txt` next to this file — feed it to the generator / use it as the audit target.
-Native-build deps (numpy, pydantic-core, cryptography, cffi, rpds-py) build wheels under pip inside
-the venv; no extra system libraries are required.
+That's it. The `Release` workflow (`.github/workflows/release.yml`) then, on the tag:
+
+1. **`release`** — creates the GitHub Release (auto-generated notes).
+2. **`binaries`** — builds the standalone binary on each platform via
+   `packaging/standalone/build.sh` and attaches `cold-frame-macos-arm64` + `cold-frame-linux-x86_64`.
+3. **`bump-tap`** — runs `packaging/homebrew/bump-tap.sh`: downloads those two assets, computes their
+   `sha256`, regenerates `Formula/cold-frame.rb` in the tap repo (`coldzero94/homebrew-coldframe`)
+   with the new version + urls + shas, and commits + pushes. No hand-editing of shas.
+
+Platforms: **macOS Apple Silicon + Linux x86_64.** Intel Mac is out of scope (the free GitHub
+`macos-13` Intel runners queue indefinitely, and a Rosetta cross-build hits the stock 3.9 `python3`).
+
+### One-time setup: the tap push token
+
+`bump-tap` pushes to a *different* repo, so the default `GITHUB_TOKEN` can't reach it. Create a
+**fine-grained PAT** scoped to `coldzero94/homebrew-coldframe` with **Repository permissions →
+Contents: Read and write**, then add it to the `cold-frame` repo as a secret named
+**`HOMEBREW_TAP_TOKEN`**:
+
+```bash
+gh secret set HOMEBREW_TAP_TOKEN --repo coldzero94/cold-frame   # paste the PAT when prompted
+```
+
+If the secret is absent the `bump-tap` step **skips with a warning instead of failing** — the release
+(binaries + GitHub Release) still succeeds; you'd just update the tap formula by hand that once.
+
+## The in-repo formula copy
+
+`packaging/homebrew/cold-frame.rb` is a human-readable reference/fallback. The authoritative copy is
+the one `bump-tap.sh` regenerates in the tap. If you ever bump it manually, fill the sha256 with
+`shasum -a 256 cold-frame-<target>`.
+
+## Test the tap install locally
+
+```bash
+brew install coldzero94/coldframe/cold-frame
+cold-frame --version
+cold-frame hook install
+claude mcp add cold-frame -- cold-frame mcp
+```
 
 ## Notes
 
-- The formula installs the **`[mcp]` extra** so `cold-frame mcp` (the auto-capture drain + Claude
-  Code memory tools) works immediately — the whole point is a one-command working setup.
-- Core stays `pydantic + numpy`; everything heavier is still import-guarded, so a future
-  `brew install cold-frame --without-mcp` (or a separate lean formula) is possible if wanted.
+- The binary bundles the **`[mcp]` extra** so `cold-frame mcp` (the auto-capture drain + Claude Code
+  memory tools) works immediately. It does NOT bundle the optional `[crypto]` (at-rest encryption) or
+  `[local-llm]` (semantic recall) extras — those need a from-source install.
 - Docker is intentionally NOT a distribution target for the local tool: the MCP server is a stdio
   subprocess Claude Code spawns, and memory is a user-owned local file (~/.cold-frame) — a container
   breaks the stdio pipe, the file ownership, and the ~/.claude hooks. Docker fits only the future
   hosted server layer (the `[server]` extra), not the local-first product.
+- homebrew-core (vendored, network-free `resource` blocks) is a later option once the project is
+  notable enough to be accepted; the tap is the shipping path for v1.
