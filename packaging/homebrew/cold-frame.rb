@@ -17,7 +17,7 @@ class ColdFrame < Formula
   desc "Local-first ownable memory layer for LLM agents (one offline SQLite file)"
   homepage "https://github.com/coldzero94/cold-frame" # RELEASE: real repo URL (D19)
   url "https://github.com/coldzero94/cold-frame/archive/refs/tags/v0.1.0.tar.gz" # RELEASE
-  sha256 "0000000000000000000000000000000000000000000000000000000000000000" # RELEASE: tarball sha256
+  sha256 "2d6a7c155058d5e1559acb09e75456b2d628ae2bf46505b5b33c00104a8902ee" # v0.1.0 source tarball
   license "Apache-2.0"
 
   depends_on "python@3.12"
