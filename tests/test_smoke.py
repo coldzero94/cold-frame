@@ -25,7 +25,7 @@ from cold_frame.store.base import Store
 
 # ── package surface ──────────────────────────────────────────────────────────
 def test_package_imports_and_exports() -> None:
-    assert cold_frame.__version__ == "0.1.0"
+    assert cold_frame.__version__ == "0.1.1"
     for name in ("Memory", "Note", "Scope", "Source", "SearchResult", "__version__"):
         assert hasattr(cold_frame, name), name
     # the public symbols resolve to real objects
