@@ -15,7 +15,7 @@ class ColdFrame < Formula
   on_macos do
     on_arm do
       url "https://github.com/coldzero94/cold-frame/releases/download/v0.1.0/cold-frame-macos-arm64"
-      sha256 "0000000000000000000000000000000000000000000000000000000000000000" # RELEASE: arm64
+      sha256 "744901491f18dd1c2f712510214d8cc93472ea6aedbfaeebe285cd6f62fd8bdd"
     end
     on_intel do
       url "https://github.com/coldzero94/cold-frame/releases/download/v0.1.0/cold-frame-macos-x86_64"
@@ -24,7 +24,7 @@ class ColdFrame < Formula
   end
   on_linux do
     url "https://github.com/coldzero94/cold-frame/releases/download/v0.1.0/cold-frame-linux-x86_64"
-    sha256 "0000000000000000000000000000000000000000000000000000000000000000" # RELEASE: linux
+    sha256 "db65d271afdf45dec797e17e63f1829141e423125bac3148f869edaad95a83f9"
   end
 
   def install

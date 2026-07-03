@@ -42,8 +42,11 @@ cold-frame search "what coffee do I like?"
 cold-frame doctor          # health: counts, integrity, embedder
 ```
 
-*(Install: `uv tool install "cold-frame[mcp]"` · Homebrew · or a single binary — see
-[`packaging/`](packaging/). A PyPI release is pending PyPI/trademark clearance.)*
+*(Install: `brew install coldzero94/coldframe/cold-frame` (macOS + Linux), or download the
+self-contained binary for your platform from the
+[latest release](https://github.com/coldzero94/cold-frame/releases/latest) — CLI + MCP in one file,
+no Python needed. The optional `[crypto]` (at-rest encryption) and `[local-llm]` (semantic recall)
+extras aren't in the binary; install from source for those — see [`examples/`](examples/).)*
 
 ## Why coldframe
 
@@ -70,13 +73,13 @@ cold-frame doctor          # health: counts, integrity, embedder
   truly deleted, and obvious secrets (API keys, tokens, private keys) are blocked before they ever
   touch disk. PII redaction (email/phone/card/ssn) is available **opt-in** (`add --redact-pii`, or
   `Memory(pii_redact=…)`) — off by default so a personal store keeps your own contact facts.
-  **At-rest encryption** is available opt-in too — `pip install 'cold-frame[crypto]'` + a key via
-  `Memory(encryption_key=…)` or `$COLD_FRAME_KEY` encrypts the whole DB (+ WAL + snapshots) with
-  SQLCipher (set at creation; the default stays plaintext + zero-config).
+  **At-rest encryption** is available opt-in too (a from-source install with the `[crypto]` extra) —
+  a key via `Memory(encryption_key=…)` or `$COLD_FRAME_KEY` encrypts the whole DB (+ WAL + snapshots)
+  with SQLCipher (set at creation; the default stays plaintext + zero-config).
 - **Per-project + global** — facts are tagged by git project; clear personal facts go to a global
   tier recalled everywhere.
 - **Semantic recall (opt-in)** — the zero-config default recall is lexical (offline `HashEmbedder`,
-  no download). For semantic recall, `pip install 'cold-frame[local-llm]'` and set
+  no download). For semantic recall, install from source with the `[local-llm]` extra and set
   `COLD_FRAME_EMBEDDER=local` (a small local `bge-small` model, downloaded once — nothing leaves the
   machine). After switching on an existing DB, run `cold-frame reembed` to re-index.
 
@@ -112,7 +115,7 @@ grep-verified hard-purge, opt-in PII redaction + at-rest encryption (+ `encrypt`
 `rekey` rotation), an admission confidence-gate + opt-in consent hold, idempotent event-log replay
 import, and a local web UI are built and tested end-to-end on a fully offline gate (`ruff` +
 `mypy --strict` + ~410 deterministic mock-LLM tests green on a 3.12/3.13 CI matrix). The automatic
-recall + capture loop is verified end-to-end against real Claude Code. Planned: a write web UI, and a
-PyPI release (PyPI/trademark clearance pending).
+recall + capture loop is verified end-to-end against real Claude Code. Distributed as a self-contained
+binary via Homebrew + GitHub Releases (not PyPI). Planned: a write web UI.
 
 Apache-2.0.

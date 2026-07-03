@@ -37,8 +37,10 @@ First public version. Local-first, ownable memory for AI agents — one SQLite f
   but *detecting* a contradiction is LLM-gated. `COLD_FRAME_LLM=claude` turns on the dedup/conflict
   judges for CLI `add` + MCP `add_memory` via the session-auth Claude CLI (the `worker` already
   auto-uses it); unset = the offline default (duplicate-merge + explicit corrections only).
-- **Distribution** — `uv tool` / `pipx`, a Homebrew tap formula, and a standalone single-file binary
-  (no Python needed); a Release workflow that publishes on tag.
+- **Distribution** — a self-contained single-file binary (CLI + MCP, no Python needed) via a
+  Homebrew tap (`brew install coldzero94/coldframe/cold-frame`) + GitHub Releases. The Release
+  workflow builds + attaches the per-platform binaries on tag. NOT published to PyPI (the optional
+  `[crypto]`/`[local-llm]` extras need a from-source install).
 
 ### Known limitations (planned / deferred)
 
