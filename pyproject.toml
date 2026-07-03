@@ -36,7 +36,6 @@ dependencies = [
 openai = ["tiktoken>=0.7"]
 local-llm = ["sentence-transformers>=3.0"]   # fully offline embeddings/LLM
 vec = ["sqlite-vec>=0.1.6"]                   # optional ANN acceleration (default is pure-numpy KNN)
-crypto = ["sqlcipher3-binary>=0.5"]           # opt-in at-rest encryption (prebuilt SQLCipher wheel)
 mcp = ["mcp>=1.2", "anyio>=4.0"]              # local stdio MCP server (cold-frame mcp); D23
 server = ["fastapi>=0.110", "uvicorn>=0.29", "psycopg[binary]>=3.1", "pgvector>=0.3"]  # the separate product layer
 dev = ["pytest>=8.0", "pytest-cov>=5", "ruff>=0.6", "mypy>=1.11", "pyyaml>=6", "pre-commit>=3.7"]

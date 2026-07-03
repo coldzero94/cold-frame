@@ -1,9 +1,9 @@
 """I9 enforcement — the core engine imports pydantic + numpy ONLY.
 
 CLAUDE.md I9 / §8: ``fastapi``/``psycopg`` (and the other extras: the mcp SDK, openai, sqlite-vec,
-tiktoken, uvicorn, sentence-transformers, sqlcipher) live behind extras and are import-guarded, so
-importing the core engine must NOT eagerly pull any of them in. This was a merge-gate invariant with
-no enforcing test — a stray ``import fastapi`` in core would otherwise pass the whole suite.
+tiktoken, uvicorn, sentence-transformers) live behind extras and are import-guarded, so importing
+the core engine must NOT eagerly pull any of them in. This was a merge-gate invariant with no
+enforcing test — a stray ``import fastapi`` in core would otherwise pass the whole suite.
 
 Runs in a CLEAN subprocess so an extra already imported by a sibling test (e.g. the mcp SDK in
 test_mcp.py) can't mask a real core leak.
@@ -30,11 +30,8 @@ _CORE_MODULES = [
     "cold_frame.forget.consolidate",
     "cold_frame.procedural.optimize",
 ]
-# NOTE: sqlcipher3 is intentionally NOT forbidden — store/sqlite.py guard-imports it at MODULE level
-# (try/except) for the SQLCipher exception-class tuples, so it lands in sys.modules whenever the
-# [crypto] extra is installed. That's the sanctioned import-guarded pattern (core still works
-# without it); the invariant is "core doesn't REQUIRE heavy deps", not "never touches an extra".
-# tiktoken is lazy (function-level), so it stays forbidden.
+# NOTE: tiktoken is lazy (function-level in llm/tokens.py), so it stays forbidden — core must never
+# eagerly import it.
 _FORBIDDEN = [
     "fastapi",
     "psycopg",

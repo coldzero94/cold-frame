@@ -84,10 +84,9 @@ def test_claude_cli_real_session_extraction() -> None:
     assert res.parsed.tiers == ["global", "project"]  # the real model classifies correctly
 
 
-def test_claude_subprocess_env_excludes_the_encryption_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    # the at-rest encryption key must NOT leak into the third-party `claude` child env (I16 / trust
-    # boundary) — a same-user reader of /proc/<pid>/environ must not recover it.
-    monkeypatch.setenv("COLD_FRAME_KEY", "super-secret-master-key")
+def test_claude_subprocess_env_excludes_the_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    # the ANTHROPIC API key must NOT leak into the third-party `claude` child env (I16 / D26):
+    # forwarding it would silently make every auto-capture a METERED API call, not session auth.
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-should-not-leak")  # would make capture metered
     monkeypatch.setenv("COLD_FRAME_EXTRACTING", "stale")  # the forced guard must override this
     monkeypatch.setenv("COLD_FRAME_DB", "/tmp/x.db")  # a path, not a secret — may be inherited
@@ -99,6 +98,5 @@ def test_claude_subprocess_env_excludes_the_encryption_key(monkeypatch: pytest.M
 
     monkeypatch.setattr(subprocess, "run", _spy)
     ClaudeCliLLM().complete(task=TaskTag.EXTRACT, system="s", user="u")
-    assert "COLD_FRAME_KEY" not in captured  # scrubbed (secret)
     assert "ANTHROPIC_API_KEY" not in captured  # scrubbed → session auth, not metered (D26)
     assert captured.get("COLD_FRAME_EXTRACTING") == "1"  # the guard wins over the inherited value

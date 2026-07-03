@@ -136,13 +136,11 @@ class ClaudeCliLLM(LLM):
 
 
 # Vars stripped from the `claude` child env:
-# - COLD_FRAME_KEY: our at-rest master key must NEVER cross into a third-party subprocess (I16 /
-#   trust boundary — readable via /proc/<pid>/environ or the child's crash telemetry).
 # - ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN: ClaudeCliLLM is documented to use the user's SESSION/
 #   subscription ("the Claude you already pay for — no extra key or cost"). Forwarding an API key
 #   would silently make every auto-capture a METERED API call. Strip them → `claude -p` uses session
 #   auth (no session → it fails and the keyless deterministic backstop covers capture).
-_SECRET_ENV_VARS = ("COLD_FRAME_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
+_SECRET_ENV_VARS = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
 
 
 def _os_environ() -> dict[str, str]:

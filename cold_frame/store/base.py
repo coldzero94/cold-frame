@@ -79,7 +79,7 @@ class PurgeReport(BaseModel):
 
     note_id: str
     rows_scrubbed: int
-    grep_clean: bool  # original token absent from the live .db/.db-wal (N/A under SQLCipher)
+    grep_clean: bool  # original token absent from the live .db/.db-wal
     vacuumed: bool
 
 

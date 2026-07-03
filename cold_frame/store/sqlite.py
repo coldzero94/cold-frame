@@ -27,7 +27,6 @@ from typing import Any, Literal
 
 import numpy as np
 
-from cold_frame.branding import PKG, REPO_URL
 from cold_frame.constants import (
     ACCESS_LOG_CAP_PER_NOTE,
     BUSY_TIMEOUT_MS,
@@ -179,98 +178,27 @@ _MIGRATIONS: list[tuple[int, str]] = [(1, DDL_V1)]
 assert _MIGRATIONS[-1][0] == SCHEMA_VERSION, "migrations must reach SCHEMA_VERSION"
 
 
-# SQLCipher (the [crypto] extra) raises its OWN exception classes, NOT sqlite3's — a narrow
-# `except sqlite3.X` would miss them in encrypted mode. These tuples catch both driver families.
-try:
-    import sqlcipher3.dbapi2 as _sqlcipher_dbapi  # type: ignore[import-not-found]
-
-    _DB_ERROR: tuple[type[Exception], ...] = (sqlite3.Error, _sqlcipher_dbapi.Error)
-    _DB_OPERATIONAL: tuple[type[Exception], ...] = (
-        sqlite3.OperationalError,
-        _sqlcipher_dbapi.OperationalError,
-    )
-except ImportError:  # [crypto] not installed → plaintext only, stdlib exceptions suffice
-    _DB_ERROR = (sqlite3.Error,)
-    _DB_OPERATIONAL = (sqlite3.OperationalError,)
+# DB error types raised across the store (single stdlib sqlite3 driver).
+_DB_ERROR: tuple[type[Exception], ...] = (sqlite3.Error,)
+_DB_OPERATIONAL: tuple[type[Exception], ...] = (sqlite3.OperationalError,)
 
 
 def _connect(
     db_path: str,
-    key: str | None,
     *,
     timeout: float = BUSY_TIMEOUT_MS / 1000,
     isolation_level: Literal["DEFERRED", "EXCLUSIVE", "IMMEDIATE"] | None = None,
     check_same_thread: bool = True,
 ) -> sqlite3.Connection:
-    """Open a DB connection. With ``key`` (at-rest encryption, opt-in): via SQLCipher (the
-    ``[crypto]`` extra) with the key applied as the VERY FIRST statement — SQLCipher requires the
-    key before any other access, and it transparently encrypts the main db + WAL + temp files.
-    Without a key: stdlib sqlite3 (the default, unchanged). The key is never logged (I16)."""
-    if not key:
-        conn = sqlite3.connect(
-            db_path,
-            timeout=timeout,
-            isolation_level=isolation_level,
-            check_same_thread=check_same_thread,
-        )
-        conn.row_factory = sqlite3.Row
-        return conn
-    try:
-        from sqlcipher3 import dbapi2 as _sqlcipher
-    except ImportError as exc:  # encryption requested but the extra isn't installed
-        raise StoreError(
-            "at-rest encryption needs the [crypto] extra (from-source only; not in the Homebrew "
-            f"binary, not on PyPI): pip install '{PKG}[crypto] @ git+{REPO_URL}'"
-        ) from exc
-    conn = _sqlcipher.connect(
+    """Open a stdlib sqlite3 connection with a Row factory."""
+    conn = sqlite3.connect(
         db_path,
         timeout=timeout,
         isolation_level=isolation_level,
         check_same_thread=check_same_thread,
     )
-    # SQLCipher's PRAGMA key takes a string LITERAL, not a bind param ("near '?': syntax error").
-    # Inline it as a single-quoted literal with quotes doubled → injection-safe (a key cannot break
-    # out of the literal). MUST precede every other statement on the connection.
-    conn.execute("PRAGMA key = '" + key.replace("'", "''") + "'")
-    conn.row_factory = _sqlcipher.Row  # driver-matched Row (sqlite3.Row rejects a sqlcipher cursor)
-    return conn  # type: ignore[no-any-return]  # _sqlcipher untyped → conn is Connection-compatible
-
-
-def migrate_to_encrypted(src_path: str, dst_path: str, key: str) -> None:
-    """Offline plaintext→encrypted migration (SQLCipher, the ``[crypto]`` extra).
-
-    Encryption is otherwise create-time only because the online-backup API (used by ``snapshot``)
-    copies raw pages and CANNOT change encryption. This opens the PLAINTEXT ``src`` with the
-    SQLCipher driver (no key → it reads plaintext) and uses ``sqlcipher_export()`` to write a fully
-    re-encrypted ``dst`` (full schema + data, incl. the FTS5 shadow tables). ``dst`` must not exist;
-    ``key`` must be non-blank. The source is left untouched — verify ``dst`` opens with the key,
-    THEN swap it in. The key is never logged (I16).
-    """
-    if not key or not key.strip():
-        raise StoreError("encryption key must not be blank (a blank key would fail open)")
-    if Path(dst_path).exists():
-        raise StoreError(f"destination already exists, refusing to overwrite: {dst_path}")
-    if not Path(src_path).exists():
-        raise StoreError(f"source database not found: {src_path}")
-    try:
-        from sqlcipher3 import dbapi2 as _sqlcipher
-    except ImportError as exc:
-        raise StoreError(
-            "at-rest encryption needs the [crypto] extra (from-source only; not in the Homebrew "
-            f"binary, not on PyPI): pip install '{PKG}[crypto] @ git+{REPO_URL}'"
-        ) from exc
-    src = _sqlcipher.connect(src_path)  # no PRAGMA key → SQLCipher reads the plaintext DB as-is
-    try:
-        # ATTACH's KEY takes a string LITERAL (like PRAGMA key), not a bind param; the path binds
-        # fine. Quotes doubled → injection-safe (a key cannot break out of the literal).
-        src.execute(
-            "ATTACH DATABASE ? AS encrypted KEY '" + key.replace("'", "''") + "'", (dst_path,)
-        )
-        src.execute("SELECT sqlcipher_export('encrypted')")
-        src.execute("DETACH DATABASE encrypted")
-        src.commit()
-    finally:
-        src.close()
+    conn.row_factory = sqlite3.Row
+    return conn
 
 
 class SQLiteStore(Store):
@@ -283,13 +211,11 @@ class SQLiteStore(Store):
         embedder: Embedder | None = None,
         clock: Clock | None = None,
         new_id: Callable[[], str] | None = None,
-        encryption_key: str | None = None,
     ) -> None:
         self._db_path = db_path
         self._embedder = embedder
         self._clock: Clock = clock or SystemClock()
         self._new_id: Callable[[], str] = new_id or (lambda: uuid.uuid4().hex)
-        self._key = encryption_key  # opt-in at-rest encryption (SQLCipher via [crypto]); None = off
         self._conn = self._open(db_path)
 
     # ── connection / PRAGMAs (data-layer §3.1) ──────────────────────────────
@@ -301,15 +227,13 @@ class SQLiteStore(Store):
         # check_same_thread=False: the MCP async seam runs sync Store calls in anyio worker
         # threads (I4). Access stays serialized (sequential tool calls + BEGIN IMMEDIATE +
         # busy_timeout); per-thread connection pooling is the P3 concurrency step (§3.2).
-        # _connect applies the SQLCipher key FIRST when at-rest encryption is on (else stdlib).
         conn = _connect(
             db_path,
-            self._key,
             timeout=BUSY_TIMEOUT_MS / 1000,
             isolation_level=None,
             check_same_thread=False,
         )
-        try:  # the first REAL access — a wrong/absent key on an encrypted DB fails HERE
+        try:  # the first REAL access — a corrupt/foreign file fails HERE
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
             conn.execute("PRAGMA foreign_keys=ON")
@@ -317,16 +241,12 @@ class SQLiteStore(Store):
             conn.execute(f"PRAGMA wal_autocheckpoint={WAL_AUTOCHECKPOINT}")
             conn.execute("PRAGMA secure_delete=ON")
         except _DB_ERROR:
-            # raise a typed, KEY-FREE error (never echo the key/exc detail that could include it)
-            # instead of a raw "file is not a database" that invites destructive "recovery" of a
-            # perfectly healthy encrypted DB opened with the wrong key.
-            hint = (
-                "wrong encryption key, or this is not a cold-frame database"
-                if self._key
-                else "not a valid cold-frame database (corrupt, or encrypted but opened unkeyed)"
-            )
-            raise StoreError(f"cannot open database: {hint}") from None
-        return conn  # row_factory (driver-matched) is set inside _connect
+            # raise a typed error instead of a raw "file is not a database" that invites destructive
+            # "recovery" of a file that just isn't a cold-frame DB.
+            raise StoreError(
+                "cannot open database: not a valid cold-frame database (corrupt or unreadable)"
+            ) from None
+        return conn  # row_factory is set inside _connect
 
     # ── lifecycle ──────────────────────────────────────────────────────────
     def migrate(self) -> None:
@@ -351,8 +271,7 @@ class SQLiteStore(Store):
         WAL); skipped for in-memory DBs. A backup failure aborts the migration (fail-safe)."""
         if self._db_path == ":memory:":
             return
-        # keyed too (else an encrypted DB's backup would be written in plaintext — a leak)
-        dst = _connect(f"{self._db_path}.bak.{current}", self._key)
+        dst = _connect(f"{self._db_path}.bak.{current}")
         try:
             self._conn.backup(dst)
         finally:
@@ -1448,31 +1367,12 @@ class SQLiteStore(Store):
 
     def snapshot(self, dst: str) -> None:
         """Consistent checkpointed copy of the WHOLE DB to ``dst`` (I17: a snapshot, never the
-        live WAL). Single-file, WAL-free — restorable by copying it back into place. An encrypted
-        store produces an ENCRYPTED snapshot (the target is keyed with the same key — no leak)."""
-        out = _connect(dst, self._key)
+        live WAL). Single-file, WAL-free — restorable by copying it back into place."""
+        out = _connect(dst)
         try:
             self._conn.backup(out)
         finally:
             out.close()
-
-    def rekey(self, new_key: str) -> None:
-        """Rotate the at-rest encryption key IN PLACE (SQLCipher ``PRAGMA rekey``). Requires an
-        already-ENCRYPTED store — a plaintext DB has no key to rotate (use ``migrate_to_encrypted``
-        to create an encrypted copy first). After this the OLD key no longer opens the DB; combined
-        with discarding the old key + old backups, it crypto-shreds pre-rotation ciphertext
-        (finishing the plaintext scrub a secret ``purge`` did). The key is never logged (I16).
-        """
-        if self._key is None:
-            raise StoreError(
-                "rekey requires an encrypted DB; the plaintext default has no key to rotate "
-                "(use `cold-frame encrypt` to create an encrypted copy first)"
-            )
-        if not new_key or not new_key.strip():
-            raise StoreError("new encryption key must not be blank")
-        # PRAGMA rekey takes a string LITERAL (like PRAGMA key); quotes doubled → injection-safe.
-        self._conn.execute("PRAGMA rekey = '" + new_key.replace("'", "''") + "'")
-        self._key = new_key  # subsequent reconnects / snapshots use the rotated key
 
     # ── secret hard-purge (the ONE append-only carve-out, I2/I17/§7) ─────────
     def _purge_targets(self, id: str, *, cascade: bool) -> list[str]:
@@ -1561,37 +1461,12 @@ class SQLiteStore(Store):
         Honest scope (§7): the live DB only — OS snapshots/backups/free-list aren't covered."""
         if self._db_path == ":memory:":
             return True  # no on-disk file → no recoverable residue (rows already gone from RAM)
-        if self._key:
-            # ENCRYPTED: the file is ciphertext, so a raw-byte grep would ALWAYS be "clean" for the
-            # wrong reason (false confidence). Verify the LOGICAL scrub via the keyed (decrypting)
-            # connection instead — the needle must be absent from every live content-bearing grain.
-            return self._content_clean(needles)
         blobs = b"".join(
             Path(p).read_bytes()
             for p in (self._db_path, f"{self._db_path}-wal")
             if Path(p).exists()
         )
         return all(needle.encode("utf-8") not in blobs for needle in needles if needle)
-
-    def _content_clean(self, needles: list[str]) -> bool:
-        """True iff no ``needle`` appears in any live content-bearing column (read through the keyed
-        connection, so it sees decrypted content). The meaningful purge proof under encryption."""
-        # notes.content + notes.context (both free-text, both PII-redacted) + the two scrubbed JSON
-        # grains. Mirrors the plaintext byte-grep's coverage so the encrypted path isn't weaker.
-        targets = (
-            ("notes", "content"),
-            ("notes", "context"),
-            ("events", "payload"),
-            ("jobs", "payload"),
-        )
-        for needle in (n for n in needles if n):
-            for table, col in targets:
-                hit = self._conn.execute(
-                    f"SELECT 1 FROM {table} WHERE instr({col}, ?) > 0 LIMIT 1", (needle,)
-                ).fetchone()
-                if hit is not None:
-                    return False
-        return True
 
     # ── housekeeping ─────────────────────────────────────────────────────────
     def doctor(self) -> dict[str, Any]:

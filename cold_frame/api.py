@@ -9,7 +9,6 @@ admission (REDACT/CONSENT) + its local-only tiebreak (I7).
 from __future__ import annotations
 
 import hashlib
-import os
 import uuid
 from collections.abc import Callable, Iterable, Iterator
 from datetime import datetime
@@ -92,7 +91,6 @@ class Memory:
         id_factory: Callable[[], str] | None = None,
         consolidate_every: int | None = None,
         pii_redact: frozenset[PiiCategory] | None = None,
-        encryption_key: str | None = None,
         confidence_gate: float = CONFIDENCE_FLOOR,
         require_consent: bool = False,
     ) -> None:
@@ -105,23 +103,12 @@ class Memory:
         self._default_scope = default_scope or Scope()
         self._clock: Clock = clock or SystemClock()
         self._new_id: Callable[[], str] = id_factory or (lambda: uuid.uuid4().hex)
-        # opt-in at-rest encryption (SQLCipher via [crypto]): explicit key, else $COLD_FRAME_KEY,
-        # else None = plaintext (the zero-config default). UNSET → plaintext; but SET-BUT-BLANK is a
-        # misconfiguration → fail CLOSED (never silently store plaintext when a key was intended).
-        raw_key = encryption_key if encryption_key is not None else os.environ.get("COLD_FRAME_KEY")
-        if raw_key is not None and not raw_key.strip():
-            raise ValueError(
-                "encryption key is set but blank — refusing to silently store in plaintext "
-                "(unset encryption_key / $COLD_FRAME_KEY to use the unencrypted default)"
-            )
-        self._encryption_key = raw_key
 
         self._store = SQLiteStore(
             self._db_path,
             embedder=self._embedder,
             clock=self._clock,
             new_id=self._new_id,
-            encryption_key=self._encryption_key,
         )
         self._store.migrate()
         stored = self._store.embedder_meta()
@@ -498,19 +485,12 @@ class Memory:
 
     def health(self) -> dict[str, object]:
         """Doctor/health snapshot: invariant counts + integrity + embedder (eval §C.8)."""
-        return {**self._store.doctor(), "encrypted": self._encryption_key is not None}
+        return self._store.doctor()
 
     # ── backup / portability (I17: snapshot or event-log dump; never the live WAL) ──
     def snapshot(self, dst: str) -> None:
         """Write a complete consistent backup of the whole memory DB to ``dst``."""
         self._store.snapshot(dst)
-
-    def rekey(self, new_key: str) -> None:
-        """Rotate the at-rest encryption key in place (SQLCipher; needs [crypto]). Requires an
-        encrypted store — the old key stops opening the DB. Combined with discarding the old key +
-        old backups, this crypto-shreds pre-rotation ciphertext."""
-        self._store.rekey(new_key)
-        self._encryption_key = new_key
 
     def export_events(self) -> Iterator[str]:
         """Yield the append-only event log as NDJSON lines (portable, inspectable)."""

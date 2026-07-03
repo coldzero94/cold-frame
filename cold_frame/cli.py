@@ -1,8 +1,8 @@
 """``cold-frame`` CLI (SPEC §9). Entry point: ``cold-frame = "cold_frame.cli:main"``.
 
 Offline-first (I5): ``add``/``search`` work with zero keys/network. Every subcommand is wired —
-``add search list show stats timeline path doctor consolidate worker jobs export import encrypt
-rekey ui mcp setup purge reembed hook``. The DB location resolves ``--db`` → ``$COLD_FRAME_DB`` →
+``add search list show stats timeline path doctor consolidate worker jobs export import ui mcp
+setup purge reembed hook``. The DB location resolves ``--db`` → ``$COLD_FRAME_DB`` →
 ``branding.DB_PATH`` (no literal path strings, branding rule).
 """
 
@@ -28,18 +28,13 @@ from cold_frame.integrations.claude_code import GLOBAL_KEY, project_key
 from cold_frame.llm import Embedder, resolve_embedder, resolve_llm
 from cold_frame.models import Scope, SearchHit
 from cold_frame.observability import get_logger, set_log_level
-from cold_frame.store.sqlite import (  # keyed open for import; plaintext→encrypted migration
-    _DB_ERROR,
-    _DB_OPERATIONAL,
-    _connect,
-    migrate_to_encrypted,
-)
+from cold_frame.store.sqlite import _DB_ERROR, _DB_OPERATIONAL, _connect
 from cold_frame.write.admission import PII_CATEGORIES
 
 _log = get_logger(__name__)
 
-# any "can't open this DB" error from a keyed open: a driver error (wrong key / corrupt) OR a
-# StoreError (missing [crypto] extra). Flattened to a tuple of exception classes for `except`.
+# any "can't open this DB" error: a driver error (corrupt/foreign file) OR a StoreError from
+# _open. Flattened to a tuple of exception classes for `except`.
 _OPEN_ERR: tuple[type[Exception], ...] = (*_DB_ERROR, StoreError)
 
 
@@ -280,7 +275,6 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     print(f"notes={h['notes']} fts={h['fts']} vec={h['vec']}  (match={h['counts_match']})")
     print(f"integrity_check={h['integrity']}  fts_integrity={h['fts_integrity']}")
     print(f"embedder={h['embedder_id']} dim={h['dim']}  stale_vectors={h['stale_vectors']}")
-    print(f"at_rest_encryption={'on' if h.get('encrypted') else 'off'}")
     if h["stale_vectors"]:  # vectors from an old embedder → not semantically searchable yet
         print(f"  → run '{PKG} reembed' to re-index {h['stale_vectors']} stale vector(s)")
     # report the RESOLVED port the running UI recorded (deep-links use it), not just the default
@@ -582,17 +576,10 @@ def _cmd_export(args: argparse.Namespace) -> int:
     return 0
 
 
-def _import_key() -> str | None:
-    """The at-rest key for import/restore (same source as Memory) — an encrypted snapshot must be
-    opened keyed to validate/lock it. Blank → None (the open then fails as 'not valid')."""
-    return os.environ.get("COLD_FRAME_KEY") or None
-
-
-def _db_is_busy(path: Path, key: str | None) -> bool:
-    """True if another process holds ``path`` open (can't take an exclusive lock immediately).
-    Keyed so an encrypted live DB can be lock-probed (else it'd error as 'not a database')."""
+def _db_is_busy(path: Path) -> bool:
+    """True if another process holds ``path`` open (can't take an exclusive lock immediately)."""
     try:
-        conn = _connect(str(path), key, timeout=0.0)
+        conn = _connect(str(path), timeout=0.0)
         try:
             conn.execute("BEGIN EXCLUSIVE")
             conn.execute("ROLLBACK")
@@ -602,8 +589,8 @@ def _db_is_busy(path: Path, key: str | None) -> bool:
     except _DB_OPERATIONAL:
         return True  # genuinely locked by another process (I17)
     except _OPEN_ERR:
-        # can't even open it (wrong key / corrupt / missing [crypto]) — not a lock. Treat as
-        # not-busy so the import (which backs up dst first) proceeds rather than crashing here.
+        # can't even open it (corrupt / not a DB) — not a lock. Treat as not-busy so the import
+        # (which backs up dst first) proceeds rather than crashing here.
         return False
 
 
@@ -625,10 +612,8 @@ def _cmd_import(args: argparse.Namespace) -> int:
             f"({res.skipped} skipped) into {dst}"
         )
         return 0
-    # keyed so an ENCRYPTED snapshot can be validated (else it reads as ciphertext)
-    key = _import_key()
-    try:  # validate it's a cold-frame snapshot: (decryptable) SQLite + migrated + notes table
-        ro = _connect(str(src), key)
+    try:  # validate it's a cold-frame snapshot: SQLite + migrated + notes table
+        ro = _connect(str(src))
         try:
             version = int(ro.execute("PRAGMA user_version").fetchone()[0])
             has_notes = (
@@ -640,13 +625,12 @@ def _cmd_import(args: argparse.Namespace) -> int:
         finally:
             ro.close()
     except _OPEN_ERR:
-        kh = " (wrong $COLD_FRAME_KEY?)" if key else " (encrypted snapshot? set $COLD_FRAME_KEY)"
-        print(f"import: {src} is not a valid cold-frame snapshot{kh}")
+        print(f"import: {src} is not a valid cold-frame snapshot")
         return 1
     if version < 1 or not has_notes:
         print(f"import: {src} is not a cold-frame snapshot")
         return 1
-    if dst.exists() and _db_is_busy(dst, key):  # I17: never replace a DB another process has open
+    if dst.exists() and _db_is_busy(dst):  # I17: never replace a DB another process has open
         print(f"import: {dst} is in use — stop cold-frame (ui/mcp/worker) first, then retry")
         return 1
     try:
@@ -675,41 +659,6 @@ def _cmd_import(args: argparse.Namespace) -> int:
         else ""
     )
     print(f"imported {src} → {dst}{note}")
-    return 0
-
-
-def _cmd_encrypt(args: argparse.Namespace) -> int:
-    """Write an at-rest-encrypted copy of the current (plaintext) DB — the create-time-only
-    encryption escape hatch (there is no in-place migration; this is non-destructive)."""
-    src = Path(_resolve_db(args))
-    dst = Path(args.out)
-    key = args.key or os.environ.get("COLD_FRAME_KEY")
-    if not key:
-        print("encrypt: no key — pass --key KEY or set $COLD_FRAME_KEY")
-        return 1
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        migrate_to_encrypted(str(src), str(dst), key)  # key never printed (I16)
-    except _OPEN_ERR as exc:  # StoreError (validation) + driver errors (e.g. src already encrypted)
-        print(f"encrypt: {exc}")
-        return 1
-    print(f"encrypted copy → {dst}  (open it with your key to verify, then replace {src})")
-    return 0
-
-
-def _cmd_rekey(args: argparse.Namespace) -> int:
-    """Rotate the at-rest encryption key in place (crypto-shred: old key + copies become useless).
-    Opens with the CURRENT key ($COLD_FRAME_KEY), rotates to --new-key / $COLD_FRAME_NEW_KEY."""
-    new_key = args.new_key or os.environ.get("COLD_FRAME_NEW_KEY")
-    if not new_key or not new_key.strip():
-        print("rekey: no new key — pass --new-key KEY or set $COLD_FRAME_NEW_KEY")
-        return 1
-    try:
-        _memory(args).rekey(new_key)  # opens with the current key; keys never printed (I16)
-    except _OPEN_ERR as exc:  # plaintext DB / wrong-or-missing current key / driver error
-        print(f"rekey: {exc}")
-        return 1
-    print("rekey: key rotated — the old key no longer opens this DB. Update $COLD_FRAME_KEY.")
     return 0
 
 
@@ -837,13 +786,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--events", action="store_true", help="replay an NDJSON event log (idempotent merge)"
     )
     p_import.set_defaults(func=_cmd_import)
-    p_encrypt = sub.add_parser("encrypt", help="write an encrypted copy of the DB ([crypto] extra)")
-    p_encrypt.add_argument("--out", required=True, help="destination path for the encrypted copy")
-    p_encrypt.add_argument("--key", default=None, help="encryption key (else $COLD_FRAME_KEY)")
-    p_encrypt.set_defaults(func=_cmd_encrypt)
-    p_rekey = sub.add_parser("rekey", help="rotate the at-rest encryption key ([crypto] extra)")
-    p_rekey.add_argument("--new-key", default=None, help="the new key (else $COLD_FRAME_NEW_KEY)")
-    p_rekey.set_defaults(func=_cmd_rekey)
     p_worker = sub.add_parser("worker", help="drain the background jobs queue (maintenance)")
     p_worker.add_argument("--once", action="store_true", help="run one drain pass and exit")
     p_worker.add_argument("--interval", type=float, default=5.0, help="poll interval seconds")
