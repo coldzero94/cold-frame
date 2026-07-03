@@ -18,16 +18,19 @@ English summary of the load-bearing decisions for outside readers — the Korean
 ## D19 — Name
 
 `cold-frame` (locked 2026-06). The gardening "cold frame" (a glass enclosure for tending plants) maps
-to the memory-cultivation UX; also reads as cold-storage. Name is free on PyPI + GitHub; legal
-trademark filing is a separate external step that does not block shipping.
+to the memory-cultivation UX; also reads as cold-storage. (The original PyPI-name clearance became
+moot when D28 dropped PyPI distribution.) Legal trademark filing is a separate external step that
+does not block shipping.
 
 ## D25 — Security scope for v1
 
-v1 ships a **lightweight, deterministic secret-BLOCK only** (regex + entropy scan for API keys /
-tokens / private keys, blocked before disk). **Deferred** to v1.1 / a hosted layer: automatic PII
-redaction, consent gating, at-rest encryption, and crypto-shred purge. Rationale: v1 is a local,
-single-user, user-owned file — low exposure surface, and "you manage your own secrets" is reasonable.
-The README states this honestly; a grep-verified hard `purge` exists for manual removal.
+The always-on admission control is a **deterministic secret-BLOCK** (regex + entropy scan for API
+keys / tokens / private keys, blocked before disk, zero LLM calls). PII redaction
+(email/phone/card/ssn), a consent/confidence gate, at-rest encryption (`[crypto]` = SQLCipher,
+whole DB + WAL + snapshots), and whole-DB key rotation (`cold-frame rekey`) are all **built but
+OPT-IN** — a personal store keeps your own contact facts by default. Still deferred to v1.1 / a
+hosted layer: *per-note* envelope crypto-shred. Rationale: v1 is a local, single-user, user-owned
+file — low exposure surface. A grep-verified hard `purge` exists for manual removal.
 
 ## D26 — Automatic memory (the product)
 
@@ -42,3 +45,22 @@ Automatic recall + capture inside Claude Code is the product (not manual tool ca
 - **Anti-bloat is the existing engine** — Layer-A salience filter, novelty/dedup, per-scope caps,
   consolidation. Auto-capture funnels through the same `WriteCore`, never a separate dump path.
 - **Per-project + global** scoping by git project (remote URL → repo root), encoded on the scope.
+
+## D27 — v1 scope trim (2026-07-01)
+
+A multi-lens value audit re-scoped v1. The local-only LLM admission *tiebreak* was **removed**
+(dead in prod — no local LLM ships — and it fail-closed-BLOCKed legitimate facts carrying
+high-entropy tokens); admission is now the deterministic secret scan only, and the I7 invariant
+(no secret span reaches a remote endpoint) holds via that scan plus the extraction egress guard.
+Over-spec surfaces were cut: the search-time graph edge recall channel (edge *rows* stay), the
+deterministic tagger (`derive_tags`), and the CLI/MCP rerank surface. Kept and shipped after
+re-evaluation: `as_of` search rewind, the Vue web UI dashboard, and programmatic `rerank=True`.
+
+## D28 — Distribution: Homebrew binary, not PyPI (2026-07-02)
+
+Distribution is a **Homebrew tap + GitHub Release binaries** — a self-contained PyInstaller binary
+per platform (CLI + MCP server + web UI in one file, no Python at runtime). PyPI publishing was
+dropped (trusted-publisher registration blocked; a venv-style Homebrew formula can't fetch deps in
+Homebrew's network-sandboxed build). Platforms: macOS Apple Silicon + Linux x86_64 (Intel Mac is
+out of scope). The optional `[crypto]`/`[local-llm]` extras are not in the binary — install those
+from source (`pip install 'cold-frame[extra] @ git+https://github.com/coldzero94/cold-frame'`).

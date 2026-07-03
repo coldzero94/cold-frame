@@ -232,17 +232,19 @@ MCP 서버 `cold_frame.mcp`(코어를 호출하는 얇은 어댑터).
 ## 12. 디렉터리 구조
 
 ```
-cold_frame/
-  models.py  api.py(Memory: add/search/consolidate/optimize_prompt)
-  store/   sqlite.py notes.py vectors.py fts.py edges.py     # Store 인터페이스 + SQLite
-  write/   extract.py dedup.py conflict.py core.py tools.py
-  read/    retrieve.py fuse.py rerank.py budget.py
-  forget/  decay.py consolidate.py worker.py
+cold_frame/                        # (빌드 완료 후 실제 코드 기준으로 갱신 — 코드가 우선)
+  models.py  api.py(Memory)  cli.py  mcp.py   # mcp.py = MCP stdio 서버(유일한 async seam, I4)
+  constants.py  branding.py  exceptions.py  observability.py
+  store/   base.py sqlite.py _ddl.py          # Store ABC + SQLite 어댑터 + DDL/마이그레이션
+  write/   admission.py core.py extract.py    # ADMISSION→DEDUP→CONFLICT→PERSIST (I15)
+  read/    retrieve.py fuse.py rerank.py budget.py strength.py
+  forget/  consolidate.py worker.py
   procedural/ optimize.py
-  llm/     base.py providers.py     # Embedder/LLM ABC + Hash(기본)/OpenAI/Ollama
-  prompts/ cli.py mcp.py            # MCP stdio 서버
-  ui/      (P3, [ui] extra: 로컬 웹 대시보드)
-  eval/    harness.py datasets/
+  llm/     base.py claude_cli.py local.py tokens.py  # Embedder/LLM ABC + Hash(기본)/ClaudeCli/[local-llm]
+  prompts/ extract.py conflict.py consolidate.py procedural.py rerank.py scope.py
+  ui/      server.py contract.py _dist/       # 로컬 웹 대시보드(stdlib 서버 + 빌드된 Vue SPA 번들)
+  eval/    harness.py recall_bench.py datasets/
+  integrations/ claude_code.py                # Claude Code transcript reader (D26 자동 캡처)
 pyproject.toml  README.md
 ```
 

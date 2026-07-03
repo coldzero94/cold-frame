@@ -3,7 +3,7 @@
 > **HISTORICAL (pre-build, RESOLVED).** This was the readiness checklist written *before* P1. Every
 > blocker below is closed: the repo is git-initialized + scaffolded, the 7 contract conflicts are
 > ratified in code (CLAUDE.md §1 conflict rule), ruff/mypy/pytest/CI/pre-commit are wired, and
-> P1–P6 are built (~370 tests green). Kept only as a record of the pre-build state — not current.
+> P1–P6 are built (~430 tests green). Kept only as a record of the pre-build state — not current.
 
 # Coldframe — P1 준비도 GAPS (알려진 TODO 외)
 

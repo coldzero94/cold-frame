@@ -1,6 +1,7 @@
 # cold-frame — 기획 문서 인덱스
 
-> 현재 **기획 단계**. 코드는 기획 완료 후(사용자 지시).
+> 기획 문서 아카이브. **P1–P6 빌드 완료, v0.1.0 출시됨** — 현재 상태는 루트 `CLAUDE.md`(Status)가
+> 단일 출처이고, 여기 문서들은 설계 근거/스펙. 영어 요약: [`DECISIONS.en.md`](DECISIONS.en.md).
 
 ## 👉 코딩할 땐 이것만
 
@@ -8,7 +9,7 @@
 |---|---|
 | **[`SPEC.md`](SPEC.md)** | ⭐ **구현 단일 출처.** 데이터모델·schema·write/read·망각·MCP·CLI/화면·eval·빌드단계. **코딩은 이 문서 하나만 보면 됨.** |
 | [`requirements.md`](requirements.md) | 요구 추적: 필요 ← 비교 도출 ← SPEC 위치 (R-번호) |
-| [`decisions.md`](decisions.md) | 결정 로그 ADR (D1~D11): 날짜·대안·근거·상태 |
+| [`decisions.md`](decisions.md) | 결정 로그 ADR (D1~D28): 날짜·대안·근거·상태 |
 
 ## 배경/근거 (구현 중엔 안 봐도 됨 — `analysis/`)
 

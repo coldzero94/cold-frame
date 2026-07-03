@@ -4,7 +4,21 @@ All notable changes to coldframe. Format loosely follows [Keep a Changelog]; ver
 
 ## [Unreleased]
 
-_Nothing yet._
+### Fixed
+
+- **Release binaries now ship the web UI.** The release pipeline never built the Vue bundle (the
+  git-ignored `_dist` was empty in CI) and PyInstaller dropped package data, so the v0.1.0 binaries
+  silently served the fallback inline inspector. The build now fails loudly without the bundle and
+  live-serves the frozen binary's UI as a smoke test.
+- Runtime error messages and docs no longer point at PyPI installs that fail (ADR-D28: not on
+  PyPI) — they give the working from-source command for the `[crypto]`/`[local-llm]`/`[mcp]` extras.
+- The auto-generated Homebrew formula's `brew test` used a non-string matcher (raises on modern
+  Ruby); releases also fail fast if the tag doesn't match the package version.
+
+### Changed
+
+- Releases auto-update the Homebrew tap formula (the `bump-tap` job).
+- Intel Mac (`macos-x86_64`) is out of scope: macOS = Apple Silicon only (+ Linux x86_64).
 
 ## [0.1.0] — 2026-07-02
 
