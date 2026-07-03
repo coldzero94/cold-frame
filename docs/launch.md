@@ -1,9 +1,11 @@
 # Launch playbook (DRAFT)
 
 > **Do not post any of this until the product is launch-ready:** (1) a one-time LIVE verification in
-> a real Claude Code session (recall + capture actually work), and (2) a tagged release on PyPI so
-> the install commands resolve. Marketing an unverified product in front of a dominant incumbent is
-> the fastest way to lose credibility. The drafts below are starting points — edit to your voice.
+> a real Claude Code session (recall + capture actually work) — DONE (2026-06-29, Gate 0), and (2) a
+> tagged GitHub Release with the per-platform binaries + the Homebrew tap bumped so
+> `brew install coldzero94/coldframe/cold-frame` resolves (ADR-D28: Homebrew binary, NOT PyPI) —
+> DONE (v0.1.0 shipped). Marketing an unverified product in front of a dominant incumbent is the
+> fastest way to lose credibility. The drafts below are starting points — edit to your voice.
 
 ## The competitive reality (verified)
 
@@ -77,8 +79,11 @@ observation log); link last. 90/10: insight first, promo last.
       session 1's Stop hook captured a fact, a fresh session's SessionStart recall made the model
       answer from it (unprompted). Isolated temp project/DB. Still confirm once: the actual
       `claude plugin install` path (vs `hook install`) + the agent-push skill firing.
-- [ ] **Release** — register the PyPI trusted publisher, `git tag v0.1.0` (the Release workflow does
-      PyPI + binaries). Confirm `uv tool install` / `claude plugin install` work on a clean machine.
+- [x] **Release** — DONE (v0.1.0): `git tag v0.1.0` → `release.yml` builds the per-platform binaries
+      (macos-arm64, linux-x86_64), attaches them to the GitHub Release, and the tap auto-bumps
+      (`packaging/homebrew/bump-tap.sh`). Verify on a clean machine: `brew install
+      coldzero94/coldframe/cold-frame` + `claude plugin install`. NO PyPI (ADR-D28); `[crypto]`/
+      `[local-llm]` extras are from-source (`uv tool install "cold-frame[...] @ git+…"`).
 - [ ] **Pre-launch** — README rewind GIF (record [`demo.md`](demo.md) §B); MCP registries; submit to
       the Anthropic community directory; seed the X account with 3–5 build-in-public posts.
 - [ ] **Soft launch** — r/ClaudeAI + r/mcp value posts; fix the top-3 friction points.

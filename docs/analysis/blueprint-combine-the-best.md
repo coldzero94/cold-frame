@@ -1,5 +1,7 @@
 # cold-memo: 조합 청사진 (Combine-the-Best Blueprint)
 
+> ⚠️ HISTORICAL analysis (2026-06, pre-SPEC, "cold-memo" working name) — superseded by SPEC.md + code (CLAUDE.md §1).
+
 > 7종 메모리 시스템의 **실제 코드**를 해부한 뒤, 메커니즘별로 가장 잘 구현된 조각만 골라 **프로덕션급 개인 메모리 시스템**을 조립하기 위한 청사진.
 > 위치: `소스 분석 → (이 문서) → 제품 설계`. 모든 권고는 `docs/source-analysis/`의 코드 분석(`file:line`)에 근거함. 작성 2026-06-21.
 > 대상: 로컬 개인용으로 시작하되 *진짜 쓸모 있는 제품*을 지향(추후 출시 여지). 한 엔진을 통째로 가져오지 않고 **장점만 조합**.

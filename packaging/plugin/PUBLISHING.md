@@ -29,7 +29,7 @@ A single git repo can be both the marketplace and host the plugin. Coldframe use
    ```
 2. **Bump the version** in `packaging/plugin/.claude-plugin/plugin.json` for a release (or omit
    `version` so every commit SHA is its own version during active development).
-3. **Push to the public repo** (the name/repo is gated on D19 — name/trademark clearance):
+3. **Push to the public repo** (name locked as `cold-frame` per D19; repo public, v0.1.0 shipped):
    ```bash
    git push    # to github.com/coldzero94/cold-frame
    ```
@@ -38,8 +38,11 @@ A single git repo can be both the marketplace and host the plugin. Coldframe use
    claude plugin marketplace add coldzero94/cold-frame      # GitHub shorthand; or a full git URL
    claude plugin install coldframe@coldframe        # plugin@marketplace
    ```
-   Prerequisite: the `cold-frame` CLI must be on PATH (`uv tool install "cold-frame[mcp]"` / brew /
-   the standalone binary) — the plugin is the integration layer, the package is the engine.
+   Prerequisite: the `cold-frame` CLI must be on PATH — `brew install
+   coldzero94/coldframe/cold-frame` (primary, ADR-D28), the standalone binary from the GitHub
+   Release, or from source for the `[mcp]`/`[crypto]` extras (`uv tool install "cold-frame[mcp] @
+   git+https://github.com/coldzero94/cold-frame"`; NO PyPI) — the plugin is the integration layer,
+   the package is the engine.
 5. **Manage / update**:
    ```bash
    claude plugin list
@@ -60,8 +63,9 @@ Once the name clears, Coldframe can be listed in `anthropics/claude-plugins-comm
 4. Users then: `claude plugin marketplace add anthropics/claude-plugins-community` →
    `claude plugin install coldframe@claude-community`.
 
-## Blocked on
+## Status
 
-The marketplace `add` URL needs the final repo/org, which depends on **D19** (name/PyPI/trademark
-clearance). The manifests + structure are ready and validate now; only the public repo URL is
-pending.
+RESOLVED. **D19** locked the name `cold-frame`; the repo is public at
+`github.com/coldzero94/cold-frame` and **v0.1.0 has shipped** (distribution = Homebrew tap + GitHub
+Release binaries, ADR-D28 — NOT PyPI). The marketplace `add` URL above (`coldzero94/cold-frame`) is
+final; the manifests validate. Community-directory submission (above) is the remaining optional step.

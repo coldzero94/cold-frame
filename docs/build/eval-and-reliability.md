@@ -1,5 +1,7 @@
 # EVAL HARNESS + RELIABILITY (SPEC §10 expansion + new §13 Reliability/Observability + new §14 Performance Budget)
 
+> ⚠️ SUPERSEDED — code wins (see `cold_frame/llm/base.py`, `store/base.py`, `constants.py`, `cold_frame/eval/`); pinned pre-build, not re-synced. Where this doc disagrees with shipped code, code is authoritative (CLAUDE.md §1). Carets (^) below flag the worst-drifted sections.
+
 > where_it_goes: Replace/expand SPEC.md §10 with the concrete harness spec below; add two new SPEC sections (§13 Reliability & Failure Modes, §14 Performance Budget) — or a focused doc docs/eval-and-reliability.md cross-linked from SPEC §10/§11. The LLM/Embedder ABC defined in §A is the prerequisite that also belongs in cold_frame/llm/base.py and should be reflected in SPEC §1/§4.
 
 
@@ -10,6 +12,8 @@ This deepens SPEC §10 (Eval) and fills the missing reliability/observability/pe
 ---
 
 ## A. Prerequisite: the LLM/Embedder ABC (the deterministic mock seam)
+
+> ^ SUPERSEDED — code wins (`cold_frame/llm/base.py`). Shipped `LLM.complete` is SYNC `def` (I4 — the only `async def` is in `cold_frame/mcp.py`), not `async def`. `TaskTag` is a `StrEnum` and does NOT include `admission_tiebreak`; the `assert_local_for` / `LOCAL_ONLY_TASKS` / invariant I-LOCAL below were REMOVED (ADR-I7-cut, 2026-07-01) — the admission path makes zero LLM calls.
 
 The whole "LLM mock으로 결정적" 철칙 (SPEC §10, R16) is unbuildable until the LLM seam is pinned. Neither SPEC nor design.md gives the ABC signature. Pin it now (lives in `cold_frame/llm/base.py`).
 
@@ -170,6 +174,8 @@ class Suite(BaseModel):
 
 ### B.2 How the LLM is mocked deterministically
 
+> ^ SUPERSEDED — the shipped `ScriptedLLM.complete` is SYNC `def` (matches the sync `LLM` ABC, I4), not `async def` as written below.
+
 `ScriptedLLM(LLM)` is the mock. It is **stateful, ordered-with-fallback**:
 
 ```python
@@ -236,6 +242,8 @@ Token length = the same tokenizer the budget packer uses (SPEC §5 BUDGET). Defa
 
 ### C.1 The `jobs` durable queue (concrete)
 
+> ^ SUPERSEDED on two details — code wins (`cold_frame/store/base.py`, `store/_ddl.py`, `constants.py`): (1) the in-flight status is `'running'` with a `locked_by` worker column, NOT `'leased'`/`lease_owner`; (2) backoff is `RETRY_BACKOFF_BASE(0.05)·2^attempts` seconds, UNCAPPED — not `min(2^attempts, 3600)s`. Job `kind`s that actually enqueue are `consolidate` and `capture` (see §C.2 caret).
+
 The DDL (`design.md` §2.3) has a `jobs` table but no semantics. Pin them:
 
 ```sql
@@ -271,6 +279,8 @@ CREATE INDEX idx_jobs_ready ON jobs(status, run_after);
 
 ### C.2 Extraction LLM failure policy
 
+> ^ SUPERSEDED — code wins (`cold_frame/api.py`, `store/base.py`). `Memory.add` extracts INLINE + synchronously; there is NO `extract` job. The only enqueued job kinds are `consolidate` (auto-maintenance) and `capture` (D26 auto-capture drain). The failure ladder below describes a queued-extract design that did not ship.
+
 `add()` enqueues an `extract` job (the heavy LLM call is async per §4 PERSIST "async durable jobs 큐 경유"). Failure ladder:
 1. LLM call raises (timeout/5xx/parse) → job retried with backoff (C.1).
 2. Parse failure (LLM returned non-schema JSON): one in-call repair retry (re-prompt "return valid JSON for schema X"); if still bad, count as attempt and back off.
@@ -300,6 +310,8 @@ SPEC §3 says `add_note` is a single transaction over notes+fts+vec+sources+hist
 - Graceful shutdown: stop claiming, let in-flight job finish or lease-expire.
 
 ### C.6 Quarantine status (resolves audit R6 / provenance invariant)
+
+> ^ G2 RATIFIED (code wins): `Status` is EXACTLY 3 values (`active`/`archived`/`deleted`); quarantine is a flag column (`quarantined` bool), NOT a 4th `Status`. See `cold_frame/models.py`. The `Status = Literal[..., "quarantine"]` below is the pre-ratification shape.
 
 `Status` is extended from the closed set to add `quarantine`:
 ```python
@@ -354,7 +366,9 @@ log.info("job", kind=k, id=jid, status=s, attempts=n)            # NEVER payload
 | `search` with `[vec]` sqlite-vec | <20 ms | <35 ms | <70 ms |
 | `consolidate` batch | background, not latency-critical | | |
 
-These are p95 budgets, asserted loosely in a perf smoke test (`tests/perf/` marked `slow`, not in the merge gate; runs nightly). Generous (×2–3 headroom) so they're stable across machines.
+> ^ These are **aspirational targets, NOT gated** — code wins. The `tests/perf/` perf-smoke test described below was never built; no perf budget is asserted in CI. Treat the numbers as design intent, not a live check.
+
+These are p95 budgets, meant to be asserted loosely in a perf smoke test (`tests/perf/` marked `slow`, not in the merge gate; nightly). Generous (×2–3 headroom) so they're stable across machines.
 
 ### D.2 Where numpy KNN degrades → when to flip `[vec]`
 
@@ -381,5 +395,5 @@ tests/
   test_eval_suites.py   # parametrizes over every case → one pytest per case
   test_jobs_queue.py    # lease/reclaim/backoff/dedup/idempotency unit tests
   test_store_txn.py     # partial-write rollback, integrity_check, locked-db busy_timeout
-  perf/test_perf_smoke.py   # marked slow; D.1 budgets at 1k/10k
+# perf/test_perf_smoke.py — NOT BUILT (§D.1 caret): no perf-smoke test ships; D.1 budgets are un-gated targets.
 ```

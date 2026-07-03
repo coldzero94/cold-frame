@@ -1,5 +1,7 @@
 # cold-memo: BUILD / USE / HYBRID 의사결정 지원 문서
 
+> ⚠️ HISTORICAL analysis (2026-06, pre-SPEC, "cold-memo" working name) — superseded by SPEC.md + code (CLAUDE.md §1).
+
 > 본 문서는 정답을 처방하지 않는다. 세 advocacy 입장과 한 건의 adversarial critique를 종합해, "우리"가 스스로 결정할 수 있도록 트레이드오프를 정직하게 정리하는 것이 목적이다.
 
 ---

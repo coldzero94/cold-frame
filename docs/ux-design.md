@@ -1,5 +1,7 @@
 # cold-frame UX 설계: 보이는 망각, 되감을 수 있는 믿음
 
+> ⚠️ strength/band numbers here are superseded by `cold_frame/constants.py` (S = 0.45·retrievability + 0.35·importance + 0.20·access) — code wins, see CLAUDE.md §1.
+
 > 목표: cold-frame의 메모리/연결을 **사용자가 보고(see) · 믿고(trust) · 다듬는(curate)** 경험으로 설계한다. 핵심은 남들이 못 하는 "혁신적 메모리 연결/시각화"다. 결론부터: **전역 그래프(global graph)를 히어로로 삼지 않는다.** cold-frame의 무기는 토폴로지가 아니라 **상태(state) — 망각·신선도·믿음의 변화**다.
 
 ---
@@ -138,7 +140,7 @@ cold-frame의 두 깃발(망각 + 결정적 충돌해결)은 둘 다 *보이지 
 | "coby works at Anthropic"          conf ▓▓▓░   🌳   access×7         |
 | 망각곡선:  1│ *    *      *    *        (각 * = 사용 시점, re-spike)  |
 |           0│  `._/ `.__./ `._./  ───────────────────────> time       |
-| score = .42 recency + .30 importance + .18 relevance  [입력 보기]    |
+| S = .45 retrievability + .35 importance + .20 access  [입력 보기]    |
 | ── belief history (교정 스토리) ──────────────────────────────────  |
 |   ~~"works at Vessl"~~  superseded 2026-06  (msg#a17)               |
 |        │ supersedes  (이유: valid_at 더 최신 ⇒ 자동)                |

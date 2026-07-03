@@ -1,5 +1,7 @@
 # cold-frame 제품 전략 & 디자인 종합 문서
 
+> ⚠️ HISTORICAL input to D15–D19; D-P2 (rename cold-frame) is SUPERSEDED by D19 (name locked) + ADR-D28 (no PyPI). Kept as a record, not current.
+
 > 4개 탐색 영역(신뢰·프라이버시 / sync·포터빌리티 / 메모리 품질·프롬프트 / 포지셔닝·네이밍)을 하나로 종합.
 > 기준선: `docs/SPEC.md`, `docs/decisions.md`(D1~D14), `docs/ux-design.md`. 이 문서는 wf_36992b95(decisions.md L25 IN-PROGRESS 4영역)의 산출물이며, 확정 시 D15~D18로 승격 예정.
 

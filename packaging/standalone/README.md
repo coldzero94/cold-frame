@@ -1,8 +1,9 @@
 # Standalone binary
 
 A single self-contained `cold-frame` executable that runs with **no Python installed** — the easiest
-possible install for users who don't have (or don't want) a Python toolchain. Same CLI as
-`pip install`, frozen with PyInstaller.
+possible install for users who don't have (or don't want) a Python toolchain. Same CLI as a
+from-source install, frozen with PyInstaller. This binary IS the primary distribution artifact
+(ADR-D28): the Homebrew tap installs it; there is no PyPI package.
 
 ## Build
 
@@ -19,7 +20,8 @@ run from the single file (`cold-frame mcp` starts with the bundled mcp/anyio/sta
 
 - The **binary is not committed** (platform-specific, ~20 MB). It is a CI artifact.
 - PyInstaller freezes for the **host os/arch only** — run `build.sh` once on each target in CI
-  (macOS arm64, macOS x86_64, Linux x86_64) and upload the three binaries to a GitHub Release.
+  (macOS arm64, Linux x86_64 — Intel Mac / macos-x86_64 was cut) and upload the two binaries to a
+  GitHub Release.
 - Users then `curl -fsSL .../cold-frame-macos-arm64 -o /usr/local/bin/cold-frame && chmod +x` (a
   `curl | sh` installer that picks the right asset is the natural front door).
 
@@ -34,7 +36,12 @@ run from the single file (`cold-frame mcp` starts with the bundled mcp/anyio/sta
   `--hidden-import` + exclude the CLI. If the mcp SDK adds a new lazy import path, add it as a
   `--hidden-import` here (the binary's `cold-frame mcp` is the test).
 
-## When to prefer this vs pip/brew
+## How this fits distribution (ADR-D28)
 
-- **pip / `uv tool install` / Homebrew** stay the primary paths for developers (smaller, updatable).
-- The binary is for **reach** — non-Python users, locked-down machines, a zero-prerequisite demo.
+- This binary **is the primary artifact**: the release tag attaches it to the GitHub Release and the
+  Homebrew tap (`brew install coldzero94/coldframe/cold-frame`) installs it. **There is no PyPI.**
+- Install **from git source** only for the optional extras that aren't frozen into the binary
+  (`[crypto]` = SQLCipher, `[local-llm]`): `uv tool install "cold-frame[crypto] @
+  git+https://github.com/coldzero94/cold-frame"`.
+- The raw binary (curl the Release asset) is for **reach** — non-Python users, locked-down machines,
+  a zero-prerequisite demo — the same file the tap ships.

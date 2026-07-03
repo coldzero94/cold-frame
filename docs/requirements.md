@@ -1,5 +1,7 @@
 # cold-frame 요구 추적 매트릭스 (Requirements Traceability)
 
+> ⚠️ HISTORICAL — P1–P6 shipped in v0.1.0; the 🔲/🔄 status column is a pre-build snapshot, not current. See CLAUDE.md Status.
+
 > ⭐ **"다른 제품 비교 → 우리가 필요한 부분 도출 → 그것을 만든다"**의 단일 출처.
 > 각 요구 = *어느 제품의 강점/공백에서 도출*(근거) + *어디서 구현*(SPEC 위치). 우선순위 P0/P1/P2. 상태 🔲계획 / 🔄진행 / ✅결정.
 > 근거 상세는 `analysis/`(소스해부·blueprint), 구현은 [`SPEC.md`](SPEC.md).

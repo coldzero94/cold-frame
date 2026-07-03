@@ -1,5 +1,7 @@
 # cold-memo 메모리 코어: MAIN 언어 결정 지원 문서
 
+> ⚠️ HISTORICAL analysis (2026-06, pre-SPEC, "cold-memo" working name) — superseded by SPEC.md + code (CLAUDE.md §1).
+
 > 독자: 속도와 안정성을 중시하고, Docker 없는 단순 로컬 설치를 원하며, 추후 제품화 가능성을 열어둔 인프라 엔지니어
 > 결정 대상: cold-memo 메모리 **코어**의 주 언어 (멀티테넌트 서버 티어는 이미 분리·후행 결정으로 합의됨)
 

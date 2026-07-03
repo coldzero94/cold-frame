@@ -1,5 +1,7 @@
 # Coldframe TDD Plan
 
+> ⚠️ HISTORICAL pre-P1 build plan. The I7 / I-LOCAL / `admission_tiebreak` steps are SUPERSEDED by ADR-I7-cut (that path was removed); module/file names are superseded by SPEC §12 — code wins (CLAUDE.md §1).
+
 # Coldframe P1 TDD 계획 — red/green 순서 · 불변식-as-tests · mock/fixture 전략
 
 > P1(골격: store + models + add/search + 최소 MCP + eval 하버스)을 위한 테스트-우선 빌드 계획.

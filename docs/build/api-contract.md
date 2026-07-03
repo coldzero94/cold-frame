@@ -1,5 +1,7 @@
 # PUBLIC API CONTRACT — Memory facade, Store ABC, Embedder/LLM ABCs, MCP tools
 
+> ⚠️ SUPERSEDED — code wins (see `cold_frame/models.py`, `llm/base.py`, `mcp.py`, `ui/contract.py`); pinned pre-build, not re-synced. Where a section disagrees with shipped code, code is authoritative (CLAUDE.md §1). Carets (^) below flag the worst-drifted sections.
+
 > where_it_goes: New focused doc: docs/api-contract.md (referenced from SPEC §3 "저장 레이어", §8 "Claude Code 연동", and §12 "디렉터리 구조"). It supersedes the loose signatures in analysis/design.md §3. SPEC §3 and §8 should each gain a one-line pointer: "구체 시그니처/계약 → api-contract.md".
 
 # cold-frame — Public API Contract (build-ready)
@@ -440,6 +442,8 @@ class Embedder(ABC):
 
 ## 6. `LLM` ABC (`cold_frame/llm/base.py`)
 
+> ^ SUPERSEDED — code wins (`cold_frame/llm/base.py`, `llm/local.py`, `llm/claude_cli.py`). Shipped `complete` is sync (I4) with `*, task: TaskTag, system, user, schema, temperature, max_tokens` → `LLMResult`, not `complete(system, user, *, json_schema, temperature) -> str`. There is NO `providers.py` roster: `HashEmbedder` lives in `llm/base.py`, `SentenceTransformerEmbedder` in `llm/local.py`, `ClaudeCliLLM` in `llm/claude_cli.py` (no `OpenAIEmbedder`/`AnthropicLLM`/`OllamaLLM`). The admission-LLM locality invariant below was REMOVED (ADR-I7-cut): the admission path makes zero LLM calls (deterministic secret-scan only).
+
 ```python
 class LLM(ABC):
     @abstractmethod
@@ -456,6 +460,8 @@ Providers (`cold_frame/llm/providers.py`): `HashEmbedder`, `OpenAIEmbedder`, `Lo
 ---
 
 ## 7. MCP tool contracts (`cold_frame/prompts/mcp.py`, SPEC §8)
+
+> ^ SUPERSEDED — real surface is `cold_frame/mcp.py`. Shipped tools: `search_memory(query, k=10)`, `add_memory(text)`, and the self-edit set `create_fact`/`update_fact`/`supersede`/`forget`. `summarize` and `correct_memory` (§7.3/§7.4) and the `@mcp.resource(...)` resources (§7.5) do NOT ship. Search hits carry `{id, content, score, deeplink}` — NOT the rich `strength/band/status/sources/supersedes` payload pinned below. `add_memory` returns `{added, held, blocked, redacted}`.
 
 Server id `cold-frame`, transport stdio (local, OAuth-free, D11). Built on the official `mcp` Python SDK (`FastMCP`). Each tool handler wraps a sync `Memory` call via `anyio.to_thread.run_sync`. **Every tool result includes a `ui` deep-link** `http://localhost:27182/fact/{id}` (SPEC §8).
 
@@ -499,6 +505,8 @@ Implemented via `@mcp.resource(...)`; both call `Memory.get`/`by_status` on a wo
 ---
 
 ## 8. UI read-API (P3, `[ui]` extra; ux §5.2 / §6.2) — for completeness of the public contract
+
+> ^ SUPERSEDED — the UI wire contract is single-sourced in `cold_frame/ui/contract.py` (TypedDicts, D20); the endpoint list below is illustrative, not authoritative. Never re-declare shapes here or in TS — regen from `contract.py`.
 
 Thin read-mostly JSON over the same `Memory`, served by `cold-frame ui` (localhost:27182). All GET, all derive from single-file SELECTs:
 ```

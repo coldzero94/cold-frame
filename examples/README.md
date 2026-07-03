@@ -26,7 +26,10 @@ cold-frame reembed                            # re-index existing notes under th
 Nothing leaves the machine (the model runs in-process). Measure the difference yourself:
 
 ```bash
-python -m cold_frame.eval.recall_bench        # recall@k: hash vs local, lexical vs paraphrase
+# from a repo checkout, not a pip/brew install: cold_frame/eval is excluded from the packaged
+# wheel/binary (ADR-D28), so run it from the clone:
+git clone https://github.com/coldzero94/cold-frame && cd cold-frame
+uv run python -m cold_frame.eval.recall_bench   # recall@k: hash vs local, lexical vs paraphrase
 ```
 
 The default `HashEmbedder` scores ~100% recall on lexical queries but ~33% on paraphrases; the local

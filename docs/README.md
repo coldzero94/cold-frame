@@ -37,12 +37,12 @@
 ## 상태
 - ✅ 결정: 전략·저장(SQLite)·패키징(코어/서버 분리)·배포(uv)·언어(Python)·Claude Code 연동(MCP)·노트입자·write·procedural.
 - ✅ 채움: 검색·랭킹 세부(SPEC §5), 프로그램 화면(로컬 웹 UI, §9), eval 케이스(§10).
-- ⏸️ **코드는 기획 완료 후.**
+- ✅ **코드 완료: P1–P6 빌드 + v0.1.0 출시** (Homebrew 바이너리 배포, ADR-D28). 현재 상태 단일 출처 = 루트 `CLAUDE.md`(Status).
 
 ## 하드닝 / 빌드 스펙 (2026-06-21, P1 직전 심화 — wf_9cebead0)
 - [`risks.md`](risks.md) — 리스크 레지스터 (CRITICAL C1~C4 + HIGH/MED/LOW). B1~B7 blocking decisions = ✅ 확정(D21).
 - [`security-spec.md`](security-spec.md) — 보안 계약(purge invariant·crypto-shredding / localhost CSRF / MCP 위협 / 키 lifecycle / import sandbox)
-- [`build/prompts.md`](build/prompts.md) · [`build/data-layer.md`](build/data-layer.md) · [`build/read-and-budget.md`](build/read-and-budget.md) · [`build/api-contract.md`](build/api-contract.md) · [`build/eval-and-reliability.md`](build/eval-and-reliability.md) — 미명세 핵심의 구체 빌드 스펙(코딩 시 SPEC와 함께 봄)
+- [`build/prompts.md`](build/prompts.md) · [`build/data-layer.md`](build/data-layer.md) · [`build/read-and-budget.md`](build/read-and-budget.md) · [`build/api-contract.md`](build/api-contract.md) · [`build/eval-and-reliability.md`](build/eval-and-reliability.md) — 미명세 핵심의 구체 빌드 스펙(코딩 시 SPEC와 함께 봄). ⚠️ 이 build/* 스펙은 **빌드 전에 고정**된 것이라 일부는 코드와 드리프트됨 — 비준된 시임(G2~G5, MCP/LLM/UI 표면)은 **코드가 최종**(CLAUDE.md §1). `api-contract.md`/`eval-and-reliability.md` 상단의 SUPERSEDED 배너 참조.
 
 ## 코딩 운영 (P1 직전, 2026-06-21)
 - [`../CLAUDE.md`](../CLAUDE.md) — **코딩 운영 매뉴얼** (불변식 I1~I17 · TDD 워크플로 · 컨벤션 · 안티패턴 · 빌드순서 · 명령어 · 가드레일). 매 세션 로드됨.

@@ -1,5 +1,7 @@
 # cold-memo: LLM/에이전트 메모리 시스템 비교 분석 및 BUILD vs USE 의사결정 보고서
 
+> ⚠️ HISTORICAL analysis (2026-06, pre-SPEC, "cold-memo" working name) — superseded by SPEC.md + code (CLAUDE.md §1).
+
 > 대상 독자: vessl.ai에서 greenfield 프로젝트 "cold-memo"를 시작하는 인프라 엔지니어
 > 작성 기준일: 2026-06-21. 모든 수치/주장은 제공된 검증(verification `checks`) 결과에 따라 교정·표기했습니다.
 

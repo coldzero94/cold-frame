@@ -1,5 +1,7 @@
 # cold-memo: 제품 설계 문서 (v0.1)
 
+> ⚠️ HISTORICAL analysis (2026-06, pre-SPEC, "cold-memo" working name) — superseded by SPEC.md + code (CLAUDE.md §1).
+
 > 청사진(`docs/blueprint-combine-the-best.md`)을 실제 구현 가능한 설계로 구체화. 로컬 우선·단일 사용자로 시작, 프로덕션급 지향(추후 출시 여지).
 > 결정 반영(2026-06-21): **단위 = atomic fact + 경량 edge**, **write = 하이브리드(파이프라인 추출 기본 + LLM self-edit 도구)**, **procedural memory v1 포함**.
 
@@ -167,7 +169,9 @@ CREATE INDEX idx_notes_type   ON notes(memory_type, status);
 CREATE VIRTUAL TABLE note_fts USING fts5(content, keywords, tags, content='notes', content_rowid='rowid');
 
 -- 벡터 (sqlite-vec): note id ↔ embedding, 동일 트랜잭션 dual-write
-CREATE VIRTUAL TABLE note_vec USING vec0(note_id TEXT PRIMARY KEY, embedding FLOAT[1536]);
+-- ^ SUPERSEDED: the hardcoded FLOAT[1536] violates CLAUDE.md I8 — the shipped vec0 dim is
+--   Embedder.meta.dim (256 for the default HashEmbedder), written at migrate time, never a literal.
+CREATE VIRTUAL TABLE note_vec USING vec0(note_id TEXT PRIMARY KEY, embedding FLOAT[{meta.dim}]);
 
 CREATE TABLE edges (
   src_id TEXT, dst_id TEXT, relation TEXT, weight REAL DEFAULT 1.0,

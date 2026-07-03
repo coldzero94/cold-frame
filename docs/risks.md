@@ -1,5 +1,7 @@
 # Coldframe 리스크 레지스터 (P1 하드닝)
 
+> ⚠️ HISTORICAL — the 🔴/🟡/🟢 statuses are a point-in-time (pre-P1) snapshot. C1–C4 and L1 are all RESOLVED in v0.1.0; see CLAUDE.md Status. Kept as a record, not current.
+
 ## Coldframe 리스크 레지스터 (P1 코딩 전 하드닝, 4개 감사 dedup·병합)
 
 > 우선순위: CRITICAL → HIGH → MEDIUM → LOW. 동일 이슈가 여러 렌즈에서 잡힌 경우 1행으로 병합(렌즈 출처는 영역에 표기). 상태: 🔴미해결(BLOCKER) / 🟡스펙필요 / 🟢방향확정(스펙화만).
