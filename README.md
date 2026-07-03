@@ -42,8 +42,8 @@ cold-frame search "what coffee do I like?"
 cold-frame doctor          # health: counts, integrity, embedder
 ```
 
-*(Install: `brew install coldzero94/coldframe/cold-frame` (macOS + Linux), or download the
-self-contained binary for your platform from the
+*(Install: `brew install coldzero94/coldframe/cold-frame` (Apple Silicon macOS + Linux x86_64), or
+download the self-contained binary for your platform from the
 [latest release](https://github.com/coldzero94/cold-frame/releases/latest) — CLI + MCP in one file,
 no Python needed. The optional `[crypto]` (at-rest encryption) and `[local-llm]` (semantic recall)
 extras aren't in the binary; install from source for those — see [`examples/`](examples/).)*

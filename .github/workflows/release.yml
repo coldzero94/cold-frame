@@ -31,8 +31,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: macos-14, target: macos-arm64 }
-          - { os: macos-13, target: macos-x86_64 }
+          - { os: macos-14, target: macos-arm64 } # Apple Silicon (Intel Macs are out of scope)
           - { os: ubuntu-latest, target: linux-x86_64 }
     runs-on: ${{ matrix.os }}
     permissions:

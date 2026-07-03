@@ -12,14 +12,11 @@ class ColdFrame < Formula
   version "0.1.0"
   license "Apache-2.0"
 
+  # macOS = Apple Silicon only (Intel Macs are out of scope for v1).
   on_macos do
     on_arm do
       url "https://github.com/coldzero94/cold-frame/releases/download/v0.1.0/cold-frame-macos-arm64"
       sha256 "744901491f18dd1c2f712510214d8cc93472ea6aedbfaeebe285cd6f62fd8bdd"
-    end
-    on_intel do
-      url "https://github.com/coldzero94/cold-frame/releases/download/v0.1.0/cold-frame-macos-x86_64"
-      sha256 "0000000000000000000000000000000000000000000000000000000000000000" # RELEASE: x86_64
     end
   end
   on_linux do
