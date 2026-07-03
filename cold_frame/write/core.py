@@ -41,7 +41,7 @@ from cold_frame.prompts.conflict import (
     build_dedup_user,
 )
 from cold_frame.store.base import Store
-from cold_frame.write.admission import Verdict, redact_pii, scan_secret
+from cold_frame.write.admission import Verdict, ambiguous_spans, redact_pii, scan_secret
 from cold_frame.write.extract import _sha256  # re-hash sources over redacted content (PII scrub)
 
 
@@ -259,10 +259,22 @@ class WriteCore:
             return ("supersede", old.id)  # new is newer → archive old, persist new
         return ("stale", ov)  # new is older → persist new bounded by old.valid_at
 
+    def _remote_egress_blocked(self, *texts: str) -> bool:
+        """True iff a REMOTE judge call must be skipped because a text carries a secret or an
+        ambiguous high-entropy span — the same egress guard ``write/extract`` applies to the remote
+        extractor (I7). A local LLM has no egress, so it is never blocked. Obvious secrets are
+        already BLOCKed pre-``_classify`` by ``_admission_block``; this closes the residual
+        ambiguous band on the judge legs so it matches the extract leg."""
+        if self._llm is None or self._llm.is_local:
+            return False
+        return any(scan_secret(t) is not None or ambiguous_spans(t) for t in texts)
+
     def _dedup_judge(self, cand: Note, existing_id: str) -> bool:
         existing = self._store.get_notes([existing_id])
         if not existing or self._llm is None:
             return False
+        if self._remote_egress_blocked(cand.content, existing[0].content):
+            return False  # fail-closed: don't ship a secret/ambiguous span to a remote judge (I7)
         result = self._llm.complete(
             task=TaskTag.DEDUP_BATCH,
             system=DEDUP_SYSTEM,
@@ -275,6 +287,8 @@ class WriteCore:
     def _conflict_judge(self, cand: Note, existing: Note) -> str:
         if self._llm is None:
             return "unrelated"
+        if self._remote_egress_blocked(cand.content, existing.content):
+            return "unrelated"  # fail-closed egress guard (I7) — same as the extract/dedup legs
         result = self._llm.complete(
             task=TaskTag.CONFLICT_JUDGE,
             system=CONFLICT_SYSTEM,

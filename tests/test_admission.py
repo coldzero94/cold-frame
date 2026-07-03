@@ -11,6 +11,7 @@ import pytest
 from cold_frame.api import Memory
 from cold_frame.exceptions import SecretBlocked
 from cold_frame.llm.base import HashEmbedder, LLMResult, TaskTag
+from cold_frame.models import ConflictVerdict
 from cold_frame.prompts.extract import ExtractionOutput
 from cold_frame.write.admission import ambiguous_spans, scan_secret
 
@@ -182,3 +183,33 @@ def test_local_extractor_may_receive_secret_bearing_chat(
     assert m._write._llm.calls == [
         TaskTag.EXTRACT
     ]  # local extraction may receive it (never leaves box)
+
+
+# ── judge legs: the dedup/conflict judge must also withhold a secret/ambiguous span from a
+# REMOTE endpoint (I7 egress consistency — the extract leg's guard, applied to the judge calls) ──
+_AMB = "C3J27XDCG2LmlZGEONYlgCtjC3J27XDCG2Lm"  # 36-char token, entropy in the ambiguous band
+
+
+def test_remote_dedup_judge_never_receives_ambiguous_span(
+    db_path: str, frozen_clock: FrozenClock
+) -> None:
+    # in-band near-dup (cosine ~0.894) carrying an ambiguous token + a REMOTE LLM → the dedup judge
+    # is skipped (fail-closed: kept distinct), the span never ships to the remote endpoint.
+    llm = ScriptedLLM({}, is_local=False)  # empty script → any complete() call AssertionErrors
+    m = Memory(db_path, embedder=HashEmbedder(), llm=llm, clock=frozen_clock)
+    m.add(f"dark roast coffee {_AMB}", raw=True)
+    res = m.add(f"dark roast coffee beans {_AMB}", raw=True)
+    assert TaskTag.DEDUP_BATCH not in llm.calls  # never shipped to the remote judge
+    assert len(res.added) == 1 and res.deduped == []  # fail-closed → kept distinct
+
+
+def test_local_dedup_judge_may_receive_ambiguous_span(
+    db_path: str, frozen_clock: FrozenClock
+) -> None:
+    # the egress guard is REMOTE-only: a LOCAL judge may see the ambiguous span (never leaves box).
+    verdict = ConflictVerdict(relation="unrelated", confidence=0.9)
+    llm = ScriptedLLM({TaskTag.DEDUP_BATCH: LLMResult(parsed=verdict)}, is_local=True)
+    m = Memory(db_path, embedder=HashEmbedder(), llm=llm, clock=frozen_clock)
+    m.add(f"dark roast coffee {_AMB}", raw=True)
+    m.add(f"dark roast coffee beans {_AMB}", raw=True)
+    assert TaskTag.DEDUP_BATCH in llm.calls  # local judge IS invoked (in-band near-dup)

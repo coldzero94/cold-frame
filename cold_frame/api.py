@@ -61,7 +61,7 @@ from cold_frame.read.retrieve import RetrievePipeline
 from cold_frame.read.strength import compute_strength
 from cold_frame.store.base import Event, Job, PurgeReport
 from cold_frame.store.sqlite import SQLiteStore
-from cold_frame.write.admission import scan_secret
+from cold_frame.write.admission import redact_pii, scan_secret
 from cold_frame.write.core import WriteCore
 from cold_frame.write.extract import extract
 
@@ -138,6 +138,7 @@ class Memory:
                 f"embedder {current.embedder_id!r} dim {current.dim} != DB meta dim {stored.dim} "
                 f"(same id, different dim — incompatible vectors)"
             )
+        self._pii_redact = pii_redact  # also applied on the update() metadata-patch path (below)
         self._write = WriteCore(
             self._store,
             embedder=self._embedder,
@@ -408,9 +409,27 @@ class Memory:
                 f"update: unsupported field(s) {sorted(bad)} — use update_fact/forget for those"
             )
         old = self.get(id)  # raises NoteNotFound
+        if self._pii_redact:
+            fields = self._redact_update_fields(fields)  # this path bypasses WriteCore._redact
         updated = old.model_copy(update={**fields, "version": old.version + 1})
         self._store.update_note(updated, update_type="manual")  # CAS on version; content unchanged
         return self.get(id)
+
+    def _redact_update_fields(self, fields: dict[str, object]) -> dict[str, object]:
+        """Scrub PII from the free-text metadata an update() patches (context + keyword/tag terms,
+        which are FTS-indexed) when ``pii_redact`` is on — the parallel to WriteCore._redact."""
+        assert self._pii_redact is not None
+        out = dict(fields)
+        ctx = out.get("context")
+        if isinstance(ctx, str):
+            out["context"] = redact_pii(ctx, self._pii_redact)[0]
+        for key in ("keywords", "tags"):
+            vals = out.get(key)
+            if isinstance(vals, list):
+                out[key] = [
+                    redact_pii(v, self._pii_redact)[0] if isinstance(v, str) else v for v in vals
+                ]
+        return out
 
     def delete(self, id: str, *, force: bool = False) -> None:
         """Permanently remove a note + its searchable grains (NOT revivable). Requires

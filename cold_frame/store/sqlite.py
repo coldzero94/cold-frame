@@ -1517,14 +1517,16 @@ class SQLiteStore(Store):
                     (n.id,),
                 ).rowcount
                 self._record_purge_event(n.id, ts=now)  # content-free tombstone of the purge
-            # job payloads can embed content (e.g. a queued summary) — scrub any that do
+            # a job payload that references a purged note — by id, or by echoing its content/context
+            # — is blanked WHOLE. A partial needle-replace left the note's id/keyword/tag/source.ref
+            # behind while grep_clean(content/context) still reported True (an honesty gap).
+            purged_ids = {n.id for n in notes}
             for jid, payload in self._conn.execute("SELECT id, payload FROM jobs").fetchall():
-                scrubbed = payload
-                for needle in needles:
-                    if needle and needle in scrubbed:
-                        scrubbed = scrubbed.replace(needle, "")
-                if scrubbed != payload:
-                    self._conn.execute("UPDATE jobs SET payload=? WHERE id=?", (scrubbed, jid))
+                refs = any(pid in payload for pid in purged_ids) or any(
+                    nd and nd in payload for nd in needles
+                )
+                if refs:
+                    self._conn.execute("UPDATE jobs SET payload='{}' WHERE id=?", (jid,))
                     rows += 1
         # compact so freed pages (zeroed by secure_delete=ON) leave no recoverable residue, then
         # flush to the main db and truncate the WAL before grep-verifying the live files (§7).

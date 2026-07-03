@@ -97,4 +97,25 @@ def test_correct_memory_redacts_pii_on_the_supersede_path(db_path: str) -> None:
     nid = m.add("I deploy this repo").added[0].id
     m.correct_memory(nid, "actually email me at dave@corp.com from now on")
     assert all("dave@corp.com" not in n.content for n in m.list_active())  # redacted in-place
+
+
+def test_update_metadata_redacts_pii_when_enabled(db_path: str) -> None:
+    # update() patches free-text metadata (context/keywords) straight to the store, bypassing
+    # WriteCore._redact — with redaction ON it must still scrub PII (else it re-enters FTS).
+    m = Memory(db_path, pii_redact=frozenset({"email"}))
+    nid = m.add("some benign fact").added[0].id
+    m.update(nid, context="reach me at erin@corp.com", keywords=["erin@corp.com", "contact"])
+    n = m.get(nid)
+    assert "erin@corp.com" not in n.context and "[email]" in n.context
+    assert all("erin@corp.com" not in k for k in n.keywords)  # keyword PII scrubbed (FTS-indexed)
+    assert not m.search("erin@corp.com").hits  # never FTS-indexed
+    assert b"erin@corp.com" not in _db_bytes(db_path)  # never on disk
+
+
+def test_update_metadata_kept_verbatim_when_redaction_off(db_path: str) -> None:
+    # default (redaction OFF): a personal store keeps your own contact facts, incl. via update().
+    m = Memory(db_path)
+    nid = m.add("some benign fact").added[0].id
+    m.update(nid, context="reach me at frank@corp.com")
+    assert "frank@corp.com" in m.get(nid).context
     assert b"dave@corp.com" not in _db_bytes(db_path)  # and absent from disk

@@ -334,6 +334,20 @@ def test_purge_scrubs_job_payloads(store: SQLiteStore, db_path: str) -> None:
     assert _SECRET.encode() not in _db_bytes(db_path)
 
 
+def test_purge_blanks_job_payloads_referencing_the_note(store: SQLiteStore, db_path: str) -> None:
+    # honesty gap: the old needle-replace only scrubbed a job payload's content/context echoes, so
+    # a payload referencing the note by ID (and its keyword/tag/source.ref) survived while
+    # grep_clean(content/context) still reported True. A referencing payload is now blanked WHOLE.
+    store.add_note(_note("s5", "benign content"), HashEmbedder().embed_one("benign content"))
+    store.enqueue("consolidate", {"note_id": "s5", "kw": "DISTINCT_KEYWORD_XYZ"})
+
+    report = store.purge("s5")
+
+    assert report.grep_clean is True
+    payloads = [r["payload"] for r in store._conn.execute("SELECT payload FROM jobs").fetchall()]
+    assert all("s5" not in p and "DISTINCT_KEYWORD_XYZ" not in p for p in payloads)
+
+
 def test_purge_cascade_removes_derivatives(store: SQLiteStore, db_path: str) -> None:
     # a semantic summary S derived_from the secret episodic note X — purging X (cascade) must
     # also remove S, else the secret survives in its derivative.
