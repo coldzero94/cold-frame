@@ -57,7 +57,7 @@ class ColdFrame < Formula
   end
 
   test do
-    assert_match version, shell_output("#{bin}/cold-frame --version")
+    assert_match "${VERSION}", shell_output("#{bin}/cold-frame --version")
   end
 
   def caveats
