@@ -49,9 +49,16 @@ jobs:
       - name: mypy (strict)
         run: mypy cold_frame
 
-      - name: pytest (core, offline)
-        # No keys, no network: exclude slow + live markers.
-        run: pytest -q -m "not slow and not live"
+      - name: pytest (core, offline) + coverage floor
+        # No keys, no network: exclude slow + live markers. --cov-fail-under guards regression;
+        # the README badge shows the current number (refresh it when it moves — see CONTRIBUTING).
+        run: pytest -q -m "not slow and not live" --cov=cold_frame --cov-report=term --cov-fail-under=85
+
+      - name: Coverage table in the job summary
+        if: always() # most useful exactly when the floor just failed
+        run: |
+          { echo '### Coverage (core gate)'; python -m coverage report --format=markdown; } \
+            >> "$GITHUB_STEP_SUMMARY" || true
 
       - name: At-rest encryption tests ([crypto] — SQLCipher wheel, Linux)
         # The prebuilt sqlcipher3 wheel exists for Linux x86_64; install it so the encryption tests

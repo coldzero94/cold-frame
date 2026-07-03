@@ -20,6 +20,11 @@ uv run mypy cold_frame
 uv run pytest -m "not slow"             # deterministic mock-LLM + HashEmbedder tests
 ```
 
+Coverage: CI enforces a floor (`--cov-fail-under=85`, core gate only — extra-gated modules like
+`[crypto]`/`[local-llm]` skip there). Check it locally with
+`uv run pytest -m "not slow" --cov=cold_frame --cov-report=term-missing`; if the TOTAL moves,
+update the README coverage badge to match.
+
 ## How we work
 
 - **TDD, small commits.** Write the failing test first (engine behavior → a golden case in
