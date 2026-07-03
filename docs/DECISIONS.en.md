@@ -26,11 +26,11 @@ does not block shipping.
 
 The always-on admission control is a **deterministic secret-BLOCK** (regex + entropy scan for API
 keys / tokens / private keys, blocked before disk, zero LLM calls). PII redaction
-(email/phone/card/ssn), a consent/confidence gate, at-rest encryption (`[crypto]` = SQLCipher,
-whole DB + WAL + snapshots), and whole-DB key rotation (`cold-frame rekey`) are all **built but
-OPT-IN** — a personal store keeps your own contact facts by default. Still deferred to v1.1 / a
-hosted layer: *per-note* envelope crypto-shred. Rationale: v1 is a local, single-user, user-owned
-file — low exposure surface. A grep-verified hard `purge` exists for manual removal.
+(email/phone/card/ssn) and a consent/confidence gate are **built but OPT-IN** — a personal store
+keeps your own contact facts by default. (At-rest encryption + `cold-frame rekey`, once built opt-in
+here, were later **REMOVED** — see D29; *per-note* envelope crypto-shred was never built.) Rationale:
+v1 is a local, single-user, user-owned file — low exposure surface. A grep-verified hard `purge`
+exists for manual removal, and OS full-disk encryption covers at-rest.
 
 ## D26 — Automatic memory (the product)
 
@@ -62,5 +62,16 @@ Distribution is a **Homebrew tap + GitHub Release binaries** — a self-containe
 per platform (CLI + MCP server + web UI in one file, no Python at runtime). PyPI publishing was
 dropped (trusted-publisher registration blocked; a venv-style Homebrew formula can't fetch deps in
 Homebrew's network-sandboxed build). Platforms: macOS Apple Silicon + Linux x86_64 (Intel Mac is
-out of scope). The optional `[crypto]`/`[local-llm]` extras are not in the binary — install those
-from source (`pip install 'cold-frame[extra] @ git+https://github.com/coldzero94/cold-frame'`).
+out of scope). The optional `[local-llm]` extra is not in the binary — install it from source
+(`pip install 'cold-frame[local-llm] @ git+https://github.com/coldzero94/cold-frame'`).
+
+## D29 — Remove at-rest encryption (2026-07-03)
+
+Reverses D27's "keep crypto dormant". The at-rest encryption seam (the `[crypto]` SQLCipher extra,
+the `encrypt`/`rekey` CLI commands, `Memory(encryption_key=…)` / `$COLD_FRAME_KEY`, and the keyed
+connection/snapshot paths) is **removed entirely** — code and docs, −474 lines. For a local
+single-user file it added ~0 value: OS full-disk encryption (FileVault/LUKS) already covers the
+stolen-laptop threat, and the grep-verified plaintext `Store.purge` covers deliberate deletion. It
+was pure maintenance + doc surface. v1's security value is unchanged — the deterministic pre-disk
+secret-BLOCK plus grep-verified hard `purge`. If real at-rest encryption is ever needed it returns
+in the hosted `[server]` layer, not local v1.

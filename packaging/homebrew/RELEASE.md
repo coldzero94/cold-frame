@@ -63,8 +63,8 @@ claude mcp add cold-frame -- cold-frame mcp
 ## Notes
 
 - The binary bundles the **`[mcp]` extra** so `cold-frame mcp` (the auto-capture drain + Claude Code
-  memory tools) works immediately. It does NOT bundle the optional `[crypto]` (at-rest encryption) or
-  `[local-llm]` (semantic recall) extras — those need a from-source install.
+  memory tools) works immediately. It does NOT bundle the optional `[local-llm]` (semantic recall)
+  extra — that needs a from-source install.
 - Docker is intentionally NOT a distribution target for the local tool: the MCP server is a stdio
   subprocess Claude Code spawns, and memory is a user-owned local file (~/.cold-frame) — a container
   breaks the stdio pipe, the file ownership, and the ~/.claude hooks. Docker fits only the future

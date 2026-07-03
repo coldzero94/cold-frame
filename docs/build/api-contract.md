@@ -136,7 +136,6 @@ class Memory:
         clock: "Clock | None" = None,       # injected time (G6); default SystemClock
         consolidate_every: int | None = None,            # auto-consolidate cadence (writes)
         pii_redact: "frozenset[PiiCategory] | None" = None,  # opt-in PII scrub (off by default)
-        encryption_key: str | None = None,  # opt-in at-rest encryption ([crypto]); else $COLD_FRAME_KEY
     ) -> None: ...
     # On init: open Store, run Store.migrate() (idempotent), assert embedder dim matches DB
     # metadata (see Store.embedder_meta); if mismatch → raise EmbedderMismatchError.

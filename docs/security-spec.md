@@ -4,16 +4,15 @@
 
 ## 1. Purge Invariant (C2 / D16·D21-B2) — "secret 제거" 보증
 - **1차 방어 = pre-write BLOCK (D15/D-T3)**: secret/credential은 admission에서 차단, **디스크 미접촉이 원칙** (가장 강한 보증).
-- **2차 = crypto-shredding**: 모든 fact 변경은 `events` 로그에 **per-event 키로 암호화** 저장. "forget+cascade(`derived_from`)" = 키 파기 → append-only 불변(B1=A) 유지하며 평문 복구 불가. (append-only ↔ hard-purge 모순 동시 해소)
+- **2차 = 평문 하드-스크럽**(`Store.purge`, I2/I17 carve-out): append-only 이벤트로그(`events.payload`)를 포함해 모든 grain에서 평문을 삭제 + `secure_delete`/VACUUM/WAL checkpoint(TRUNCATE) 후 live `.db`/`.db-wal`에서 원문 부재를 **grep-검증**. (append-only ↔ hard-purge 모순은 payload 스크럽으로 해소. 원안의 per-event 암호화 crypto-shred는 구현 안 됐고 D29에서 확정 제거.)
 - **purge 대상 전수 열거**(키 파기 + 추가 스크럽): `notes`, `note_fts`+FTS5 shadow(명시적 delete+optimize), `note_vec`(임베딩 역추론 방지), `note_history.snapshot`, `sources`, `edges`, `events.payload`, `jobs.payload`, export 번들.
 - **전제**: `PRAGMA secure_delete=ON` + WAL checkpoint(TRUNCATE).
-- **honest scope**: "삭제 증명"은 **live DB 파일** 범위만. OS 스냅샷/Time Machine/백업/free-list는 보증 못 함 → 명시 disclaim + at-rest 암호화 권장. ("증명"이 허위보증 되지 않게.)
+- **honest scope**: "삭제 증명"은 **live DB 파일** 범위만. OS 스냅샷/Time Machine/백업/free-list는 보증 못 함 → 명시 disclaim + OS 풀디스크 암호화(FileVault/LUKS) 권장. ("증명"이 허위보증 되지 않게.)
 
-## 2. Encryption at rest (H13 / D16)
-- opt-in **SQLCipher**(AES-256 full-DB), `cold-frame init --encrypt`. **기본은 평문**(grep 가능·"한 파일 소유" 서사 보존).
-- 키: OS 키체인(macOS Keychain/Secure Enclave 우선; Linux libsecret / Windows DPAPI). **`.db` 옆 저장 금지.**
-- **recovery code 필수**(키체인 분실 대비 passphrase fallback) — 없으면 데이터 영구 손실.
-- cross-process 키 획득 + WAL semantics 명세(워커/UI/MCP가 같은 키).
+## 2. At-rest 보호 — 앱 내 암호화 제거됨 (D29, D16/D21-B2 역전)
+- **at-rest 암호화(SQLCipher)는 제거됨**(ADR-D29). 로컬 단독 단일 `.db`엔 OS 풀디스크 암호화가 stolen-laptop을 이미 커버하고, 의도적 삭제는 §1의 평문 `purge`(grep-검증)가 커버 → 앱 내 암호화는 v1 가치 ~0인 유지보수·문서 표면이었음.
+- **권장:** `~/.cold-frame/memory.db`를 OS-암호화 디스크(FileVault/LUKS)에 둘 것. 기본은 평문(grep 가능·"한 파일 소유" 서사 보존, 관리할 두 번째 키 없음).
+- 진짜 서버-측 암호화가 필요해지면 hosted `[server]` 레이어에서 다룸(로컬 v1 아님).
 
 ## 3. 로컬 UI 보안 계약 (H8) — UI는 실제로 *write API*다
 ux의 pin/forget/revive/edit/merge/resolve/import는 mutating → "read-mostly"가 아니라 **write API**. 무방비 시 drive-by(사용자가 다른 사이트 브라우징)로 corpus wipe/exfiltrate 가능 → "소유 메모리" 브랜드 종말.

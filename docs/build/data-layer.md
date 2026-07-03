@@ -413,11 +413,11 @@ in BEGIN IMMEDIATE:
 commit
 PRAGMA wal_checkpoint(TRUNCATE)     # WAL 잔여 제거
 PRAGMA secure_delete=ON; VACUUM     # free page overwrite
-post-purge grep 검증: 원본 토큰이 .db/.db-wal/export에 0회 (SQLCipher면 이 단계 N/A)
+post-purge grep 검증: 원본 토큰이 .db/.db-wal/export에 0회
 ```
 - **HLC/sync 연속성:** purge는 해당 entity의 events를 제거하므로, 이미 sync한 디바이스에는 **purge-tombstone 이벤트**(op='purge', payload=tombstone)를 새로 발행 → 원격도 같은 entity_id 제거(v2). v1은 sync 없으므로 로컬 제거만.
 - **BLOCK vs purge 관계(finding):** D-T3 BLOCK(pre-disk)이 정상 경로 — secret은 애초에 안 들어옴(tombstone만). D-T5 purge는 **late-detected secret/PII**(나중에 룰 업데이트로 발견) 전용 클린업 경로. 둘 다 명세에 공존하되 역할 분리.
-- **SQLCipher(D-T6) 시:** 전체 DB가 AES-256이라 grep-verify 단계는 무의미(평문 잔여 없음) → 논리 삭제 + VACUUM만으로 충분, grep 단계 skip.
+- **at-rest 암호화(D-T6/SQLCipher)는 제거됨**(ADR-D29) → purge는 항상 평문 grep-verify 경로. at-rest 보호는 OS 풀디스크 암호화 권장.
 
 ---
 

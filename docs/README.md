@@ -41,7 +41,7 @@
 
 ## 하드닝 / 빌드 스펙 (2026-06-21, P1 직전 심화 — wf_9cebead0)
 - [`risks.md`](risks.md) — 리스크 레지스터 (CRITICAL C1~C4 + HIGH/MED/LOW). B1~B7 blocking decisions = ✅ 확정(D21).
-- [`security-spec.md`](security-spec.md) — 보안 계약(purge invariant·crypto-shredding / localhost CSRF / MCP 위협 / 키 lifecycle / import sandbox)
+- [`security-spec.md`](security-spec.md) — 보안 계약(purge invariant / localhost CSRF / MCP 위협 / import sandbox)
 - [`build/prompts.md`](build/prompts.md) · [`build/data-layer.md`](build/data-layer.md) · [`build/read-and-budget.md`](build/read-and-budget.md) · [`build/api-contract.md`](build/api-contract.md) · [`build/eval-and-reliability.md`](build/eval-and-reliability.md) — 미명세 핵심의 구체 빌드 스펙(코딩 시 SPEC와 함께 봄). ⚠️ 이 build/* 스펙은 **빌드 전에 고정**된 것이라 일부는 코드와 드리프트됨 — 비준된 시임(G2~G5, MCP/LLM/UI 표면)은 **코드가 최종**(CLAUDE.md §1). `api-contract.md`/`eval-and-reliability.md` 상단의 SUPERSEDED 배너 참조.
 
 ## 코딩 운영 (P1 직전, 2026-06-21)

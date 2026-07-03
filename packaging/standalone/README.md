@@ -27,7 +27,7 @@ run from the single file (`cold-frame mcp` starts with the bundled mcp/anyio/sta
 
 ## Known costs / gotchas
 
-- **Size**: ~20 MB (numpy + the mcp/cryptography tree). Inherent to bundling the interpreter + deps.
+- **Size**: ~20 MB (numpy + the mcp tree). Inherent to bundling the interpreter + deps.
 - **macOS Gatekeeper**: a downloaded unsigned binary is quarantined. For real distribution it must be
   **codesigned + notarized** with an Apple Developer ID (an Apple Developer account cost), else users
   hit "cannot be opened". That step is part of the release pipeline, not this script.
@@ -40,8 +40,8 @@ run from the single file (`cold-frame mcp` starts with the bundled mcp/anyio/sta
 
 - This binary **is the primary artifact**: the release tag attaches it to the GitHub Release and the
   Homebrew tap (`brew install coldzero94/coldframe/cold-frame`) installs it. **There is no PyPI.**
-- Install **from git source** only for the optional extras that aren't frozen into the binary
-  (`[crypto]` = SQLCipher, `[local-llm]`): `uv tool install "cold-frame[crypto] @
+- Install **from git source** only for the optional `[local-llm]` extra (semantic recall) that
+  isn't frozen into the binary: `uv tool install "cold-frame[local-llm] @
   git+https://github.com/coldzero94/cold-frame"`.
 - The raw binary (curl the Release asset) is for **reach** — non-Python users, locked-down machines,
   a zero-prerequisite demo — the same file the tap ships.

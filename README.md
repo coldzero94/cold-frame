@@ -58,8 +58,8 @@ cold-frame doctor          # health: counts, integrity, embedder
 *(Install: `brew install coldzero94/coldframe/cold-frame` (Apple Silicon macOS + Linux x86_64), or
 download the self-contained binary for your platform from the
 [latest release](https://github.com/coldzero94/cold-frame/releases/latest) — CLI + MCP in one file,
-no Python needed. The optional `[crypto]` (at-rest encryption) and `[local-llm]` (semantic recall)
-extras aren't in the binary; install from source for those — see [`examples/`](examples/).)*
+no Python needed. The optional `[local-llm]` (semantic recall) extra isn't in the binary; install
+from source for that — see [`examples/`](examples/).)*
 
 ## Why coldframe
 
@@ -85,10 +85,9 @@ extras aren't in the binary; install from source for those — see [`examples/`]
   (per-scope caps), so the active set never grows without bound. Forgetting *archives* — nothing is
   truly deleted, and obvious secrets (API keys, tokens, private keys) are blocked before they ever
   touch disk. PII redaction (email/phone/card/ssn) is available **opt-in** (`add --redact-pii`, or
-  `Memory(pii_redact=…)`) — off by default so a personal store keeps your own contact facts.
-  **At-rest encryption** is available opt-in too (a from-source install with the `[crypto]` extra) —
-  a key via `Memory(encryption_key=…)` or `$COLD_FRAME_KEY` encrypts the whole DB (+ WAL + snapshots)
-  with SQLCipher (set at creation; the default stays plaintext + zero-config).
+  `Memory(pii_redact=…)`) — off by default so a personal store keeps your own contact facts. For
+  at-rest protection, the DB is a single local file — put it on an OS-encrypted disk (FileVault /
+  LUKS), which covers the stolen-laptop threat without a second key to manage.
 - **Per-project + global** — facts are tagged by git project; clear personal facts go to a global
   tier recalled everywhere.
 - **Semantic recall (opt-in)** — the zero-config default recall is lexical (offline `HashEmbedder`,
@@ -125,10 +124,10 @@ you can browse facts and pin / correct / forget them (writes are CSRF-guarded an
 ## Status
 
 The engine, CLI, MCP server, Claude Code plugin, deterministic pre-disk secret-blocking +
-grep-verified hard-purge, opt-in PII redaction + at-rest encryption (+ `encrypt` migration and
-`rekey` rotation), an admission confidence-gate + opt-in consent hold, idempotent event-log replay
-import, and a local web UI are built and tested end-to-end on a fully offline gate (`ruff` +
-`mypy --strict` + ~410 deterministic mock-LLM tests green on a 3.12/3.13 CI matrix). The automatic
+grep-verified hard-purge, opt-in PII redaction, an admission confidence-gate + opt-in consent hold,
+idempotent event-log replay import, and a local web UI are built and tested end-to-end on a fully
+offline gate (`ruff` + `mypy --strict` + ~420 deterministic mock-LLM tests green on a 3.12/3.13 CI
+matrix). The automatic
 recall + capture loop is verified end-to-end against real Claude Code. Distributed as a self-contained
 binary via Homebrew + GitHub Releases (not PyPI).
 

@@ -82,8 +82,8 @@ observation log); link last. 90/10: insight first, promo last.
 - [x] **Release** — DONE (v0.1.0): `git tag v0.1.0` → `release.yml` builds the per-platform binaries
       (macos-arm64, linux-x86_64), attaches them to the GitHub Release, and the tap auto-bumps
       (`packaging/homebrew/bump-tap.sh`). Verify on a clean machine: `brew install
-      coldzero94/coldframe/cold-frame` + `claude plugin install`. NO PyPI (ADR-D28); `[crypto]`/
-      `[local-llm]` extras are from-source (`uv tool install "cold-frame[...] @ git+…"`).
+      coldzero94/coldframe/cold-frame` + `claude plugin install`. NO PyPI (ADR-D28); the
+      `[local-llm]` extra is from-source (`uv tool install "cold-frame[local-llm] @ git+…"`).
 - [ ] **Pre-launch** — README rewind GIF (record [`demo.md`](demo.md) §B); MCP registries; submit to
       the Anthropic community directory; seed the X account with 3–5 build-in-public posts.
 - [ ] **Soft launch** — r/ClaudeAI + r/mcp value posts; fix the top-3 friction points.

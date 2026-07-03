@@ -40,7 +40,7 @@ A single git repo can be both the marketplace and host the plugin. Coldframe use
    ```
    Prerequisite: the `cold-frame` CLI must be on PATH — `brew install
    coldzero94/coldframe/cold-frame` (primary, ADR-D28), the standalone binary from the GitHub
-   Release, or from source for the `[mcp]`/`[crypto]` extras (`uv tool install "cold-frame[mcp] @
+   Release, or from source for the `[mcp]`/`[local-llm]` extras (`uv tool install "cold-frame[mcp] @
    git+https://github.com/coldzero94/cold-frame"`; NO PyPI) — the plugin is the integration layer,
    the package is the engine.
 5. **Manage / update**:

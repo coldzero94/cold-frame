@@ -4,7 +4,15 @@ All notable changes to coldframe. Format loosely follows [Keep a Changelog]; ver
 
 ## [Unreleased]
 
-_Nothing yet._
+### Removed
+
+- **At-rest encryption (SQLCipher) is removed** (ADR-D29, reverses D27's "keep dormant"): the
+  `[crypto]` extra, the `encrypt`/`rekey` CLI commands, `Memory(encryption_key=…)` / `$COLD_FRAME_KEY`,
+  and the keyed connection/snapshot paths — −474 lines. For a local single-user file it added ~0
+  value (OS full-disk encryption already covers stolen-laptop; the plaintext `purge` covers
+  deliberate deletion) and was pure maintenance + doc surface. v1's at-rest story is now: keep the
+  one `~/.cold-frame/memory.db` on an OS-encrypted disk. Unchanged: the deterministic pre-disk
+  secret-BLOCK + grep-verified hard `purge` (the actual v1 security value).
 
 ## [0.1.1] — 2026-07-03
 
