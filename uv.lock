@@ -251,7 +251,6 @@ wheels = [
 
 [[package]]
 name = "cold-frame"
-version = "0.1.1"
 source = { editable = "." }
 dependencies = [
     { name = "numpy" },
@@ -307,7 +306,7 @@ requires-dist = [
     { name = "tiktoken", marker = "extra == 'openai'", specifier = ">=0.7" },
     { name = "uvicorn", marker = "extra == 'server'", specifier = ">=0.29" },
 ]
-provides-extras = ["openai", "local-llm", "vec", "mcp", "server", "dev"]
+provides-extras = ["dev", "local-llm", "mcp", "openai", "server", "vec"]
 
 [[package]]
 name = "colorama"

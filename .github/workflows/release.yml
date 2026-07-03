@@ -23,9 +23,10 @@ jobs:
       # tap formula whose `brew test` fails. Fail fast, before anything is published.
       - name: Guard — tag matches the package version
         run: |
-          V="$(grep -m1 '^version = ' pyproject.toml | cut -d'"' -f2)"
-          [ "v$V" = "$GITHUB_REF_NAME" ] || { echo "::error::tag $GITHUB_REF_NAME != pyproject \
-          version $V — bump pyproject.toml, cold_frame/__init__.py, tests/test_smoke.py"; exit 1; }
+          # version is single-sourced in cold_frame/__init__.py (pyproject reads it via hatch)
+          V="$(grep -m1 '^__version__' cold_frame/__init__.py | cut -d'"' -f2)"
+          [ "v$V" = "$GITHUB_REF_NAME" ] || { echo "::error::tag $GITHUB_REF_NAME != package \
+          version $V — bump cold_frame/__init__.py:__version__"; exit 1; }
       - name: Create the GitHub Release
         uses: softprops/action-gh-release@v2
         with:

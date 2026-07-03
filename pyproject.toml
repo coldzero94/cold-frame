@@ -4,7 +4,9 @@ build-backend = "hatchling.build"
 
 [project]
 name = "cold-frame"
-version = "0.1.1"
+# Version is single-sourced from cold_frame/__init__.py:__version__ (hatch reads it, below) — the
+# ONE place to bump. No hand-synced literals in pyproject/tests (that triplication reddened main).
+dynamic = ["version"]
 description = "A local-first, ownable memory layer for LLM agents — combine-the-best of mem0/Letta/Zep/A-MEM, engineered as one SQLite file."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -47,6 +49,9 @@ Changelog = "https://github.com/coldzero94/cold-frame/blob/main/CHANGELOG.md"
 
 [project.scripts]
 cold-frame = "cold_frame.cli:main"
+
+[tool.hatch.version]
+path = "cold_frame/__init__.py"  # single source of truth for the version (regex on __version__)
 
 [tool.hatch.build.targets.wheel]
 packages = ["cold_frame"]

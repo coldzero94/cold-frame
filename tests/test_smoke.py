@@ -8,7 +8,9 @@ the deterministic L2-normalized HashEmbedder.
 
 from __future__ import annotations
 
+import importlib.metadata
 import inspect
+import re
 from datetime import UTC, datetime
 from typing import get_args
 
@@ -25,7 +27,10 @@ from cold_frame.store.base import Store
 
 # ── package surface ──────────────────────────────────────────────────────────
 def test_package_imports_and_exports() -> None:
-    assert cold_frame.__version__ == "0.1.1"
+    # version is single-sourced in __init__.__version__ (pyproject reads it via hatch dynamic);
+    # assert the shape + that the INSTALLED dist metadata agrees (catches a stale build / bad bump)
+    assert re.fullmatch(r"\d+\.\d+\.\d+", cold_frame.__version__), cold_frame.__version__
+    assert cold_frame.__version__ == importlib.metadata.version("cold-frame")
     for name in ("Memory", "Note", "Scope", "Source", "SearchResult", "__version__"):
         assert hasattr(cold_frame, name), name
     # the public symbols resolve to real objects
