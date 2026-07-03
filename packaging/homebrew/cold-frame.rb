@@ -23,7 +23,7 @@ class ColdFrame < Formula
   end
   on_linux do
     url "https://github.com/coldzero94/cold-frame/releases/download/v0.1.0/cold-frame-linux-x86_64"
-    sha256 "db65d271afdf45dec797e17e63f1829141e423125bac3148f869edaad95a83f9"
+    sha256 "1b4e61b23c5795214f96552a905f13875c9285e624e82f1f2bbfaf53b43bd1ea"
   end
 
   def install
