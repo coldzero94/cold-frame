@@ -1,9 +1,9 @@
 name: Release
 
 # Fires when a version tag is pushed (e.g. `git tag v0.1.0 && git push origin v0.1.0`).
-# Publishes the wheel/sdist to PyPI via OIDC trusted publishing (no token stored in the repo —
-# configure the trusted publisher once on PyPI: project `cold-frame`, this repo, workflow `Release`,
-# environment `pypi`), and builds + attaches a standalone binary per platform to the GitHub Release.
+# Distribution is via Homebrew + direct binary download — NOT PyPI. The tag builds a self-contained
+# `cold-frame` binary per platform (CLI + MCP server in one file, no Python needed at runtime) and
+# attaches them to the GitHub Release; the Homebrew tap formula installs the matching binary.
 on:
   push:
     tags: ["v*"]
@@ -12,31 +12,21 @@ permissions:
   contents: read
 
 jobs:
-  pypi:
-    name: build + publish to PyPI
+  release:
+    name: create GitHub Release
     runs-on: ubuntu-latest
-    environment: pypi
     permissions:
-      id-token: write # OIDC trusted publishing
-      contents: write # create the GitHub Release
+      contents: write # create the Release the binary jobs upload to
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-        with:
-          enable-cache: true
-      - name: Build sdist + wheel
-        run: uv build
-      - name: Publish to PyPI (trusted publishing)
-        uses: pypa/gh-action-pypi-publish@release/v1
-      - name: Create GitHub Release (with the dist artifacts)
+      - name: Create the GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*
           generate_release_notes: true
 
   binaries:
     name: standalone binary (${{ matrix.target }})
-    needs: pypi
+    needs: release
     strategy:
       fail-fast: false
       matrix:
@@ -46,13 +36,13 @@ jobs:
           - { os: ubuntu-latest, target: linux-x86_64 }
     runs-on: ${{ matrix.os }}
     permissions:
-      contents: write
+      contents: write # upload the asset to the Release
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Build self-contained binary
+      - name: Build self-contained binary (CLI + MCP)
         run: bash packaging/standalone/build.sh "$PWD/dist-bin"
       - name: Name the asset per platform
         run: mv dist-bin/cold-frame "dist-bin/cold-frame-${{ matrix.target }}"
