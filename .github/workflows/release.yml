@@ -41,7 +41,23 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Build self-contained binary (CLI + MCP)
+      # The SPA bundle (cold_frame/ui/_dist) is git-ignored and built here, BEFORE the freeze —
+      # a bare checkout has an empty _dist, and shipping that would silently degrade `cold-frame ui`
+      # to the inline inspector. build.sh asserts the bundle pre-freeze AND live-serves it post-freeze.
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: frontend/package.json # packageManager lives in the frontend workspace
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - name: Build the web UI bundle (ships inside the binary)
+        run: |
+          pnpm -C frontend install --frozen-lockfile
+          pnpm -C frontend run build
+          python scripts/check_ui_bundle.py
+      - name: Build self-contained binary (CLI + MCP + web UI)
         run: bash packaging/standalone/build.sh "$PWD/dist-bin"
       - name: Name the asset per platform
         run: mv dist-bin/cold-frame "dist-bin/cold-frame-${{ matrix.target }}"

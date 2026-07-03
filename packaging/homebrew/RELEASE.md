@@ -18,8 +18,12 @@ git tag v0.1.1 && git push origin v0.1.1
 That's it. The `Release` workflow (`.github/workflows/release.yml`) then, on the tag:
 
 1. **`release`** — creates the GitHub Release (auto-generated notes).
-2. **`binaries`** — builds the standalone binary on each platform via
-   `packaging/standalone/build.sh` and attaches `cold-frame-macos-arm64` + `cold-frame-linux-x86_64`.
+2. **`binaries`** — builds the web UI bundle (`pnpm -C frontend build` — `_dist` is git-ignored, so
+   a bare checkout has none) and then the standalone binary on each platform via
+   `packaging/standalone/build.sh`, attaching `cold-frame-macos-arm64` + `cold-frame-linux-x86_64`.
+   The SPA ships *inside* the binary; `build.sh` fails loudly if the bundle is missing pre-freeze and
+   live-serves the frozen binary's UI post-freeze, so a release can never ship the degraded inline
+   inspector by accident.
 3. **`bump-tap`** — runs `packaging/homebrew/bump-tap.sh`: downloads those two assets, computes their
    `sha256`, regenerates `Formula/cold-frame.rb` in the tap repo (`coldzero94/homebrew-coldframe`)
    with the new version + urls + shas, and commits + pushes. No hand-editing of shas.
