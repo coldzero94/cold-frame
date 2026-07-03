@@ -38,7 +38,7 @@ update the README coverage badge to match.
 - **Invariants** (`CLAUDE.md` §3, I1–I17) are sacred — changing one needs an ADR in
   `docs/decisions.md`, not a quiet edit.
 - Core depends only on `pydantic` + `numpy`; anything heavier goes behind an extra
-  (`[openai]`/`[local-llm]`/`[vec]`/`[mcp]`/`[ui]`), import-guarded.
+  (`[openai]`/`[local-llm]`/`[vec]`/`[crypto]`/`[mcp]`/`[server]`), import-guarded.
 
 ## Submitting
 

@@ -19,15 +19,16 @@ The plugin is the integration layer; the engine is the `cold-frame` package. Ins
 `cold-frame` is on PATH (any one):
 
 ```bash
-uv tool install "cold-frame[mcp]"     # or: pipx install "cold-frame[mcp]"
 brew install coldzero94/coldframe/cold-frame
+# from source (not on PyPI — ADR-D28):
+#   uv tool install "cold-frame[mcp] @ git+https://github.com/coldzero94/cold-frame"
 # (or a standalone binary on PATH — see packaging/standalone/)
 ```
 
 ## Install the plugin
 
 ```bash
-claude plugin marketplace add coldzero94/coldframe      # the marketplace hosting this plugin
+claude plugin marketplace add coldzero94/cold-frame     # the marketplace hosting this plugin
 claude plugin install coldframe
 ```
 
@@ -40,13 +41,14 @@ to configure. Your memory lives in `~/.cold-frame/memory.db` (one file, yours, o
   deterministic; agent-push rides your interactive session).
 - For **deterministic high-quality** extraction you can opt into a model backend in the background
   worker (`cold-frame worker`): the `claude` CLI (`ClaudeCliLLM`, session auth — but metered as
-  programmatic usage), a local model (`[local-llm]`, free, heavier), or an API key. These are
-  opt-in; the plugin's default path costs nothing extra.
+  programmatic usage) or a local model (`[local-llm]`, free, heavier). These are opt-in; the
+  plugin's default path costs nothing extra.
 
 ## Notes
 
 - A plugin **cannot** ship a standing `CLAUDE.md` (a plugin-root CLAUDE.md is not loaded as context),
-  so the capture instruction is a **skill** (model-invoked). The `cold-frame hook install` CLAUDE.md
-  directive remains a fallback for users not using the plugin.
+  so the capture instruction is a **skill** (model-invoked). `cold-frame hook install` (which wires
+  the recall + capture-backstop hooks into `settings.json`, not CLAUDE.md) remains a fallback for
+  users not using the plugin.
 - Bundling the standalone binary in the plugin's `bin/` (so no separate `cold-frame` install) is a
   possible future enhancement; v1 references the installed `cold-frame` command.

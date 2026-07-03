@@ -46,7 +46,7 @@ class Job(BaseModel):
     """A durable background job row (I12; data-layer §1)."""
 
     id: str
-    kind: str  # consolidate | reembed | conflict_llm | dedup_llm
+    kind: str  # "consolidate" (auto) | "capture" (D26 drain) — the only kinds enqueued
     payload: dict[str, Any] = Field(default_factory=dict)
     status: Literal["pending", "running", "done", "failed", "dead"] = "pending"
     attempts: int = 0

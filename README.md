@@ -93,10 +93,11 @@ from datetime import UTC, datetime
 from cold_frame import Memory, Scope
 
 mem = Memory()                                   # ~/.cold-frame/memory.db, offline
-mem.add("I switched jobs to Anthropic in 2026.", scope=Scope(user_id="coby"))
-print(mem.search("where do I work?").hits[0].note.content)
+me = Scope(user_id="coby")
+mem.add("I switched jobs to Anthropic in 2026.", scope=me)
+print(mem.search("where do I work?", scope=me).hits[0].note.content)
 
-past = mem.search("where do I work?", as_of=datetime(2026, 3, 1, tzinfo=UTC))  # rewind
+past = mem.search("where do I work?", scope=me, as_of=datetime(2026, 3, 1, tzinfo=UTC))  # rewind
 ```
 
 See and edit your memory anytime: `cold-frame ui` — a local dashboard at `127.0.0.1:27182` where
@@ -117,6 +118,6 @@ grep-verified hard-purge, opt-in PII redaction + at-rest encryption (+ `encrypt`
 import, and a local web UI are built and tested end-to-end on a fully offline gate (`ruff` +
 `mypy --strict` + ~410 deterministic mock-LLM tests green on a 3.12/3.13 CI matrix). The automatic
 recall + capture loop is verified end-to-end against real Claude Code. Distributed as a self-contained
-binary via Homebrew + GitHub Releases (not PyPI). Planned: a write web UI.
+binary via Homebrew + GitHub Releases (not PyPI).
 
 Apache-2.0.
