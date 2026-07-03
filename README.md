@@ -17,6 +17,13 @@
   <img src="https://img.shields.io/badge/offline-no%20API%20key-0aa" alt="offline, no API key">
 </p>
 
+<p align="center">
+  <img src="assets/hero-memory-field.svg" width="840" alt="The Coldframe memory field: each ember is a memory, its warmth the strength of belief. Blue embers are fading; hexagons shelter pinned memories the cold can't reach.">
+</p>
+<p align="center">
+  <sub><i>Your memory as a banked fire — warmth is belief, the cold is forgetting. Pinned facts sit under glass; the weak gutter out.</i></sub>
+</p>
+
 ---
 
 Your agent forgets everything between sessions. **coldframe** gives it a memory that lives in one
@@ -37,9 +44,14 @@ Recall is injected at the start of every session; durable facts you state are ca
 
 **On the command line** — offline, instant:
 
+<p align="center">
+  <img src="assets/demo.svg" width="820" alt="Terminal: cold-frame add stores facts; a later session recalls them with search; list shows each memory's strength band; doctor verifies the one owned SQLite file — all offline, no key.">
+</p>
+
 ```bash
 cold-frame add "I prefer dark roast coffee."
-cold-frame search "what coffee do I like?"
+cold-frame search "dark roast coffee"
+cold-frame list            # each memory with its strength band
 cold-frame doctor          # health: counts, integrity, embedder
 ```
 
