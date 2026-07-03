@@ -69,13 +69,9 @@ EDGE_SEED_K: Final[int] = 10  # only the strongest hits seed the graph expansion
 DEDUP_NEAR_DUP: Final[float] = 0.82  # cosine >= 0.82 → near-dup candidate (LLM band floor)
 DEDUP_AUTO_MERGE: Final[float] = 0.93  # cosine >= 0.93 → auto-merge (no LLM)
 # the [0.82, 0.93) band is the ONLY band sent to the conflict/dedup LLM.
-MINHASH_THRESHOLD: Final[float] = 0.90  # MinHash Jaccard exact-ish dedup gate
 # conflict-candidate retrieval floor: same-subject contradictions ("works at X" vs
 # "works at Y") sit BELOW the dedup band (~0.75), so the CONFLICT judge casts a wider net.
 CONFLICT_CANDIDATE_FLOOR: Final[float] = 0.50
-
-# ── importance feedback EMA ──
-IMPORTANCE_EMA_ALPHA: Final[float] = 0.10
 
 # ── confidence / provenance gates (I14) ──
 CONFIDENCE_FLOOR: Final[float] = 0.40  # < 0.40 → quarantine (held_for_human), no provenance req
@@ -85,7 +81,6 @@ HASH_EMBED_DIM: Final[int] = 256  # HashEmbedder dimension (deterministic, deps=
 EMBED_METRIC: Final[str] = "cosine"
 
 # ── note granularity (SPEC §2) ──
-NOTE_MIN_CHARS: Final[int] = 15
 NOTE_MAX_CHARS: Final[int] = 80
 
 # ── durable jobs queue (I12; data-layer §3.3) ──
@@ -99,7 +94,6 @@ RETRY_BACKOFF_BASE: Final[float] = 0.05  # seconds; exponential backoff base (0.
 
 # ── access_log retention (R5; data-layer §1.2) ──
 ACCESS_LOG_CAP_PER_NOTE: Final[int] = 50  # keep at most 50 most-recent rows per note
-ACCESS_LOG_DOWNSAMPLE_DAYS: Final[float] = 90.0  # rows older than 90d → 1/day collapse
 
 # ── concurrency PRAGMAs (data-layer §3.1) ──
 BUSY_TIMEOUT_MS: Final[int] = 5000

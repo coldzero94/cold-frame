@@ -31,13 +31,15 @@ dependencies = [
 
 # Heavy / optional layers are DECOUPLED from the simple local install.
 [project.optional-dependencies]
-openai = ["openai>=1.40"]
+# OpenAI's tokenizer (tiktoken) for exact token-budget counts (TiktokenCounter); no OpenAI SDK
+# backend ships, so the extra carries tiktoken itself, NOT the openai package (nothing imports it).
+openai = ["tiktoken>=0.7"]
 local-llm = ["sentence-transformers>=3.0"]   # fully offline embeddings/LLM
 vec = ["sqlite-vec>=0.1.6"]                   # optional ANN acceleration (default is pure-numpy KNN)
 crypto = ["sqlcipher3-binary>=0.5"]           # opt-in at-rest encryption (prebuilt SQLCipher wheel)
 mcp = ["mcp>=1.2", "anyio>=4.0"]              # local stdio MCP server (cold-frame mcp); D23
 server = ["fastapi>=0.110", "uvicorn>=0.29", "psycopg[binary]>=3.1", "pgvector>=0.3"]  # the separate product layer
-dev = ["pytest>=8.0", "pytest-cov>=5", "ruff>=0.6", "mypy>=1.11", "pyyaml>=6", "hypothesis>=6", "pre-commit>=3.7"]
+dev = ["pytest>=8.0", "pytest-cov>=5", "ruff>=0.6", "mypy>=1.11", "pyyaml>=6", "pre-commit>=3.7"]
 
 [project.urls]
 Homepage = "https://github.com/coldzero94/cold-frame"

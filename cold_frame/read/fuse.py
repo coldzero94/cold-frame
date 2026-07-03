@@ -1,10 +1,11 @@
 """Reciprocal Rank Fusion (SPEC §5 step 3 / read-and-budget §5.6).
 
 Parameter-light fusion of per-channel rank lists: ``score(nid) = Σ 1/(rank + k_const)``
-with ``k_const=60`` and NO global divisor (the documented footgun). v1 fuses THREE channels:
-semantic + bm25 (unweighted) and the 1-hop graph ``edge`` channel (down-weighted by promiscuity via
-``weight_fn``; see ``retrieve.py:_edge_channel``). Ties break deterministically by recency
-(more-recent first), then id (eval-stable).
+with ``k_const=60`` and NO global divisor (the documented footgun). v1 fuses TWO channels:
+semantic + bm25 (unweighted). The ``weight_fn`` param + the ``edge`` channel branch are a RESERVED
+seam for the 1-hop graph edge recall channel cut from v1 (D27) — unused in production ``retrieve``,
+kept test-pinned for a future re-add. Ties break deterministically by recency (more-recent first),
+then id (eval-stable).
 """
 
 from __future__ import annotations

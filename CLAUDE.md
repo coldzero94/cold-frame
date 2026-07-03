@@ -75,7 +75,7 @@ bands: evergreen `S≥0.66` / budding `0.33≤S<0.66` / fading `S<0.33` (3 bands
 `at_risk` overlay (band-independent): `confidence<0.4 OR (now−last_accessed)>60d` ·
 archive fires ONLY when `S<0.33 AND archive_score<ARCHIVE_THRESHOLD=0.20`, OR on a capacity cap ·
 caps: `semantic=2000, episodic=500, procedural=100` (per scope) ·
-`REINFORCE_DECAY_INC=0.5`, `DECAY_S_CAP=365.0`, RRF `k_const=60` (no global divisor), `FANOUT=4` (min 20, max 200), cosine dedup bands `0.82`/`0.93`, importance EMA `α=0.1`, archive_score weights `0.5/0.3/0.2`, HashEmbedder `dim=256`, edge constants `EDGE_SEED_K=10` + `EDGE_PROMISCUITY_PENALTY=0.001` (RESERVED — the search-time edge recall channel was cut from v1 per D27; edge ROWS stay).
+`REINFORCE_DECAY_INC=0.5`, `DECAY_S_CAP=365.0`, RRF `k_const=60` (no global divisor), `FANOUT=4` (min 20, max 200), cosine dedup bands `0.82`/`0.93`, archive_score weights `0.5/0.3/0.2`, HashEmbedder `dim=256`, edge constants `EDGE_SEED_K=10` + `EDGE_PROMISCUITY_PENALTY=0.001` (RESERVED — the search-time edge recall channel was cut from v1 per D27; edge ROWS stay).
 
 ---
 
