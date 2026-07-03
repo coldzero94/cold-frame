@@ -1416,6 +1416,16 @@ class SQLiteStore(Store):
                 (e for e in all_events if e.entity == "note" and e.event_id not in seen),
                 key=lambda e: e.hlc,
             )
+            # a hard-purge is terminal (I2/D16): once a note id has a purge tombstone (locally OR
+            # anywhere in this import), NO event may re-materialize it — regardless of HLC. This
+            # blocks a crafted high-HLC create/update from resurrecting a purged (e.g. secret) note.
+            purged: set[str] = {
+                r[0]
+                for r in self._conn.execute(
+                    "SELECT DISTINCT entity_id FROM events WHERE entity='note' AND op='purge'"
+                )
+            }
+            purged |= {e.entity_id for e in fresh if e.op == "purge"}
             hlc_high = self.get_meta("hlc_last") or ""
             for ev in fresh:
                 self.append_event(ev)  # record with the ORIGINAL event_id/hlc (audit + idempotency)
@@ -1424,8 +1434,9 @@ class SQLiteStore(Store):
                 if ev.hlc <= maxhlc.get(ev.entity_id, ""):
                     continue  # a newer state for this note already exists → don't clobber (LWW)
                 maxhlc[ev.entity_id] = ev.hlc
-                if ev.op in ("delete", "purge") or not ev.payload:
-                    continue  # final state is gone / payload scrubbed — nothing to materialize
+                if ev.op in ("delete", "purge") or not ev.payload or ev.entity_id in purged:
+                    continue  # gone / scrubbed / hard-purged (terminal) — nothing to materialize
+
                 self._upsert_note_grains(Note.model_validate_json(ev.payload))
                 materialized += 1
             if hlc_high > (self.get_meta("hlc_last") or ""):

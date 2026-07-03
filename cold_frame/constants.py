@@ -83,6 +83,12 @@ EMBED_METRIC: Final[str] = "cosine"
 # ── note granularity (SPEC §2) ──
 NOTE_MAX_CHARS: Final[int] = 80
 
+# ── import safety (I17 replay; security dogfood) ──
+# The event-log import path bypasses WriteCore, so Memory.import_events runs its own admission +
+# bound: a single imported note payload over this byte cap is dropped (bounded-growth; blocks a
+# pathologically large payload). Generous vs a real fact/summary; only stops abuse.
+IMPORT_MAX_NOTE_BYTES: Final[int] = 65536
+
 # ── durable jobs queue (I12; data-layer §3.3) ──
 LEASE_TTL: Final[float] = 300.0  # seconds; stale running-job reclaim threshold
 MAX_ATTEMPTS: Final[int] = 5  # attempts cap → dead-letter

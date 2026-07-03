@@ -18,7 +18,12 @@ from typing import Literal, TypedDict, cast, get_args
 from pydantic import ValidationError
 
 from cold_frame.branding import DB_PATH
-from cold_frame.constants import CONFIDENCE_FLOOR, CONSOLIDATE_EVERY_N_WRITES, DEDUP_AUTO_MERGE
+from cold_frame.constants import (
+    CONFIDENCE_FLOOR,
+    CONSOLIDATE_EVERY_N_WRITES,
+    DEDUP_AUTO_MERGE,
+    IMPORT_MAX_NOTE_BYTES,
+)
 from cold_frame.exceptions import EmbedderMismatchError, NoteNotFound, StoreError, ToolError
 from cold_frame.forget.consolidate import Consolidator
 from cold_frame.forget.worker import Worker
@@ -56,6 +61,7 @@ from cold_frame.read.retrieve import RetrievePipeline
 from cold_frame.read.strength import compute_strength
 from cold_frame.store.base import Event, Job, PurgeReport
 from cold_frame.store.sqlite import SQLiteStore
+from cold_frame.write.admission import scan_secret
 from cold_frame.write.core import WriteCore
 from cold_frame.write.extract import extract
 
@@ -495,19 +501,48 @@ class Memory:
     def import_events(self, lines: Iterable[str]) -> ImportEventsResult:
         """Replay an NDJSON event log (from ``export_events``) into this store (I17). Idempotent
         (skip already-stored event_id), last-writer-wins by HLC. Unparseable lines are skipped and
-        counted in the result — never raised — so a truncated dump imports what it can."""
+        counted in the result — never raised — so a truncated dump imports what it can.
+
+        Import is the one write path that does NOT go through WriteCore, so it runs the same
+        pre-disk guards here (security dogfood): a note payload that is malformed, over
+        ``IMPORT_MAX_NOTE_BYTES``, or carries an obvious secret is DROPPED before it reaches the
+        store (never materialized, never appended to the event log — I6). Purge terminality (a
+        hard-purged note is not resurrected by a later high-HLC event) is enforced in the store."""
         events: list[Event] = []
-        unparseable = 0
+        dropped = 0
         for line in lines:
             line = line.strip()
             if not line:
                 continue
             try:
-                events.append(Event.model_validate_json(line))
+                ev = Event.model_validate_json(line)
             except ValidationError:
-                unparseable += 1
+                dropped += 1  # unparseable event line
+                continue
+            if self._import_should_drop(ev):
+                dropped += 1
+                continue
+            events.append(ev)
         res = self._store.import_events(events)
-        return res.model_copy(update={"skipped": res.skipped + unparseable})
+        return res.model_copy(update={"skipped": res.skipped + dropped})
+
+    def _import_should_drop(self, ev: Event) -> bool:
+        """True iff a note-materializing event must be withheld from import — its payload is
+        malformed, oversized, or holds an obvious secret. Logs are content-free (I16)."""
+        if ev.entity != "note" or ev.op in ("delete", "purge") or not ev.payload:
+            return False  # no note snapshot to admit (tombstones/edges pass through)
+        if len(ev.payload.encode("utf-8")) > IMPORT_MAX_NOTE_BYTES:
+            _log.warning("import_drop_oversized", extra={"event_id": ev.event_id})
+            return True
+        try:
+            note = Note.model_validate_json(ev.payload)
+        except ValidationError:
+            _log.warning("import_drop_malformed", extra={"event_id": ev.event_id})
+            return True
+        if scan_secret(note.content) or scan_secret(note.context):
+            _log.warning("import_drop_secret", extra={"event_id": ev.event_id})
+            return True
+        return False
 
     def strength(self, id: str) -> Strength:
         return compute_strength(self.get(id), self._clock.now())
