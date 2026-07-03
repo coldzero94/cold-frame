@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "cold-frame"
-version = "0.1.0"
+version = "0.1.1"
 description = "A local-first, ownable memory layer for LLM agents — combine-the-best of mem0/Letta/Zep/A-MEM, engineered as one SQLite file."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -68,7 +68,7 @@ artifacts = ["cold_frame/ui/_dist/**"]
 line-length = 100
 target-version = "py312"
 src = ["cold_frame", "tests"]
-extend-exclude = ["cold_frame/ui/prototype"]  # design assets (data-gen script), not library code
+extend-exclude = ["cold_frame/ui/prototype", "assets"]  # design-asset generators, not library code
 
 [tool.ruff.lint]
 # E/W=pycodestyle(PEP8) · F=pyflakes · I=isort · UP=pyupgrade · B=bugbear

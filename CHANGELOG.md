@@ -4,12 +4,19 @@ All notable changes to coldframe. Format loosely follows [Keep a Changelog]; ver
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.1.1] — 2026-07-03
+
 ### Fixed
 
 - **Release binaries now ship the web UI.** The release pipeline never built the Vue bundle (the
   git-ignored `_dist` was empty in CI) and PyInstaller dropped package data, so the v0.1.0 binaries
   silently served the fallback inline inspector. The build now fails loudly without the bundle and
   live-serves the frozen binary's UI as a smoke test.
+- **Corrected the stale v0.1.0 Linux `sha256`** in the Homebrew formula (the linux binary was rebuilt
+  during the Intel spec-out and re-attached with a new hash) — `brew install` on Linux x86_64 failed
+  sha verification against the old pin. Surfaced while validating the new auto-bump.
 - Runtime error messages and docs no longer point at PyPI installs that fail (ADR-D28: not on
   PyPI) — they give the working from-source command for the `[crypto]`/`[local-llm]`/`[mcp]` extras.
 - The auto-generated Homebrew formula's `brew test` used a non-string matcher (raises on modern
@@ -17,8 +24,15 @@ All notable changes to coldframe. Format loosely follows [Keep a Changelog]; ver
 
 ### Changed
 
-- Releases auto-update the Homebrew tap formula (the `bump-tap` job).
+- Releases auto-update the Homebrew tap formula (the `bump-tap` job): the tag is now the only manual
+  release step — the workflow computes each binary's `sha256` and pushes the regenerated formula.
 - Intel Mac (`macos-x86_64`) is out of scope: macOS = Apple Silicon only (+ Linux x86_64).
+
+### Docs
+
+- A README hero (the memory-field visualization — embers = memories, warmth = belief, blue = fading,
+  hex glass = pinned) and a terminal demo (static SVG + a `vhs` tape for an animated GIF), both
+  generated from committed data/scripts under `assets/`.
 
 ## [0.1.0] — 2026-07-02
 

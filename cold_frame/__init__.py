@@ -9,7 +9,7 @@ from __future__ import annotations
 from cold_frame.api import Memory
 from cold_frame.models import Note, Scope, SearchResult, Source
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 __all__ = [
     "Memory",
