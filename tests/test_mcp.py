@@ -89,3 +89,62 @@ def test_main_reports_install_hint_without_sdk(capsys: pytest.CaptureFixture[str
     assert rc == 2
     # the hint goes to STDERR (a stdio MCP server reserves stdout for the JSON-RPC protocol)
     assert "[mcp]" in capsys.readouterr().err
+
+
+def test_require_memory_raises_when_uninitialized() -> None:
+    from cold_frame.exceptions import StoreError
+
+    prev = mcpmod._MEMORY
+    mcpmod._MEMORY = None
+    try:
+        with pytest.raises(StoreError):
+            mcpmod._require_memory()
+    finally:
+        mcpmod._MEMORY = prev
+
+
+def test_drain_captures_swallows_errors(db_path: str) -> None:
+    # a capture-drain hiccup must NEVER fail the agent's tool call (best-effort, content-free I16)
+    mem = Memory(db_path)
+
+    def _boom(**_: object) -> int:
+        raise RuntimeError("drain boom")
+
+    mem.run_pending_jobs = _boom  # type: ignore[method-assign]
+    mcpmod._drain_captures(mem)  # must not raise
+
+
+@pytest.mark.skipif(not _HAS_SDK, reason="needs the [mcp] extra (anyio)")
+def test_async_tool_wrappers_happy_path(db_path: str) -> None:
+    # the agent-facing async seam end to end: add → search → self-edit, through anyio.to_thread.
+    import anyio
+
+    mcpmod._MEMORY = Memory(db_path)
+    try:
+        added = anyio.run(mcpmod.add_memory, "I prefer dark roast coffee")
+        assert added["added"] and added["added"][0]["content"] == "I prefer dark roast coffee"
+
+        found = anyio.run(mcpmod.search_memory, "coffee")
+        assert found["hits"] and "dark roast" in found["hits"][0]["content"]
+
+        created = anyio.run(mcpmod.create_fact, "I use vim")
+        fid = created["added"][0]
+        updated = anyio.run(mcpmod.update_fact, fid, "I use neovim")
+        assert updated["archived"] == fid and updated["new"]
+        forgotten = anyio.run(mcpmod.forget, updated["new"])
+        assert forgotten["status"] == "archived"
+    finally:
+        mcpmod._MEMORY = None
+
+
+@pytest.mark.skipif(not _HAS_SDK, reason="needs the [mcp] extra (FastMCP)")
+def test_build_server_binds_memory_and_registers_tools(db_path: str) -> None:
+    # build_server with an explicit memory: binds it + registers the 6-tool set (no disk/env probe)
+    mem = Memory(db_path)
+    prev = mcpmod._MEMORY
+    try:
+        server = mcpmod.build_server(memory=mem)
+        assert server is not None
+        assert mcpmod._MEMORY is mem  # bound to the provided memory, not an env-constructed one
+    finally:
+        mcpmod._MEMORY = prev
