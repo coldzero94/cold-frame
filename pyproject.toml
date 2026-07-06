@@ -37,9 +37,13 @@ dependencies = [
 # backend ships, so the extra carries tiktoken itself, NOT the openai package (nothing imports it).
 openai = ["tiktoken>=0.7"]
 local-llm = ["sentence-transformers>=3.0"]   # fully offline embeddings/LLM
-vec = ["sqlite-vec>=0.1.6"]                   # optional ANN acceleration (default is pure-numpy KNN)
 mcp = ["mcp>=1.2", "anyio>=4.0"]              # local stdio MCP server (cold-frame mcp); D23
-server = ["fastapi>=0.110", "uvicorn>=0.29", "psycopg[binary]>=3.1", "pgvector>=0.3"]  # the separate product layer
+# ── RESERVED future-layer extras — declared seams (I9), NOT wired in v1. Installing either changes
+#    nothing today (no consumer in cold_frame): [vec] = the sqlite-vec ANN index (search is pure-numpy
+#    KNN, fast enough under the per-scope caps); [server] = the future hosted Postgres+FastAPI layer
+#    (no PostgresStore ships yet). Kept so the eventual wiring is one edit + an ADR, not a sweep. ──
+vec = ["sqlite-vec>=0.1.6"]
+server = ["fastapi>=0.110", "uvicorn>=0.29", "psycopg[binary]>=3.1", "pgvector>=0.3"]
 dev = ["pytest>=8.0", "pytest-cov>=5", "ruff>=0.6", "mypy>=1.11", "pyyaml>=6", "pre-commit>=3.7"]
 
 [project.urls]
