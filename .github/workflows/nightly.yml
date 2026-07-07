@@ -1,0 +1,29 @@
+name: Nightly (slow + perf)
+
+# The core CI (ci.yml) runs `-m "not slow"`; the `slow` marker (perf smoke + anti-bloat-at-scale)
+# therefore ran NOWHERE. This gives it a home: a scheduled job on a PINNED runner class so the perf
+# numbers are comparable night to night. Manual `workflow_dispatch` too. Never gates a PR.
+on:
+  schedule:
+    - cron: "0 7 * * *" # 07:00 UTC daily
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  slow:
+    name: pytest -m slow (perf smoke + anti-bloat)
+    runs-on: ubuntu-latest # pinned: perf budgets are calibrated for this runner class
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install (.[dev])
+        run: uv pip install --system ".[dev]"
+      - name: Run the slow suite (offline)
+        run: pytest -q -m "slow and not live"
