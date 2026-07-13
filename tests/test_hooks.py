@@ -238,6 +238,31 @@ def test_layer_a_drops_task_requests_and_questions(tmp_path: Path) -> None:
     assert texts == ["I deploy with ship.sh now", "My database is Postgres 16 in production"]
 
 
+def test_layer_a_drops_shell_commands_and_affirmations(tmp_path: Path) -> None:
+    # capture_bench surfaced these false-keeps: a bare shell command and an affirmation-led
+    # imperative became "user facts". A leading tool binary + command shape (flag/subcommand), or
+    # an affirmation before an imperative, is now dropped — without false-dropping a fact that
+    # merely names a tool.
+    t = tmp_path / "t.jsonl"
+    _write_transcript(
+        t,
+        [
+            ("user", "git commit -m 'wip'"),  # shell command → drop
+            ("user", "npm install express"),  # shell command → drop
+            ("user", "docker run -it ubuntu bash"),  # shell command → drop
+            ("user", "yes go ahead"),  # affirmation + imperative → drop
+            ("user", "git is my version control of choice"),  # fact naming a tool (copula) → keep
+            ("user", "python is my main language now"),  # fact naming a tool (copula) → keep
+            ("user", "yes I moved to Berlin last week"),  # affirmation before a real fact → keep
+        ],
+    )
+    assert [m["content"] for m in read_user_messages(t, 0)[0]] == [
+        "git is my version control of choice",
+        "python is my main language now",
+        "yes I moved to Berlin last week",
+    ]
+
+
 def test_layer_a_drops_oversized_paste(tmp_path: Path) -> None:
     t = tmp_path / "t.jsonl"
     _write_transcript(t, [("user", "x" * 50_000)])  # a pasted blob, not a stated fact

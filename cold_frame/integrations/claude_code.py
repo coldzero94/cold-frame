@@ -170,6 +170,55 @@ _COMMAND_VERBS = frozenset(
         "review",
         "try",
         "use",
+        "go",  # "go ahead" (usually after a stripped affirmation) — imperative, not the language
+        "proceed",
+    }
+)
+
+# Leading affirmations. Stripped before the imperative check so "yes go ahead" is judged on "go
+# ahead" (dropped), while "yes I moved to Berlin" is judged on "I moved …" (kept — a real fact).
+_AFFIRMATIONS = frozenset({"yes", "yeah", "yep", "yup", "sure", "ok", "okay", "no", "nope", "nah"})
+
+# Shell/tool binaries. A turn LEADING with one of these plus a command shape (a CLI flag or a
+# command-verb subcommand) and NO copula is a command invocation ("git commit -m 'wip'", "npm
+# install express"), not a durable fact. A fact ABOUT a tool has a copula ("git is my VCS") and is
+# kept by the declarative guard, so this can't false-drop it.
+_SHELL_BINARIES = frozenset(
+    {
+        "git",
+        "npm",
+        "npx",
+        "yarn",
+        "pnpm",
+        "pip",
+        "pip3",
+        "uv",
+        "uvx",
+        "docker",
+        "kubectl",
+        "cargo",
+        "make",
+        "pytest",
+        "gh",
+        "brew",
+        "curl",
+        "wget",
+        "ssh",
+        "grep",
+        "sed",
+        "awk",
+        "cd",
+        "ls",
+        "rm",
+        "cp",
+        "mv",
+        "cat",
+        "mkdir",
+        "touch",
+        "chmod",
+        "export",
+        "source",
+        "bash",
     }
 )
 _REQUEST_PREFIXES = (
@@ -231,14 +280,26 @@ def _is_durable_user_fact(text: str) -> bool:
         return False
     if any(marker in t for marker in _HARNESS_MARKERS):
         return False
-    first = t.split(maxsplit=1)[0] if t else ""
+    declarative = any(marker in t for marker in _DECLARATIVE_MARKERS)
+    words = t.split()
+    # a shell-command invocation ("git commit -m ...", "npm install express") is not a durable fact:
+    # a leading tool binary + a command shape (a CLI flag or a command-verb subcommand), no copula.
+    if words and words[0] in _SHELL_BINARIES and not declarative:
+        cmd_shape = any(w.startswith("-") for w in words[1:]) or (
+            len(words) > 1 and words[1] in _COMMAND_VERBS
+        )
+        if cmd_shape:
+            return False
+    # strip a leading affirmation ("yes go ahead") so the imperative check sees the actual head word
+    head = 1 if len(words) > 1 and words[0].rstrip(",.!") in _AFFIRMATIONS else 0
+    first = words[head] if len(words) > head else ""
     if first not in _COMMAND_VERBS:
         return True
     # a leading command verb is usually an imperative ("run the tests") → drop. BUT many are
     # noun/verb HOMOGRAPHS (test/build/review/change/search/...) that lead real declarative facts —
     # "test coverage must exceed 80%", "review is mandatory". Keep it when a copula/modal marks it
     # a statement, not a command (a rare false-keep is absorbed by dedup downstream).
-    return any(marker in t for marker in _DECLARATIVE_MARKERS)
+    return declarative
 
 
 def _user_text(message: object) -> str:
